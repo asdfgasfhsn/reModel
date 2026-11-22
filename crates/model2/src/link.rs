@@ -523,8 +523,11 @@ impl LinkHub {
             let all = flags.iter().all(|f| f.0) && !(self.drop_at != 0 && frame >= self.drop_at);
             if all && !self.ready[j] {
                 // The master is 0, the others in the order they started.
+                // A game whose master never writes 1 to 0x1A14002 (`overrev`) has no node flagged:
+                // node 0, the one given the master's role, is the master then.
+                let flagged = flags.iter().filter(|f| f.1).count();
                 let mut order: Vec<usize> = (0..n).collect();
-                order.sort_by_key(|&i| (!flags[i].1, flags[i].2, i));
+                order.sort_by_key(|&i| (!(flags[i].1 || (flagged == 0 && i == 0)), flags[i].2, i));
                 for (id, &i) in order.iter().enumerate() {
                     self.ids[j][i] = id as u8;
                 }
@@ -532,7 +535,7 @@ impl LinkHub {
                     self.ids[j].copy_from_slice(f);
                 }
                 if slot == 0 {
-                    if flags.iter().filter(|f| f.1).count() != 1 {
+                    if flagged > 1 {
                         log.push("warning: not exactly one master among the started nodes".into());
                     }
                     log.push(format!("link ready: IDs {:?}, {} nodes", self.ids[j], n));

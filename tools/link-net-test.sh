@@ -3,7 +3,7 @@
 #
 #   usage: tools/link-net-test.sh REMODEL ROM_DIR OUT_DIR [GAME...]
 #
-# For each game (srallyc, daytona, manxtt, indy500 by default), with the game's scripted race:
+# For each game (srallyc, daytona, manxtt, indy500, motoraid, waverunr, sgt24h, overrev by default), with the game's scripted race:
 #   clean       a host and a joiner at delay D: each process's state hash must
 #               equal `remodel link-run`'s for its node with the same D
 #   faults      the same with 5% loss, 5% duplication, 50 ms jitter and 5 ms
@@ -30,7 +30,7 @@
 # Everything is on 127.0.0.1; scratch output stays under OUT_DIR.
 set -u
 BIN=$1; ROM=$2; OUT=$3; shift 3
-GAMES=${*:-srallyc daytona manxtt indy500}
+GAMES=${*:-srallyc daytona manxtt indy500 motoraid waverunr sgt24h overrev}
 mkdir -p "$OUT"
 fail=0
 base=$((47100 + RANDOM % 1500))
@@ -177,6 +177,18 @@ for game in $GAMES; do
 		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
 	indy500to)
 		INPUT="coin1@1100-1104,coin1@1120-1124,start@1900-1904,start@2100-2104,start@2300-2304,gas=0xff@2500-99999"; FRAMES=4500
+		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
+	motoraid)
+		INPUT="coin1@1100-1104,coin1@1150-1154,start@1300-1304,throttle=0xe0@4700-99999"; FRAMES=5400
+		LEAVE_AT=5600; FRAMES_DROP=7000; SHOTS_DROP=5800,6400,7000 ;;
+	waverunr)
+		INPUT="coin1@1100-1104,coin1@1120-1124,coin1@1140-1144,start@1250-1254,throttle=0x00@1300-1700,throttle=0x00@1900-99999"; FRAMES=4500
+		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
+	sgt24h)
+		INPUT="coin1@1100-1104,start@1250-1254,gas=0x00@1500-1510,gas=0x00@1700-1710,gas=0x00@1900-1910,gas=0x00@2100-2110,gas=0x00@2300-2310,gas=0x00@2600-99999"; FRAMES=4600
+		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
+	overrev | overrevb)
+		INPUT="coin1@1100-1104,start@1250-1254,gas=0x00@1400-1410,gas=0x00@1600-1610,gas=0x00@1800-1810,gas=0x00@2000-2010,gas=0x00@2200-2210,gas=0x00@2600-99999"; FRAMES=4500
 		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
 	*) echo "no scripted race for $game"; exit 2 ;;
 	esac

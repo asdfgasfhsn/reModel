@@ -79,7 +79,9 @@ motion; run-ahead 0 (input lag 0).
   a 600M-instruction coin-start run (`make bench`) fast-forwards 79.6%
   of its instructions through it, and the state hash is unchanged.
 
-## Link play (survey)
+## Link play
 
 - *Confirmed (by running it):* the same FOUNDATIONAL SETTING page as `overrev` and the same EEPROM bytes (LINK MAX at
-  `0x36`, copy `0x6A`: one press 0 to 1). See `docs/games/overrev.md` and `docs/hw/link-board.md` section 14.
+  `0x36`, copy `0x6A`: one press 0 to 1). A run through the test menu from a blank EEPROM writes `overrev`'s default record byte for byte
+  (both copies, the same checksum), so the variant links with the parent's `LinkPlay` (`VariantLink::Parent`). See `docs/games/overrev.md`
+  and `docs/hw/link-board.md` section 14.

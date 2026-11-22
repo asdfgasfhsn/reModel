@@ -199,7 +199,7 @@ impl NetPage {
                 }
                 JoinStatus::Params(p) => {
                     let node = p.hosts[join.index()].nodes[0] as usize;
-                    join.accept(linknet::settings_hash(play, p.base.as_deref(), node, &[]));
+                    join.accept(linknet::settings_hash(play, p.base.as_deref(), node, p.nodes(), &[]));
                     *status = "Starting".into();
                 }
                 JoinStatus::Waiting => *status = "Starting".into(),
@@ -362,7 +362,7 @@ impl NetPage {
                     host.set_auto_delay((self.net_delay == 0).then_some((linknet::AUTO_MIN, linknet::AUTO_MAX)));
                     let fixed = (self.net_delay > 0).then_some(self.net_delay as usize);
                     match host.start(fixed, base, &|p, h| {
-                        linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, &[])
+                        linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, p.nodes(), &[])
                     }) {
                         Ok(()) => *starting = true,
                         Err(e) => self.note = Some(e),

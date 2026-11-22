@@ -3,7 +3,7 @@
 //! (`docs/hw/link-board.md`). Used by `model2::link::LinkHub` and `remodel
 //! link-run`; games without an entry have no linked play.
 
-use crate::{FreePlayByte, LinkPlay, LinkSettings, RecordCrc, SettingsStore};
+use crate::{EEPROM_BYTES, FreePlayByte, LinkPlay, LinkSettings, RecordCrc, SettingsStore};
 
 /// The linked-play data of game `id`, if it has been looked at.
 pub fn link_play(id: &str) -> Option<&'static LinkPlay> {
@@ -24,6 +24,8 @@ pub fn link_play(id: &str) -> Option<&'static LinkPlay> {
         "von" => Some(&VON),
         "stcc" => Some(&STCC),
         "skisuprg" => Some(&SKISUPRG),
+        "sgt24h" => Some(&SGT24H),
+        "overrev" => Some(&OVERREV),
         _ => None,
     }
 }
@@ -58,6 +60,7 @@ static SRALLYC: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
     free_play: Some(SRALLYC_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `srallyc` COIN ASSIGNMENTS, COIN/CREDIT SETTING #26 "FREE PLAY"
@@ -103,6 +106,7 @@ static DAYTONA: LinkPlay = LinkPlay {
     ghost_keep: &[(0x0b, 0x0d), (0x40, 0xe8)],
     ghost_sum: Some(0x3c),
     free_play: Some(DAYTONA_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `daytona` COIN ASSIGNMENT, COIN/CREDIT SETTING #27 "FREE PLAY"
@@ -149,6 +153,7 @@ static MANXTT: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
     free_play: Some(MANXTT_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `manxtt` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY"
@@ -195,6 +200,7 @@ static INDY500: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
     free_play: Some(INDY500_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `indy500` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY"
@@ -238,7 +244,8 @@ static MOTORAID: LinkPlay = LinkPlay {
     pos_off: None,
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
-    free_play: None,
+    free_play: Some(MOTORAID_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `waverunr` (docs/games/waverunr.md, docs/hw/eeprom-records.md, link-board.md section 14): the
@@ -271,8 +278,159 @@ static WAVERUNR: LinkPlay = LinkPlay {
     pos_off: None,
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
-    free_play: None,
+    free_play: Some(WAVERUNR_FREE_PLAY),
+    node_bytes: None,
 };
+
+/// `motoraid` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY" (docs/games/motoraid.md): what the
+/// game's own test menu changed in the record going from its default #12 (2 coins 1 credit), found by
+/// running it (8 presses of the test button): the setting's number (byte `0x10`, 0-based) and two bytes
+/// the game derives from it.
+static MOTORAID_FREE_PLAY: &[FreePlayByte] = &[
+    FreePlayByte { at: 0x10, on: 0x1a, off: 0x0b },
+    FreePlayByte { at: 0x11, on: 0x01, off: 0x02 },
+    FreePlayByte { at: 0x15, on: 0x01, off: 0x00 },
+];
+
+/// `waverunr` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY" (docs/games/waverunr.md): from the
+/// default #17 (3 coins 1 credit), 6 presses of the test button; the same three bytes as `motoraid`'s.
+static WAVERUNR_FREE_PLAY: &[FreePlayByte] = &[
+    FreePlayByte { at: 0x10, on: 0x1a, off: 0x10 },
+    FreePlayByte { at: 0x11, on: 0x01, off: 0x03 },
+    FreePlayByte { at: 0x15, on: 0x01, off: 0x00 },
+];
+
+/// `sgt24h`'s settings image: the EEPROM's 128 bytes (the record the game's own test menu saves
+/// at the defaults, in the first `0x48`: the record and its copy) and, from [`EEPROM_BYTES`], the backup SRAM's first
+/// `0x14c` bytes as the game leaves them after a first boot (its marker `0xAD85`, the coin
+/// settings, the bookkeeping at zero): the coin settings, FREE PLAY among them, are there, not in
+/// the EEPROM (docs/games/sgt24h.md).
+static SGT24H_IMAGE: [u8; EEPROM_BYTES + 0x14c] = {
+    const EEPROM: [u8; 0x48] = [
+        0x53, 0x33, 0x32, 0x41, 0x06, 0x49, 0x00, 0x00, 0xd8, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x85, 0xad,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x30, 0x80, 0xd0, 0x48, 0x80, 0xc8, 0x48,
+        0x80, 0xc8, 0x00, 0x00, 0xa6, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x30, 0x80, 0xd0, 0x48, 0x80, 0xc8, 0x48, 0x80, 0xc8, 0x00, 0x00,
+    ];
+    const SRAM: [u8; 0x14c] = [
+        0x85, 0xad, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x32, 0x00, 0x1e, 0x00, 0x32, 0x00,
+        0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x32, 0x00, 0x1e, 0x00, 0x32, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6d, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ];
+    let mut a = [0xff; EEPROM_BYTES + 0x14c];
+    let mut i = 0;
+    while i < EEPROM.len() {
+        a[i] = EEPROM[i];
+        i += 1;
+    }
+    i = 0;
+    while i < SRAM.len() {
+        a[EEPROM_BYTES + i] = SRAM[i];
+        i += 1;
+    }
+    a
+};
+
+/// `sgt24h` COIN ASSIGNMENTS, FREE PLAY ON (docs/games/sgt24h.md): the byte at `0x12` of the backup
+/// SRAM (offset `0x80 + 0x12` in the settings image) goes from 0 to 1; found by running the game's
+/// test menu and diffing the SRAM.
+static SGT24H_FREE_PLAY: &[FreePlayByte] = &[FreePlayByte { at: EEPROM_BYTES + 0x12, on: 0x01, off: 0x00 }];
+
+/// `sgt24h` (docs/games/sgt24h.md, docs/hw/eeprom-records.md section 3, link-board.md section
+/// 14): GAME ASSIGNMENTS LINK TYPE and LINK MAX in the "S32A" record's bytes `0x19`-`0x1C`:
+/// `0x19` LINK MAX (the number itself, 2 to 4; 1 with NOT LINK), `0x1A` 0 once a type is chosen
+/// (1 NOT LINK), `0x1B` 1 for CAR NO1 (the master) and 0 for the slaves, `0x1C` the car number
+/// minus one (0-3). The record is 32 bytes (copies at `0x08` and `0x28`), its checksum the byte
+/// sum of the 30 bytes after it, and the second copy has the marker word `0xAD85` at `0x10`
+/// zeroed. The bytes are what the game's own test menu writes at the defaults. Blocks are `0x380`
+/// bytes (own at `0x2000`, received from `0x2380`) and the game writes its ID to `0x1A10001`.
+/// `sgt24h` (docs/games/sgt24h.md, docs/hw/eeprom-records.md section 3, link-board.md section
+/// 14): GAME ASSIGNMENTS LINK TYPE and LINK MAX in the "S32A" record's bytes `0x19`-`0x1C`:
+/// `0x19` LINK MAX (the number itself, 2 to 4; 1 with NOT LINK), `0x1A` 0 once a type is chosen
+/// (1 NOT LINK), `0x1B` 1 for CAR NO1 (the master) and 0 for the slaves, `0x1C` the car number
+/// minus one (0-3). The record is 32 bytes (copies at `0x08` and `0x28`), its checksum the byte
+/// sum of the 30 bytes after it, and the second copy has the marker word `0xAD85` at `0x10`
+/// zeroed. The bytes are what the game's own test menu writes at the defaults. Blocks are `0x380`
+/// bytes (own at `0x2000`, received from `0x2380`) and the game writes its ID to `0x1A10001`.
+static SGT24H: LinkPlay = LinkPlay {
+    max_nodes: 4,
+    settings: LinkSettings {
+        store: SettingsStore::Eeprom,
+        record: &SGT24H_IMAGE,
+        fill: 0xff,
+        size: SGT24H_IMAGE.len(),
+        crc: RecordCrc::byte_sum(0x08, 32, 30, 8),
+    },
+    role_off: 0x1b,
+    roles: &[1, 0],
+    car_off: Some(0x1c),
+    tx: 0x2000,
+    rx: 0x2380,
+    block: 0x380,
+    id_base: 1,
+    state_off: None,
+    pos_off: None,
+    ghost_keep: &[(0x00, 0x04)],
+    ghost_sum: None,
+    free_play: Some(SGT24H_FREE_PLAY),
+    node_bytes: Some(|_, nodes| vec![(0x19, nodes as u8), (0x1a, 0)]),
+};
+
+/// `overrev` and its clone `overrevb` (docs/games/overrev.md, link-board.md section 14): the
+/// "S32A" record in the EEPROM, 52 bytes (copies at `0x08` and `0x3C`). GAME ASSIGNMENTS
+/// FOUNDATIONAL SETTING: LINK MAX byte `0x36` (0 NOT LINK, 1 2 LINKS, 2 3 LINKS, 3 4 LINKS) and
+/// LINK TYPE byte `0x35` (0 MASTER CarNo.1, 1 SLAVE CarNo.2, ...). The bytes are what the game's own
+/// test menu writes at the defaults. Blocks as `sgt24h`'s; the master does not write `0x1A14002`.
+static OVERREV: LinkPlay = LinkPlay {
+    max_nodes: 4,
+    settings: LinkSettings {
+        store: SettingsStore::Eeprom,
+        record: &[
+            0x53, 0x33, 0x32, 0x41, 0x06, 0x49, 0x00, 0x00, 0x93, 0x77, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x01, 0x01, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x00, 0x80, 0xff, 0x00,
+            0x80, 0xff, 0x00, 0x00, 0x02, 0x02, 0x01, 0x02, 0x01, 0x03, 0x03, 0x02, 0x06, 0x02, 0x02, 0x01, 0x03, 0x00,
+            0x00, 0x02, 0x02, 0x01, 0x01, 0x00,
+        ],
+        fill: 0xff,
+        size: 128,
+        crc: RecordCrc::s32a(0x08, 52, 50, 0xdebd_eb00),
+    },
+    role_off: 0x36,
+    roles: &[1],
+    car_off: Some(0x35),
+    tx: 0x2000,
+    rx: 0x2380,
+    block: 0x380,
+    id_base: 1,
+    state_off: None,
+    pos_off: None,
+    ghost_keep: &[(0x00, 0x04)],
+    ghost_sum: None,
+    free_play: Some(OVERREV_FREE_PLAY),
+    node_bytes: Some(|_, nodes| vec![(0x36, nodes as u8 - 1)]),
+};
+
+/// `overrev` COIN ASSIGNMENTS, COIN/CREDIT SETTING # "FREEPLAY" (docs/games/overrev.md): the setting's
+/// list has 15 entries (0 to 14, `1 COIN 1 CREDIT` the default) and ends in FREEPLAY, 14 presses of the
+/// test button from the default: the setting's number (byte `0x10`) and one byte derived from it.
+static OVERREV_FREE_PLAY: &[FreePlayByte] =
+    &[FreePlayByte { at: 0x10, on: 0x0e, off: 0x00 }, FreePlayByte { at: 0x11, on: 0x01, off: 0x00 }];
 
 /// `von`'s settings in the backup SRAM (docs/games/von.md, link-board.md section 15): the record
 /// is 0x20C bytes starting `SEGA.AM#3.VRON.`, its length word, a checksum word at `0x14` over
@@ -341,6 +499,7 @@ static VON: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04)],
     ghost_sum: None,
     free_play: Some(VON_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `von` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY" (docs/games/von.md): what the
@@ -383,6 +542,7 @@ static STCC: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04)],
     ghost_sum: None,
     free_play: Some(STCC_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `stcc` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY" (docs/games/stcc.md): what the
@@ -410,6 +570,7 @@ pub static STCCA: LinkPlay = LinkPlay {
     },
     free_play: Some(STCCAB_FREE_PLAY),
     ..STCC
+    node_bytes: None,
 };
 
 /// `stccb`: as [`STCCA`], one settings byte (`0x12`) different.
@@ -424,6 +585,7 @@ pub static STCCB: LinkPlay = LinkPlay {
     },
     free_play: Some(STCCAB_FREE_PLAY),
     ..STCC
+    node_bytes: None,
 };
 
 /// `skisuprg` (docs/games/skisuprg.md, docs/hw/eeprom-records.md, link-board.md section 17): the
@@ -458,6 +620,7 @@ static SKISUPRG: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x08)],
     ghost_sum: None,
     free_play: Some(SKISUPRG_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `skisuprg` COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY" (docs/games/skisuprg.md): what
@@ -476,7 +639,10 @@ mod tests {
 
     #[test]
     fn free_play_sets_the_game_bytes_and_comes_out_again() {
-        for id in ["srallyc", "daytona", "manxtt", "indy500", "von", "stcc", "stcca", "stccb", "skisuprg"] {
+        for id in [
+            "srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb", "skisuprg", "sgt24h",
+            "overrev",
+        ] {
             let p = link_play(id).unwrap();
             let Some(fp) = p.free_play else { continue };
             let plain = p.settings.image(None, p.role_off, 0, &[]);
@@ -507,8 +673,9 @@ mod tests {
     fn the_records_the_games_wrote_carry_their_own_checksums() {
         // Each default record is what the game's own test menu saved; its checksum field is
         // the game's, so the algorithm must reproduce it (both copies, for the S32A records).
-        for id in ["daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb", "skisuprg"]
-        {
+        for id in [
+            "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb", "skisuprg", "sgt24h", "overrev",
+        ] {
             let p = link_play(id).unwrap();
             let n = p.settings.record.len();
             let rebuilt = p.settings.image(None, p.role_off, p.settings.record[p.role_off], &[]);
@@ -520,7 +687,7 @@ mod tests {
 
     #[test]
     fn s32a_roles_go_into_both_copies_with_a_good_checksum() {
-        for id in ["indy500", "motoraid", "waverunr", "skisuprg"] {
+        for id in ["indy500", "motoraid", "waverunr", "skisuprg", "overrev"] {
             let p = link_play(id).unwrap();
             let n = p.settings.crc.copy.unwrap();
             let a = p.settings.image(None, p.role_off, 1, &[(p.car_off.unwrap(), 0)]);

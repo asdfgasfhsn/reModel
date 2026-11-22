@@ -514,7 +514,7 @@ commands:
   link-run [--nodes N] [--frames F] [--input0 S --input1 S] [--delay D] ...
                        experimental (docs/hw/link-board.md): N real machines
                        of the game (srallyc, daytona, manxtt, indy500, motoraid,
-                       waverunr) in one process joined by a
+                       waverunr, sgt24h, overrev) in one process joined by a
                        link hub, run in lockstep; the game's link role setting
                        patched per node (master first); side-by-side pictures every
                        --shot-every frames and the handshake and block log

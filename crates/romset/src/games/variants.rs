@@ -131,6 +131,7 @@ pub static VARIANTS: &[Variant] = &[
         // Its attract runs a few frames behind overrev's.
         attract_frame: Some(1720),
         recommended: Some(Recommended::DEFAULT),
+        link: VariantLink::Parent,
         ..Variant::BASE
     },
     // Top Skater (Japan): the program pair, `topskatrj/epr-19753.15` and `.16` in the zip.

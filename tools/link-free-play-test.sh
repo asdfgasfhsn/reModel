@@ -4,7 +4,7 @@
 #
 #   usage: tools/link-free-play-test.sh REMODEL ROM_DIR OUT_DIR [GAME...]
 #
-# For each game (srallyc, daytona, manxtt, indy500 by default):
+# For each game (srallyc, daytona, manxtt, indy500, motoraid, waverunr, sgt24h, overrev, overrevb by default):
 #   deterministic   `link-run --free-play` twice: the same combined hash
 #   needed          the same inputs without --free-play (no coins: the game does not start)
 #                   end on another hash
@@ -15,7 +15,7 @@
 # Everything is on 127.0.0.1; scratch output stays under OUT_DIR.
 set -u
 BIN=$1; ROM=$2; OUT=$3; shift 3
-GAMES=${*:-srallyc daytona manxtt indy500}
+GAMES=${*:-srallyc daytona manxtt indy500 motoraid waverunr sgt24h overrev overrevb}
 mkdir -p "$OUT"
 fail=0
 port=$((47100 + RANDOM % 1500))
@@ -37,6 +37,11 @@ for game in $GAMES; do
 	daytonas|daytonase) INPUT="start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710,gas=0xff@2400-99999"; FRAMES=4600; SHOTS=2000,3300,4500 ;;
 	indy500d) INPUT="start@1250-1254,start@1400-1404,start@1600-1604,start@1800-1804,gas=0xff@2000-99999"; FRAMES=4500; SHOTS=2200,3300,4400 ;;
 	indy500to) INPUT="start@1900-1904,start@2100-2104,start@2300-2304,gas=0xff@2500-99999"; FRAMES=4500; SHOTS=2200,3300,4400 ;;
+	motoraid) INPUT="start@1300-1304,throttle=0xe0@4700-99999"; FRAMES=5400; SHOTS=2500,3500,5300 ;;
+	waverunr) INPUT="start@1250-1254,throttle=0x00@1300-1700,throttle=0x00@1900-99999"; FRAMES=4500; SHOTS=2500,3500,4400 ;;
+	# sgt24h takes its first start press as the credit (FREE PLAY is in its backup SRAM) and starts on the second.
+	sgt24h) INPUT="start@1100-1104,start@1250-1254,gas=0x00@1500-1510,gas=0x00@1700-1710,gas=0x00@1900-1910,gas=0x00@2100-2110,gas=0x00@2300-2310,gas=0x00@2600-99999"; FRAMES=4500; SHOTS=2000,3300,4400 ;;
+	overrev | overrevb) INPUT="start@1250-1254,gas=0x00@1400-1410,gas=0x00@1600-1610,gas=0x00@1800-1810,gas=0x00@2000-2010,gas=0x00@2200-2210,gas=0x00@2600-99999"; FRAMES=4500; SHOTS=2000,3300,4400 ;;
 	*) echo "no scripted race for $game"; exit 2 ;;
 	esac
 	run=("$(dirname "$0")/capped" "$BIN" --game "$game" --rom "$ROM" $JITARG)

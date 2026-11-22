@@ -327,13 +327,14 @@ pub(crate) fn node_machine(
     o: &Opts,
     play: &LinkPlay,
     i: usize,
+    nodes: usize,
     role: u8,
     base: Option<&[u8]>,
     extra: &[(usize, u8)],
 ) -> model2::Machine {
     let mut m = machine(roms);
     m.bus.geo.set_threaded(!o.single_thread);
-    let set: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().chain(extra.iter().copied()).collect();
+    let set = play.node_set(i, nodes, extra);
     let image = play.settings.image(base, play.role_off, role, &set);
     m.bus.settings_load(play.settings.store, &image);
     let kind = m.bus.link.as_ref().map_or(romset::LinkBoard::Idle, |l| l.kind());
@@ -355,7 +356,7 @@ pub(crate) fn settings(o: &Opts, roms: &RomSet) -> ExitCode {
         return ExitCode::from(2);
     };
     let image = match std::fs::read(file) {
-        Ok(b) if b.len() >= play.settings.size => b,
+        Ok(b) if b.len() >= play.settings.size.min(romset::EEPROM_BYTES) => b,
         Ok(_) => {
             eprintln!("{file}: too short for the record");
             return ExitCode::from(2);
@@ -428,7 +429,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
     let mut ms: Vec<model2::Machine> = (0..a.nodes)
         .map(|i| {
             let extra: Vec<(usize, u8)> = a.set_bytes.iter().filter(|b| b.0 == i).map(|b| (b.1, b.2)).collect();
-            let mut m = node_machine(roms, o, play, i, types[i], base.as_deref(), &extra);
+            let mut m = node_machine(roms, o, play, i, a.nodes, types[i], base.as_deref(), &extra);
             if let Some(l) = m.bus.link.as_mut() {
                 l.beat_until = a.beat_until;
             }

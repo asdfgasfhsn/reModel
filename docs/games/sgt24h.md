@@ -135,16 +135,30 @@ player then drops run-ahead and says so.
   a 600M-instruction coin-start run (`make bench`) fast-forwards 56.1%
   of its instructions through it, and the state hash is unchanged.
 
-## Link play (survey)
+## Link play
 
 - *Confirmed (by running it):* GAME ASSIGNMENTS has **LINK TYPE** (NOT LINK, CAR NO1 Master, CAR NO2 Slave, CAR NO3 Slave,
-  CAR NO4 Slave) and **LINK MAX** (NOT LINK while the type is NOT LINK; it shows 2 once a type is chosen; its range was not
-  explored). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM is the `S32A` kind (copies at `0x08` and `0x28`). The game changes bytes `0x19`-`0x1C`
-  of the record (and the copies at `0x39`-`0x3C`): NOT LINK `01 01 01 00`, CAR NO1 `02 00 01 00`, CAR NO2 `02 00 00 01`;
-  their meaning (LINK MAX, car number) is *unconfirmed*. The checksum field did **not** change with these, so what it covers
-  is *unknown*.
+  CAR NO4 Slave) and **LINK MAX** (NOT LINK while the type is NOT LINK; 2, 3 or 4 once a type is chosen, one press stepping
+  2 to 3 to 4 and back to 2). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM is the `S32A` kind (copies at `0x08` and `0x28`, `docs/hw/eeprom-records.md` section 3). The game changes bytes `0x19`-`0x1C`
+  of the record (and the copies `0x20` later): NOT LINK `01 01 01 00`, CAR NO1 `02 00 01 00`, CAR NO2 `02 00 00 01`, CAR NO3 `02 00 00 02`,
+  CAR NO4 `02 00 00 03`; LINK MAX at 3 and 4 makes byte `0x19` 3 and 4. So **`0x19` is LINK MAX** (the number; 1 with NOT LINK) and
+  `0x1C` the car number minus one; `0x1A` (0 once linked, 1 NOT LINK) and `0x1B` (1 for CAR NO1 the master, 0 for a slave) are *inferred*
+  from their values only.
+- *Confirmed (by running it):* **LINK MAX must equal the number of machines.** Four machines with LINK MAX 2, and two with LINK MAX 4,
+  stay on "CHECKING NETWORK NOW, Network Checking!"; with LINK MAX 2, 3 and 4 for 2, 3 and 4 machines the race comes up (POSITION 7/8 and 8/8;
+  5/6, 4/6 and 6/6; 1/4 to 4/4). `LinkPlay::node_bytes` sets it from the number of machines in the session.
 - *Confirmed (by running it):* LINK TYPE CAR NO1 Master with a board fitted gives `srallyc`'s start (the master's 1 to
   `0x1A14002`, then 1 to `0x1A14000`) and then a read of `0x1A14002` every frame (the same at boot even when not linked: the
   start check runs whatever the setting). The Z80 link board ROM `epr-18643a.7` (the one in `von` and `stcc`) is in
   this set. See `docs/hw/link-board.md` section 14.
-- *Confirmed (by running it):* in `link-run` with the game's own CAR NO1 / NO2 images and blocks of `0x380` bytes (own at `0x2000`, received from `0x2380`) two machines race in one field (POSITION 7/8 and 8/8); with the `0x1C0` layout both stay on "CHECKING NETWORK NOW, LINKED, CAR No.1 MASTER / CAR No.2 SLAVE". It writes its ID to `0x1A10001`. `docs/hw/link-board.md` section 14.5.
+- *Confirmed (by running it):* in `link-run` with the game's own CAR NO1 / NO2 images and blocks of `0x380` bytes (own at `0x2000`, received from `0x2380`) two machines race in one field; with the `0x1C0` layout both stay on "CHECKING NETWORK NOW, LINKED, CAR No.1 MASTER / CAR No.2 SLAVE". It writes its ID to `0x1A10001`. `docs/hw/link-board.md` section 14.5.
+- *Confirmed (by running it):* **the checksum.** The record's byte sum covers the 30 bytes after it; the second copy has the marker word zeroed and its own sum. The game keeps a record whose sum is wrong, and its test menu leaves the sum of the defaults in the record after a change (`docs/hw/eeprom-records.md` section 3). `romset::RecordCrc::byte_sum`.
+- *Confirmed (by running it):* **FREE PLAY is in the backup SRAM, not the EEPROM.** COIN ASSIGNMENTS (seventh row from EXIT) has COIN CHUTE 1, COIN CHUTE 2 and
+  FREE PLAY ON/OFF (the third row, three service presses from EXIT, one test press to turn it on). The EEPROM does not change with it; the
+  backup SRAM (`0x1D00000`, which reModel starts from the manifest's bytes and does not keep) differs in one byte, `0x1D00012`, 0 to 1 (the
+  game's SRAM record is marked `0xAD85` at its start; a coin chute change moves other bytes of the EEPROM instead). A link session seeds the
+  SRAM with the game's own first-boot image and that byte set (`romset::LinkPlay::free_play`, `EEPROM_BYTES`). With free play a *first* start press takes the credit (the
+  screen goes from the ranking to PUSH START BUTTON) and the second starts, so the scripted run presses start twice; without free play
+  and no coin it stays in attract.
+- *Built:* `romset::LinkPlay` for 2 to 4 machines in `link-run`, split screen and `link-net`; `make link-record-test`,
+  `link-free-play-test` and `link-net-test GAMES=sgt24h`. Not played by hand.

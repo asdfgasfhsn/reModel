@@ -1627,7 +1627,7 @@ impl Play {
                     // A network session's settings are the master's, never the player's own.
                     let (sess, p) = net.as_ref().unwrap();
                     let node = p.hosts[sess.me].nodes[0] as usize;
-                    link::load_settings(&mut machine.bus, net_play.unwrap(), p.base.as_deref(), node);
+                    link::load_settings(&mut machine.bus, net_play.unwrap(), p.base.as_deref(), node, p.nodes());
                 }
                 None => {
                     match link::play_for(game.id).filter(|_| free_play) {
@@ -1648,7 +1648,7 @@ impl Play {
                 Some(lp) => {
                     let own = std::fs::read(link_dir.join("eeprom-0.bin")).ok().or(mine.clone());
                     let base = lp.base_with_free_play(own.as_deref(), free_play);
-                    link::load_settings(&mut machine.bus, lp, base.as_deref(), 0);
+                    link::load_settings(&mut machine.bus, lp, base.as_deref(), 0, players);
                 }
             }
             let sound = if self.opts.sound {
@@ -1715,7 +1715,7 @@ impl Play {
                     let (mut m, _) = self.new_machine(&roms, game, &values, false, true);
                     let own = std::fs::read(link_dir.join(format!("eeprom-{i}.bin"))).ok().or(mine.clone());
                     let base = lp.base_with_free_play(own.as_deref(), free_play);
-                    link::load_settings(&mut m.bus, lp, base.as_deref(), i);
+                    link::load_settings(&mut m.bus, lp, base.as_deref(), i, players);
                     machines.push(m);
                     sounds.push(if self.opts.sound && values.link_audio.gains(i, players).is_some() {
                         Sound::new(&roms, (values.sfx_db, values.music_db)).ok()

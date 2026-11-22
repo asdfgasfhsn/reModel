@@ -112,14 +112,24 @@ motion; run-ahead 0 (input lag 0).
   a 600M-instruction coin-start run (`make bench`) fast-forwards 79.7%
   of its instructions through it, and the state hash is unchanged.
 
-## Link play (survey)
+## Link play
 
 - *Confirmed (by running it):* GAME ASSIGNMENTS MENU, FOUNDATIONAL SETTING has **LINK MAX** (NOT LINK, 2 LINKS, 3 LINKS,
   4 LINKS) and **LINK TYPE** (MASTER CarNo.1, SLAVE CarNo.2, CarNo.3, ...; the default is MASTER CarNo.1 with LINK MAX NOT LINK,
   so LINK MAX is what turns linking on). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM is the `S32A` kind (copies `0x34` apart at `0x08` and
-  `0x3C`): LINK MAX byte `0x36` (copy `0x6A`; 0 to 3), LINK TYPE byte `0x35` (copy `0x69`; 0, 1, 2 seen). The checksum algorithm
-  was not determined.
+  `0x3C`): LINK MAX byte `0x36` (copy `0x6A`; 0 to 3), LINK TYPE byte `0x35` (copy `0x69`; 0, 1, 2 seen). The checksum is the shifting sum
+  of `docs/hw/eeprom-records.md` section 2 (start value `0xDEBDEB00`, 50 bytes after the checksum word), confirmed against the game's own default
+  record.
 - *Confirmed (by running it):* LINK MAX 2 LINKS with a board fitted: the start check at boot and after the menu is
   0 to `0x1A14000`/`0x1A14002`, a read of `0x1A14000`, 1 to `0x1A14000` (no write to `0x1A14002` as the default
   CarNo.1 master), then a read of `0x1A14002` every frame. Jaleco's set has no link board ROM. See `docs/hw/link-board.md` section 14.
-- *Confirmed (by running it):* in `link-run` with the game's own images (LINK MAX 2 LINKS, MASTER CarNo.1 / SLAVE CarNo.2) and the `0x380` layout (as `sgt24h`) two machines race in one field; the hub warned that no node wrote 1 to `0x1A14002` as master (the game does not) and went on. `docs/hw/link-board.md` section 14.5.
+- *Confirmed (by running it):* in `link-run` with the `0x380` layout (as `sgt24h`) two, three and four machines race in one field (LINK MAX set to the
+  number of machines minus one, LINK TYPE the node's index; POSITION 3/6 to 5/6 with four). The master writes nothing to `0x1A14002`, so no node is
+  flagged as master: the hub takes node 0, the one given LINK TYPE MASTER, as the master and does not warn
+  (it did before: "not exactly one master"). `docs/hw/link-board.md` section 14.5.
+- *Confirmed (by running it):* **FREE PLAY** is the last entry of COIN ASSIGNMENTS' COIN/CREDIT SETTING list (15 entries, the default `1 COIN 1 CREDIT`;
+  the screen reads FREEPLAY). Test menu: COIN ASSIGNMENTS is the seventh row from EXIT, one service press to the setting's row,
+  **14 presses of the test button** from the default (one frame each, 40 frames apart: a longer press repeats), then EXIT, EXIT. The saved
+  record differs in byte `0x10` (0 to `0x0E`), byte `0x11` (0 to 1), the counter and the checksum. `LinkPlay::free_play`; `--free-play` starts a race from a start press.
+- *Built:* `romset::LinkPlay` for 2 to 4 machines in `link-run`, split screen and `link-net`; `make link-record-test`,
+  `link-free-play-test` and `link-net-test GAMES=overrev`. Not played by hand.

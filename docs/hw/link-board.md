@@ -1429,11 +1429,11 @@ for the menu's range) unless marked inferred.
 | `indy500` (2B) | NETWORK TYPE: EEPROM `S32A` record byte `0x1E` (copy `0x42`): 0 STAND ALONE, 1 MASTER, 2 SLAVE. CABINET ID byte `0x1F` (copy `0x43`), 0-based, 1 to 4 on the sister games. CABINET TYPE TWIN | 4 inferred (2 run) | Same start as `manxtt`; reads `0x1A10000`/`2`/`3`; blocks `0x1C0` at `0x2000`, received from `0x21C0` | **Built** (the `S32A` record's checksum is solved, `docs/hw/eeprom-records.md`; a node's record has NETWORK TYPE 1/2 and CABINET ID 0/1 in both copies) | Setting: confirmed (by running it). Linked in `link-run`, split screen and `link-net` (14.7); needs different CABINET IDs |
 | `indy500d` (2B, Deluxe, Rev A), `indy500to` (2B, older Twin) | as `indy500`, in each program's own record. `indy500to`: the same layout (R = 36, copy `0x2C`), NETWORK TYPE `0x1E`, CABINET ID `0x1F`. `indy500d`: **R = 44, the copy at `0x34`**, the checksum the same routine and start value over 42 bytes, NETWORK TYPE **`0x28`** (copy `0x54`), CABINET ID `0x29` (copy `0x55`), format word `0x0711`; `0x1E`/`0x1F` are other settings (18, 17) | 4 as `indy500` (2 and 4 run) | as `indy500` | **Built** as `indy500` (data only: `games/link_variants.rs`) | Settings and checksum: confirmed (by running it): the record romset writes equals the game's own save. Linked race: `link-run` with 2 and 4 machines (POSITION 1 to 4 of 4) and over the network (`make link-net-test GAMES="indy500d indy500to"`) |
 | `daytonas` (Saturn Ads), `daytonase` (Special Edition) | as `daytona`: the I/O board's record, LINK ID byte `0x0B`, CAR NUMBER `0x0C`, CRC-16 at 8; version byte 4 and 3 (the parent's 2) and an extra item in `daytonas` (PROMOTE SATURN) | 8 as `daytona` (2 and 8 run, POSITION 1 to 8 of 8) | as `daytona` | **Built** as `daytona` (data only) | Confirmed (by running it): both settings from the games' own GAME SYSTEM pages and the record equals the game's save; `link-net-test`. `dayton93` ('93 Edition): **none**: no LINK ID row, no access to the board in a run, two nodes ran two solo races |
-| `motoraid` (2A) | NETWORK TYPE: `S32A` byte `0x1E` (copy `0x42`): 0 / 1 MASTER / 2 SLAVE; CABINET ID byte `0x1F` (copy `0x43`): 1 to 4, cycling | 4 inferred (2 run) | as `indy500` plus a write of its ID to `0x1A10001` and `0x1A10014` | **Built** as `indy500` (data only) | Setting: confirmed (by running it). Linked in `link-run`: see 14.7 |
-| `waverunr` (2C) | NETWORK TYPE: `S32A` byte `0x1E` (copy `0x42`): 0 STAND ALONE / 1 MASTER / 2 SLAVE; CABINET ID byte `0x1F` (copy `0x43`) | 4 inferred (2 run) | as `motoraid` (reads `0x1A10012`, writes `0x1A10001` and `0x1A10014`); own block about `0xB4` bytes | **Built** as `indy500` (data only) | Setting: confirmed (by running it). Linked in `link-run`: see 14.7 |
+| `motoraid` (2A) | NETWORK TYPE: `S32A` byte `0x1E` (copy `0x42`): 0 / 1 MASTER / 2 SLAVE; CABINET ID byte `0x1F` (copy `0x43`): 1 to 4, cycling | 4 (the hub ran 2 and 4) | as `indy500` plus a write of its ID to `0x1A10001` and `0x1A10014` | **Built** as `indy500` (data only), with free play (COIN/CREDIT SETTING #27: bytes `0x10`, `0x11`, `0x15`) | Setting and free play: confirmed (by running it). Linked in `link-run` (2 and 4 machines), split screen and `link-net`: see 14.7 |
+| `waverunr` (2C) | NETWORK TYPE: `S32A` byte `0x1E` (copy `0x42`): 0 STAND ALONE / 1 MASTER / 2 SLAVE; CABINET ID byte `0x1F` (copy `0x43`) | 4 (the hub ran 2 and 4) | as `motoraid` (reads `0x1A10012`, writes `0x1A10001` and `0x1A10014`); own block about `0xB4` bytes | **Built** as `indy500` (data only), with free play (same bytes as `motoraid`) | Setting and free play: confirmed (by running it). Linked in `link-run` (2 and 4 machines), split screen and `link-net`: see 14.7 |
 | `skisuprg` (2C) | NETWORK TYPE: `S32A` byte `0x20` (copy `0x48`; the record is longer): 0 NO LINK / 1 MASTER / 2 SLAVE; CABINET ID byte `0x21` (copy `0x49`): 1 to 4 | 4 (the hub ran 2 and 4) | A **board check by read-back**: 0, 0 then 1 to `0x1A14000` and the byte read back must be 1 (bit 0 set), then 0 written and read back 0 ("NETWORK BOARD IS NOT EXIST !" otherwise); then the ordinary start (0, 0, the master 1 to `0x1A14002`, 1 to `0x1A14000`), its ID and `0x380` to `0x1A10001`/`0x1A10014`, a poll of `0x1A10000`; `0x380`-byte blocks at `0x2000`, received from `0x2380` | **Built** (section 17): a board whose `0x1A14000` reads back what was written (`LinkBoard::Latch`) | Check, start, block geometry and a race of 2 and 4 machines: confirmed (by running it) (section 17) |
-| `sgt24h` (2B) | LINK TYPE: EEPROM `S32A` record bytes `0x19`-`0x1C` (copies `0x20` later): `01 01 01 00` NOT LINK, `02 00 01 00` CAR NO1 Master, `02 00 00 01` CAR NO2 Slave; CAR NO3 and NO4 Slave also offered. LINK MAX (NOT LINK until a type is chosen, then 2) | 4 (LINK TYPE); 2 run | Same registers; writes its ID to `0x1A10001`; blocks of **`0x380`** (own `0x2000`-`0x237C`, received from `0x2380`); about 50 reads of `0x1A14002` a frame. Jaleco: the set holds the Z80 link board ROM `epr-18643a.7` | **Settings and data**: the `0x380` layout in `LinkPlay`, the `S32A` record per node | Setting: confirmed (by running it). Linked in `link-run` with `block 0x380, rx 0x2380`: two cars in one race (confirmed (by running it)); byte meanings and LINK MAX range unconfirmed |
-| `overrev` (2C), `overrevb` (2B) | GAME ASSIGNMENTS MENU, FOUNDATIONAL SETTING: LINK MAX byte `0x36` (copy `0x6A`): 0 NOT LINK, 1 2 LINKS, 2 3 LINKS, 3 4 LINKS; LINK TYPE byte `0x35` (copy `0x69`): 0 MASTER CarNo.1 (the default), 1 SLAVE CarNo.2, 2 CarNo.3 ... (`S32A` record). LINK MAX is what turns it on | 4 (menu); 2 run | The `sgt24h` family: reads `0x1A10002`/`3`, writes `0x1A10001`, blocks of `0x380` (own `0x2000`, received from `0x2380`); the master does **not** write `0x1A14002` (the hub warned "not exactly one master" and went on). Jaleco: no link board ROM in the set | **Settings and data** (as `sgt24h`) | Setting: confirmed (by running it). `overrev` linked in `link-run` with the `0x380` layout: both nodes in one race (confirmed (by running it)); `overrevb` only the LINK MAX byte checked |
+| `sgt24h` (2B) | LINK TYPE and LINK MAX: EEPROM `S32A` record bytes `0x19`-`0x1C` (copies `0x20` later): `0x19` LINK MAX (the number, 2 to 4; 1 NOT LINK), `0x1A` 0 once linked (1 NOT LINK), `0x1B` 1 for CAR NO1 the master (0 slaves), `0x1C` the car number minus one (CAR NO1 to NO4 = 0 to 3). **LINK MAX must equal the number of machines** | 4 (LINK TYPE and LINK MAX); the hub ran 2, 3 and 4 | Same registers; writes its ID to `0x1A10001`; blocks of **`0x380`** (own `0x2000`-`0x237C`, received from `0x2380`); about 50 reads of `0x1A14002` a frame. Jaleco: the set holds the Z80 link board ROM `epr-18643a.7` | **Built** (data: the `0x380` layout, the record with its byte-sum checksum and marker copy, `node_bytes` for LINK MAX), with free play from the backup SRAM (14.7) | Setting, LINK MAX and free play: confirmed (by running it); the meaning of bytes `0x1A` and `0x1B` is inferred from their values |
+| `overrev` (2C), `overrevb` (2B) | GAME ASSIGNMENTS MENU, FOUNDATIONAL SETTING: LINK MAX byte `0x36` (copy `0x6A`): 0 NOT LINK, 1 2 LINKS, 2 3 LINKS, 3 4 LINKS; LINK TYPE byte `0x35` (copy `0x69`): 0 MASTER CarNo.1 (the default), 1 SLAVE CarNo.2, 2 CarNo.3 ... (`S32A` record, 52 bytes). LINK MAX is what turns it on; it is set to the number of machines minus one | 4 (menu); the hub ran 2, 3 and 4 (`overrev`) | The `sgt24h` family: reads `0x1A10002`/`3`, writes `0x1A10001`, blocks of `0x380` (own `0x2000`, received from `0x2380`); the master does **not** write `0x1A14002` (the hub takes node 0 as the master then, without a warning). Jaleco: no link board ROM in the set | **Built** (data, as `sgt24h`; `overrevb` is `VariantLink::Parent`, its record being `overrev`'s byte for byte), with free play | Setting and free play: confirmed (by running it); `overrevb`: record equal, linked in `link-run` and free play (14.7) |
 | `dynabb97` (2B) | none: GAME ASSIGNMENTS has GAME DIFFICULTY, ADVERTISE SOUND, CABINET TYPE (VS = two-player), FAVORITE, INNINGS | 1 | none: no access to `0x1A10000`-`0x1A14002` | not applicable | confirmed (by running it) |
 | `desert` (Model 2) | none: GAME SYSTEM has COIN/CREDIT, COUNTRY, ADVERTISE SOUND, DIFFICULTY | 1 | none | not applicable | confirmed (by running it) |
 | `srallyc`, `daytona` | built (sections 2 to 12) | 4, 8 | | done | |
@@ -1520,9 +1520,9 @@ both, 4,500 frames, pictures kept out of the tree.
 - **`overrev`**: the same, with the `0x380` layout, after the first run
   with `0x1C0` left one machine racing alone and the other on ROUND 1. The master
   writes nothing to `0x1A14002`, so the hub's "master first" rule had no
-  master to find; node 0 was taken as the first and the ring was right.
-- Not run in this survey: `von`, `stcc` and `skisuprg` (they were taken in sections 15 to 17),
-  `overrevb`.
+  master to find; node 0 was taken as the first and the ring was right. The hub now does that on purpose: with no node flagged as
+  master, node 0 (the one given the master's role) is the master, and the warning is for more than one only.
+- Not run in this survey: `von`, `stcc` and `skisuprg` (they were taken in sections 15 to 17).
 
 Two record families are visible in the traces (registers the same, shared RAM
 different): **`0x1C0` blocks at `0x2000`, received from `0x21C0`** (`srallyc`,
@@ -1581,7 +1581,9 @@ Built (data in `crates/romset/src/games/link.rs`, all *confirmed (by running it)
 |---|---|---|---|
 | `manxtt`, `manxttc` | `link-run` (2 to 4 machines), split screen, `link-net` | COIN/CREDIT SETTING #27 (bytes `0x04`, `0x24`, `0x2E` of the record) | `make link-net-test GAMES=manxtt`: clean D=2 and 5% loss D=6 hashes equal `link-run`'s, players leaving (2 and 3 hosts), settings, desync, mDNS; `link-free-play-test` |
 | `indy500` | `link-run` (2 machines run; the menu range is 4, *inferred*), split screen, `link-net` | COIN/CREDIT SETTING #27 (bytes `0x10`, `0x11`, `0x15`) | `link-net-test GAMES=indy500` and `link-free-play-test GAMES=indy500`; `link-record-test` |
-| `motoraid`, `waverunr` | `link-run` (2 machines), split screen | not looked for | `link-record-test`; a race in `link-run`: Motor Raid shows RIVAL 2 and RIVAL 1 and POSITION 10 and 9 of 10, Wave Runner 10th/10 and 9th/10 with 2nd/2 and 1st/2 on the link pair; not run over the network |
+| `motoraid`, `waverunr` | `link-run` (2 and 4 machines), split screen, `link-net` | COIN/CREDIT SETTING #27 (bytes `0x10`, `0x11`, `0x15`; `motoraid` from #12 in 8 presses, `waverunr` from #17 in 6) | `link-net-test` and `link-free-play-test` for both; `link-record-test`; a race in `link-run`: Motor Raid shows RIVAL 4 to 1 and POSITION 10 to 7 of 10 with four, Wave Runner 1st/4 to 4th/4 on the link group |
+| `sgt24h` | `link-run` (2 to 4 machines), split screen, `link-net` | FREE PLAY ON in the **backup SRAM** (byte `0x12`), seeded with the game's first-boot SRAM image | `link-net-test GAMES=sgt24h`, `link-free-play-test`, `link-record-test`; two, three and four cars in one race |
+| `overrev`, `overrevb` | `link-run` (2 to 4 machines), split screen, `link-net` | COIN/CREDIT SETTING list's last entry FREEPLAY (bytes `0x10` 0 to `0x0E`, `0x11` 0 to 1; 14 presses) | `link-net-test GAMES=overrev`, `link-free-play-test` and `link-record-test` for both; `overrevb` is `VariantLink::Parent` (its default record equals `overrev`'s byte for byte) |
 
 - **The role bytes.** `manxtt`: byte `0x0B` 1 / 2 in the `srallyc` record kind (a
   CCITT checksum). `indy500`, `motoraid` and `waverunr`: NETWORK TYPE
@@ -1593,21 +1595,26 @@ Built (data in `crates/romset/src/games/link.rs`, all *confirmed (by running it)
   check (`make link-record-test`). The records are the ones the game's own test
   menu saves at the defaults (an `eeprom.bin` of a run that held TEST and chose
   EXIT).
+- **`sgt24h` and `overrev`: LINK MAX is the number of machines.** `sgt24h`'s byte `0x19` and `overrev`'s byte `0x36` (that minus one) must match the machines in the session or
+  the game waits at CHECKING NETWORK; `romset::LinkPlay::node_bytes` sets it from the node count (also in a network session, where the
+  settings hash covers it). `sgt24h`'s record has a byte-sum checksum and a second copy with its marker word zeroed (`RecordCrc::byte_sum`).
 - **Blocks.** `manxtt`, `indy500`, `motoraid` and `waverunr` use the `0x1C0`
   blocks at `0x2000`, received from `0x21C0`, as `srallyc`, with node IDs 1-based.
   The players-leaving ghost's kept bytes are `srallyc`'s for all four
   (*unconfirmed*: the bytes were not mapped; the cases of `link-net-test`
   agree with `link-run --leave` whatever they are, but how well a leaver's car
   is parked was only looked at for `manxtt` and `indy500`, where the race went on).
+  For `sgt24h` and `overrev` (`0x380` blocks) only the first four bytes are kept (*unconfirmed*: the layout of their blocks was not mapped, so a leaver's car
+  may not be parked well; the `link-net-test` cases agree with `link-run --leave`).
+- **`sgt24h`'s free play is not in the EEPROM.** Its COIN ASSIGNMENTS page has FREE PLAY ON/OFF, which changes one byte of the backup SRAM (`0x1D00012`),
+  not the settings record. A session's settings image is the EEPROM's 128 bytes followed by the SRAM image (`romset::EEPROM_BYTES`,
+  `Model2Bus::load_settings_image`), so the `FreePlayByte` for it is at offset `0x92`. The first start press takes the credit and the second starts.
 - **Free play.** Found as for `srallyc` (`docs/games/manxtt.md`,
   `docs/games/indy500.md`): the test menu's COIN ASSIGNMENTS page, the setting's
   number stepped to FREE PLAY, the menu left, the two `eeprom.bin` files
   compared.
 
-Not built in this step: `sgt24h` and `overrev`/`overrevb` (the
-`0x380`-byte block layout is `LinkPlay` data, but their records differ: a
-52-byte record in `overrev`, a byte-sum record in `sgt24h`; the checksum
-is known, section 14.2). `von`, `stcc` (and `stcca`, `stccb`) and `skisuprg` were built
+Not built in this step: `von`, `stcc` (and `stcca`, `stccb`) and `skisuprg`, which were built
 afterwards: sections 15 to 17.
 
 ## 15. Virtual-On (`von`, `vonj`): two machines
@@ -1658,7 +1665,7 @@ the player's own von settings are never touched.
 |---|---|
 | 426 | writes 0 to `0x1A14000` and `0x1A14002`; waits for bit 7 of `0x1A14002` to be clear, reading it once a frame |
 | 487 | writes 1 to `0x1A14000` (the board is started); the hub's per-frame flip of bit 7 (section 11) is what both of its waits see (busy clear, then set), so the hub needed no change for it |
-| 489 | writes its own ID to `0x1A10001` (**1 for the MASTER, 2 for the SLAVE**: it never writes `0x1A14002`, so the hub's "not exactly one master" warning appears and node 0 is first), reads `0x1A10012` (the hub gives 0) and writes half of it to `0x1A10014` |
+| 489 | writes its own ID to `0x1A10001` (**1 for the MASTER, 2 for the SLAVE**: it never writes `0x1A14002`, so node 0 is first (the hub takes it as the master and no longer warns)), reads `0x1A10012` (the hub gives 0) and writes half of it to `0x1A10014` |
 | 519 | polls `0x1A10000` until 1; reads the total at `0x1A10003` (2) and its ID at `0x1A10002` (the same 1 or 2); any other total is "Illegal Nodes" |
 
 ### 15.3 The block
@@ -1760,8 +1767,7 @@ the counter and the checksum.
 | 633 | writes its ID to `0x1A10001`, **`0x0E00` to `0x1A10012` and `0x01C0` to `0x1A10014`** (*inferred*: the game tells the board the size of the received area, eight blocks, and of one block) |
 | 694-815 | polls `0x1A10000` for 1; then reads `0x1A10003` and `0x1A10002` |
 
-The wording is `von`'s ("THIS IS MASTER SITE"). It does not write `0x1A14002` as a master either; the hub warns and takes
-node 0 as the first.
+The wording is `von`'s ("THIS IS MASTER SITE"). It does not write `0x1A14002` as a master either; the hub takes node 0 as the master.
 
 ### 16.3 The block, and the races
 

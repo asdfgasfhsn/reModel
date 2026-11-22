@@ -131,6 +131,9 @@ shading (no pictures recorded as better); smooth motion; run-ahead 0
 - *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start, then a read of
   `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
 - *Confirmed (by running it):* two machines with the game's own MASTER / SLAVE (CABINET ID 1 / 2) images link in `link-run` (the HUD shows 1st/2 and 2nd/2 under the position). `docs/hw/link-board.md` section 14.5.
-- *Built:* `romset::LinkPlay` as `indy500`'s (`docs/hw/eeprom-records.md`: the same routine and start value, 36-byte records). Two machines link
-  in `link-run` and race (POSITION 10th/10 and 9th/10 with the 2nd/2 and 1st/2 of the link pair) and in the split-screen player. No free play data
-  (not looked for); not run over the network.
+- *Confirmed (by running it):* **FREE PLAY** is COIN ASSIGNMENTS' COIN/CREDIT SETTING #27 as in `motoraid`: the eighth row from EXIT, the setting starts at #17
+  (3 coins 1 credit), **6 presses of the test button** (one frame each, 40 frames apart) reach it. The saved record differs from the default in byte `0x10`
+  `0x10` to `0x1A`, byte `0x11` `0x03` to `0x01`, byte `0x15` `0x00` to `0x01`, the counter and the checksum. In `romset::LinkPlay::free_play`.
+- *Built:* `romset::LinkPlay` as `indy500`'s (`docs/hw/eeprom-records.md`: the same routine and start value, 36-byte records), with free play. Two and four
+  machines link in `link-run` and race (the link pair's 1st/4 to 4th/4 with four), in the split-screen player and over the network
+  (`make link-net-test GAMES=waverunr`, `link-free-play-test`, `link-record-test`). Not played by hand.

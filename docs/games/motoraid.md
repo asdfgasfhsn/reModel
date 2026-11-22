@@ -114,6 +114,11 @@ frame 2,900 of a race) and the brake; the punch shows 1 frame. As for
 - *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start (0, 0, read, master 1 to
   `0x1A14002`, 1 to `0x1A14000`) and then a read of `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
 - *Confirmed (by running it):* two machines with the game's own MASTER / SLAVE (CABINET ID 1 / 2) images link in `link-run` (the HUD shows the rival); a race was not checked. `docs/hw/link-board.md` section 14.5.
-- *Built:* `romset::LinkPlay` as `indy500`'s (`docs/hw/eeprom-records.md` for the record and its checksum, found by reading the game's code: the same
-  routine and start value, 36-byte records). Two machines link in `link-run` and race (the RIVAL marker 1 / 2, POSITION 10 and 9 of 10 in the
-  scripted run's first race) and in the split-screen player. No free play data (not looked for); not run over the network.
+- *Confirmed (by running it):* **FREE PLAY** is COIN ASSIGNMENTS' COIN/CREDIT SETTING #27, as in `indy500`. Test menu: COIN ASSIGNMENTS is the eighth row
+  (eight service presses from EXIT), the setting starts at #12 (2 coins 1 credit), one service press to the setting's row, and **8 presses of the test button**
+  (one frame each, 40 frames apart: a longer press repeats, and the numbers it steps through are not consecutive: #15, #17, #18, #19, #21, #23, #25, #27)
+  reach #27. Leaving through EXIT (the game saves) and comparing with a run that did not change it: byte `0x10` `0x0B` to `0x1A` (the setting, 0-based), byte `0x11`
+  `0x02` to `0x01` and byte `0x15` `0x00` to `0x01`, the counter and the checksum, in both copies. In `romset::LinkPlay::free_play`.
+- *Built:* `romset::LinkPlay` as `indy500`'s (`docs/hw/eeprom-records.md`: the same routine and start value, 36-byte records), with free play.
+  Two and four machines link in `link-run` and race (the RIVAL marker, POSITION 10 to 7 of 10 with four), in the split-screen player and over the network
+  (`make link-net-test GAMES=motoraid`, `link-free-play-test`, `link-record-test`). Not played by hand.

@@ -54,10 +54,15 @@ pub fn rom_hash(roms: &romset::RomSet) -> u64 {
 /// A hash of the settings image node `node` of a game runs with (`base`: the settings the
 /// session starts from; `extra`: bytes set on top, a test): what a host checks against
 /// what the master sent.
-pub fn settings_hash(play: &romset::LinkPlay, base: Option<&[u8]>, node: usize, extra: &[(usize, u8)]) -> u64 {
+pub fn settings_hash(
+    play: &romset::LinkPlay,
+    base: Option<&[u8]>,
+    node: usize,
+    nodes: usize,
+    extra: &[(usize, u8)],
+) -> u64 {
     let role = *play.roles.get(node).or(play.roles.last()).unwrap();
-    let set: Vec<(usize, u8)> =
-        play.car_off.map(|o| (o, node as u8)).into_iter().chain(extra.iter().copied()).collect();
+    let set = play.node_set(node, nodes, extra);
     fnv(FNV_START, &play.settings.image(base, play.role_off, role, &set))
 }
 

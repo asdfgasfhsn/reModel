@@ -258,7 +258,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
         base_file
     };
     let hash_for = |p: &linknet::Params, h: usize| {
-        linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, &[])
+        linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, p.nodes(), &[])
     };
 
     // Setup: the lobby, the agreement, the start.
@@ -331,7 +331,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
                     // This host's settings from the master's, as they will be run (with any test tampering), and their hash.
                     let node = p.hosts[join.index()].nodes[0] as usize;
                     let extra: Vec<(usize, u8)> = a.tamper.into_iter().collect();
-                    join.accept(linknet::settings_hash(play, p.base.as_deref(), node, &extra));
+                    join.accept(linknet::settings_hash(play, p.base.as_deref(), node, p.nodes(), &extra));
                 }
                 JoinStatus::Ready(s, p) => break (*s, p),
                 JoinStatus::Failed(e) => return Err(e),
@@ -358,7 +358,7 @@ fn run_session(
     let delay = params.delay as usize;
     let role = *play.roles.get(node).or(play.roles.last()).unwrap();
     let extra: Vec<(usize, u8)> = a.tamper.into_iter().collect();
-    let mut m = node_machine(roms, o, play, node, role, params.base.as_deref(), &extra);
+    let mut m = node_machine(roms, o, play, node, nodes, role, params.base.as_deref(), &extra);
     let script = model2::input::InputScript::parse(o.input.as_deref().unwrap_or(""), &roms.game.controls)
         .map_err(|e| format!("input: {e}"))?;
     let hub = LinkHub::for_game(nodes, delay, play);

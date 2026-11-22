@@ -23,6 +23,17 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   "Steering smoothing"). `remodel-play --stick-log FILE` (`make stick-log`)
   logs what a pad's sticks read, raw, tuned and smoothed, a line a frame, and
   prints how noisy each is at rest, to measure a real pad.
+- Link play for `sgt24h` (Super GT 24h) and `overrev` / `overrevb` (Over Rev), two to
+  four machines in `link-run`, the split-screen player and over the network, and network
+  play and free play for `motoraid` and `waverunr`. LINK MAX (`sgt24h` byte `0x19`,
+  `overrev` byte `0x36`) must equal the number of machines, so a game's record can now
+  depend on the session's node count (`LinkPlay::node_bytes`). `sgt24h`'s record has a
+  byte-sum checksum and a second copy with its marker zeroed, and its FREE PLAY is a
+  byte of the backup SRAM, so a settings image can now carry the SRAM after the EEPROM's
+  128 bytes. A game whose master never writes `0x1A14002` (`overrev`) no longer makes the
+  hub warn: node 0 is the master then. Free play settings found for `motoraid`,
+  `waverunr` and `overrev`. `make link-net-test`, `link-free-play-test` and
+  `link-record-test` cover the new games.
 - Linked play for three more games: Virtual-On (`von`, with `vonj`) links two
   machines in a one-against-one match, Sega Touring Car Championship (`stcc`,
   with `stcca` and `stccb`) up to seven machines in one race, and Ski Super G

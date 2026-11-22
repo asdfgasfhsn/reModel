@@ -21,8 +21,9 @@ use std::path::PathBuf;
 
 /// The games the player splits the screen for, and the most machines on
 /// one screen (the layout's quadrants).
-const SPLIT_GAMES: &[&str] =
-    &["srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "skisuprg"];
+const SPLIT_GAMES: &[&str] = &[
+    "srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "skisuprg", "sgt24h", "overrev",
+];
 pub const MAX_ON_SCREEN: usize = 4;
 
 /// The link data of `id` if it can be played linked on one screen.
@@ -51,9 +52,15 @@ pub fn max_players(play: &romset::LinkPlay) -> usize {
 /// Machine `i`'s settings image (`base`: the settings the session starts from, see
 /// `romset::LinkPlay::base_with_free_play`) with its role and car number set, loaded into
 /// its bus where the game keeps them.
-pub fn load_settings(bus: &mut model2::bus::Model2Bus, play: &romset::LinkPlay, base: Option<&[u8]>, i: usize) {
+pub fn load_settings(
+    bus: &mut model2::bus::Model2Bus,
+    play: &romset::LinkPlay,
+    base: Option<&[u8]>,
+    i: usize,
+    nodes: usize,
+) {
     let role = *play.roles.get(i).or(play.roles.last()).unwrap();
-    let car: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().collect();
+    let car = play.node_set(i, nodes, &[]);
     let image = play.settings.image(base, play.role_off, role, &car);
     bus.settings_load(play.settings.store, &image);
     let kind = bus.link.as_ref().map_or(romset::LinkBoard::Idle, |l| l.kind());
@@ -549,6 +556,7 @@ mod tests {
             "daytonase",
             "indy500d",
             "indy500to",
+            "overrevb",
         ] {
             assert!(play_for(id).is_some(), "{id}");
         }

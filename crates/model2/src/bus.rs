@@ -1479,7 +1479,14 @@ impl Model2Bus {
     /// Load a settings image where the game keeps its settings (`store`).
     pub fn settings_load(&mut self, store: romset::SettingsStore, image: &[u8]) {
         match store {
-            romset::SettingsStore::Eeprom => self.eeprom.load(image),
+            romset::SettingsStore::Eeprom => {
+                self.eeprom.load(image);
+                // An image longer than the EEPROM carries the backup SRAM's first bytes after it (`sgt24h`).
+                if let Some(sram) = image.get(romset::EEPROM_BYTES..) {
+                    let n = sram.len().min(self.mems[8].data.len());
+                    self.mems[8].data[..n].copy_from_slice(&sram[..n]);
+                }
+            }
             romset::SettingsStore::IoBoard => self.io_store_load(image),
             romset::SettingsStore::BackupRam => self.mems[8].data[..image.len()].copy_from_slice(image),
         }

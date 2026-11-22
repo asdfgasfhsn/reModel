@@ -113,12 +113,29 @@ record B from record A after the checksum.
 Same header (magic, a format word, zero) and two copies, but the record
 is 32 bytes (copies at `0x08` and `0x28`) and the checksum word is the
 plain sum, modulo 65,536, of the 30 bytes after it. The first copy carries a
-marker word `0xAD85` (bytes `85 AD`) at `0x10`, which the game tests at start
-(a record without it is rebuilt from the defaults); the second copy has zeros
-there and its own sum, so the copies are *not* identical here. *Confirmed*
-against an image the game wrote (both sums). *Not yet built*: `sgt24h` needs the
-`0x380` block layout as well (`docs/hw/link-board.md` section 14.6), and `RecordCrc`
-would need the second copy to be built (marker out) rather than copied.
+marker word `0xAD85` (bytes `85 AD`) at `0x10`; the second copy has zeros
+there and its own sum, so the copies are *not* identical here (the game writes
+the second copy that way when it saves at boot). *Confirmed* against images the
+game wrote (both sums). `romset::RecordCrc::byte_sum` builds it: the sum, the copy with the
+marker word zeroed, the copy's own sum.
+
+What the game does with a record (*confirmed (by running it)*, from images fed
+to a fresh boot and the GAME ASSIGNMENTS page read back):
+
+- **The marker decides.** A record whose first copy has no marker is rebuilt from the
+  defaults (both copies written). With the marker in the first copy and none in the second,
+  the settings are kept and the game saves again at boot, with both sums right.
+- **The sum is not what it checks at start.** A first copy with its sum zeroed was kept as it was
+  (LINK TYPE CAR NO4 still read back). Whether a sum is checked anywhere else is *unconfirmed*.
+- **The test menu's own save does not redo the sum.** After LINK TYPE or COIN settings are
+  changed, the saved first copy still carries the sum of the defaults, and the second copy is a
+  copy of the first with its marker (so `link-settings` reports a changed image's sums as differing; the
+  defaults' first save is right). The sums in an image `LinkSettings::image` writes are right.
+
+`sgt24h` keeps its LINK TYPE and LINK MAX here (bytes `0x19`-`0x1C`, `docs/games/sgt24h.md`) but its coin
+settings, FREE PLAY included, in the backup SRAM, which reModel does not keep between runs
+(`docs/games/sgt24h.md`); a link session seeds the SRAM with the game's own first-boot image, the
+settings image being the EEPROM's 128 bytes followed by that SRAM image (`romset::EEPROM_BYTES`).
 
 ## 4. The `SEGASTCb` record (`stcc`, `stcca`, `stccb`)
 

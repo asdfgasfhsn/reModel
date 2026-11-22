@@ -105,6 +105,10 @@ pub struct LinkPlay {
     /// What the game's own FREE PLAY coin setting changes in the record, if
     /// found (`docs/games/<set>.md`); a game without it has no free play.
     pub free_play: Option<&'static [FreePlayByte]>,
+    /// Bytes of a linked node's record that depend on the node and the number of nodes in the
+    /// session, beyond the role and `car_off` (`sgt24h`'s LINK MAX must equal the number of
+    /// machines): `(node, nodes)` gives (offset, value) pairs.
+    pub node_bytes: Option<fn(usize, usize) -> Vec<(usize, u8)>>,
 }
 
 /// One byte of the settings record the COIN ASSIGNMENT page's FREE PLAY
@@ -118,6 +122,17 @@ pub struct FreePlayByte {
 }
 
 impl LinkPlay {
+    /// The bytes besides the role that make node `node` of `nodes` what it is: its ID byte
+    /// (`car_off`, the node's index) and what [`LinkPlay::node_bytes`] says; `extra` last (a test's).
+    pub fn node_set(&self, node: usize, nodes: usize, extra: &[(usize, u8)]) -> Vec<(usize, u8)> {
+        let mut set: Vec<(usize, u8)> = self.car_off.map(|o| (o, node as u8)).into_iter().collect();
+        if let Some(f) = self.node_bytes {
+            set.extend(f(node, nodes));
+        }
+        set.extend_from_slice(extra);
+        set
+    }
+
     /// The bytes that put the game on free play (`on`), as `set` bytes for
     /// [`LinkSettings::image`]; none if the game has no free play data. With
     /// `on` false and a base that already holds every free play byte (a
@@ -165,6 +180,10 @@ impl LinkPlay {
         }
     }
 }
+
+/// The EEPROM's size in bytes. A settings image longer than this carries, from here on, the first
+/// bytes of the backup SRAM (`sgt24h`, whose coin settings are there).
+pub const EEPROM_BYTES: usize = 128;
 
 /// The record of operator settings a game keeps, and where.
 #[derive(Clone, Copy, Debug)]
@@ -228,19 +247,47 @@ pub struct RecordCrc {
     pub init: u32,
     pub complement: bool,
     pub copy: Option<usize>,
+    /// Offset in the record of a 2-byte marker the second copy has zeroed (`sgt24h`: the
+    /// first copy carries `0xAD85`, the copy zeros, each with its own checksum).
+    pub copy_clear: Option<usize>,
 }
 
 impl RecordCrc {
     /// A CCITT checksum (the `srallyc` kind), no second copy.
     pub const fn ccitt(at: usize, from: usize, to: usize, init: u16, complement: bool) -> Self {
-        RecordCrc { kind: SumKind::Ccitt, at, from, to, init: init as u32, complement, copy: None }
+        RecordCrc { kind: SumKind::Ccitt, at, from, to, init: init as u32, complement, copy: None, copy_clear: None }
     }
 
     /// An "S32A" record's checksum (`docs/hw/eeprom-records.md`): the record is `size` bytes
     /// from `at` (checksum word first) and repeated right after; `len` bytes after the
     /// checksum word's two are fed to the shifting sum, started at `init`.
     pub const fn s32a(at: usize, size: usize, len: usize, init: u32) -> Self {
-        RecordCrc { kind: SumKind::S32a, at, from: at + 2, to: at + 2 + len, init, complement: false, copy: Some(size) }
+        RecordCrc {
+            kind: SumKind::S32a,
+            at,
+            from: at + 2,
+            to: at + 2 + len,
+            init,
+            complement: false,
+            copy: Some(size),
+            copy_clear: None,
+        }
+    }
+
+    /// `sgt24h`'s record: the byte sum of the `len` bytes after the checksum word, the record
+    /// `size` bytes from `at`, repeated right after with the 2 bytes `clear` into the record
+    /// zeroed (`docs/hw/eeprom-records.md` section 3).
+    pub const fn byte_sum(at: usize, size: usize, len: usize, clear: usize) -> Self {
+        RecordCrc {
+            kind: SumKind::ByteSum,
+            at,
+            from: at + 2,
+            to: at + 2 + len,
+            init: 0,
+            complement: false,
+            copy: Some(size),
+            copy_clear: Some(clear),
+        }
     }
 
     /// `von`'s settings checksum ([`SumKind::Table`]): the word at `at` covers `from..to`; the
@@ -320,6 +367,14 @@ impl RecordCrc {
             // (`von`'s) is copied up to the image's end.
             let len = n.min(image.len().saturating_sub(self.at + n));
             image.copy_within(self.at..self.at + len, self.at + n);
+            if let Some(m) = self.copy_clear {
+                image[self.at + n + m] = 0;
+                image[self.at + n + m + 1] = 0;
+                let me = RecordCrc { at: self.at + n, from: self.from + n, to: self.to + n, ..*self };
+                let c = me.compute(image);
+                image[me.at] = c as u8;
+                image[me.at + 1] = (c >> 8) as u8;
+            }
         }
     }
 }
@@ -330,9 +385,11 @@ impl LinkSettings {
     /// checksum fixed.
     pub fn image(&self, base: Option<&[u8]>, role_off: usize, role: u8, set: &[(usize, u8)]) -> Vec<u8> {
         let mut e = vec![self.fill; self.size];
-        match base {
-            Some(b) => e[..b.len().min(self.size)].copy_from_slice(&b[..b.len().min(self.size)]),
-            None => e[..self.record.len()].copy_from_slice(self.record),
+        // The record's own bytes under whatever the settings file has (its EEPROM only: a file
+        // shorter than the image leaves the rest, the backup SRAM of `sgt24h`, as the record has it).
+        e[..self.record.len()].copy_from_slice(self.record);
+        if let Some(b) = base {
+            e[..b.len().min(self.size)].copy_from_slice(&b[..b.len().min(self.size)]);
         }
         e[role_off] = role;
         for &(o, v) in set {

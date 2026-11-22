@@ -3,7 +3,7 @@
 #
 #   usage: tools/link-record-test.sh REMODEL ROM_DIR OUT_DIR [GAME...]
 #
-# For each game (manxtt, indy500, motoraid, waverunr by default; also von, stcc, stcca, stccb and
+# For each game (manxtt, indy500, motoraid, waverunr, sgt24h, overrev, overrevb by default; also von, stcc, stcca, stccb and
 # skisuprg; docs/hw/eeprom-records.md):
 #   written   a run from an empty EEPROM through the game's own test menu (TEST held, then EXIT)
 #             makes the game save its settings record; `remodel link-settings` recomputes the
@@ -30,7 +30,7 @@
 # Scratch output stays under OUT_DIR.
 set -u
 BIN=$1; ROM=$2; OUT=$3; shift 3
-GAMES=${*:-manxtt indy500 motoraid waverunr}
+GAMES=${*:-manxtt indy500 motoraid waverunr sgt24h overrev overrevb}
 mkdir -p "$OUT"
 fail=0
 # pr NAME START COUNT GAP [LEN]: COUNT presses of an input, GAP frames apart, each held LEN (3) frames.
@@ -86,7 +86,12 @@ for game in $GAMES; do
 	for i in 0 1; do
 		want=$(echo $roles | cut -d' ' -f$((i + 1)))
 		msg=$("$cap" "$BIN" --game "$game" --rom "$ROM" link-settings "$d/node/eeprom-$i.bin" 2>&1) || good=0
-		[[ $msg =~ "role byte "0x[0-9a-f]+" = "$want($|,) ]] || good=0
+		case $game in
+		# Their role byte is not the node number plus one (sgt24h: the master flag; overrev: LINK MAX,
+		# the same for every node): the ID byte, the node's index, is what tells the nodes apart.
+		sgt24h | overrev | overrevb) [[ $msg =~ "ID byte "0x[0-9a-f]+" = "$i($|,) ]] || good=0 ;;
+		*) [[ $msg =~ "role byte "0x[0-9a-f]+" = "$want($|,) ]] || good=0
+		esac
 		detail="$detail node $i: ${msg#*checksums ok, };"
 	done
 	if [ $good = 1 ]; then ok "$game node" "$detail"; else bad "$game node" "$detail"; fi
