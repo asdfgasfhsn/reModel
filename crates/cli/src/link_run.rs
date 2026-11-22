@@ -378,7 +378,7 @@ pub(crate) fn settings(o: &Opts, roms: &RomSet) -> ExitCode {
             let car = play.car_off.map_or(String::new(), |c| format!(", ID byte {:#x} = {}", c, image[c]));
             // Whether the record is on the game's FREE PLAY setting, as the game's own save wrote it.
             let free = match play.free_play {
-                Some(fp) if fp.iter().all(|b| image[b.at] == b.on) => ", free play",
+                Some(fp) if fp.iter().all(|b| image.get(b.at) == Some(&b.on)) => ", free play",
                 _ => "",
             };
             println!(
