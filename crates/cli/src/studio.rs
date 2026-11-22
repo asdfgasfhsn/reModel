@@ -10,6 +10,8 @@
 mod art;
 #[path = "studio_gates.rs"]
 mod asset_gates;
+#[path = "studio_bundle.rs"]
+mod bundle;
 #[path = "studio_project.rs"]
 mod project_cmd;
 #[path = "studio_regions.rs"]

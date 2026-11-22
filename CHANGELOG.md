@@ -26,6 +26,16 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   picture bit for bit. Not built: `filter`, `colour`, `@category`, the
   other overlays, `asset set draw=`.
 
+- Context bundles (uplift item 7): `remodel asset bundle ID` (`make
+  asset-bundle`) writes an agent's whole briefing for one asset to
+  `cache/bundles/ID/` in a project: `bundle.json` (identity and artwork with
+  its colourings and colour ramps, size, wrap, cut-out, where it shows in the
+  texture map's frames, status, provenance, gates and the output rule), the
+  original, a mask of the texels that ever show and two crops of it in
+  context with everything else dimmed. `asset show ID` is the same answer
+  with no pictures. `ID` is a name, a 16-digit key or a slug; no ROM, no GPU,
+  0.3 to 1.0 s on Top Skater, `vf2` and Daytona. `variants.png`, `tiled.png`,
+  `brief.txt` and scenes with boxes in game pixels are not built.
 - Projects (uplift item 6): a studio workspace is a project that survives
   hand-over. `remodel project init` (`make project-init`) brings a workspace
   up to the manifest, or imports one (`--from-studio DIR`: private binaries,

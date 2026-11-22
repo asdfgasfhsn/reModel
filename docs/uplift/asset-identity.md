@@ -7,7 +7,7 @@ colour ramp in the catalogue, `fixed` and `baked`, `studio artworks` and
 documentation now: [../uplift-studio.md](../uplift-studio.md), "Artworks",
 and [../texture-packs.md](../texture-packs.md), "Artwork images". What is
 left here is not built: names, links, flags, the ROM anchor, `follow`,
-palette packs, context bundles and `pack rekey`. What was tried is in
+palette packs, the rest of the context bundle (below) and `pack rekey`. What was tried is in
 "Evidence" (spike code is on unmerged branches, not for merging as it
 stands).
 
@@ -215,32 +215,28 @@ ramp art:<surface>  colour=<n>  from kit-away.ramp
 - Elect each artwork's picture by most-used look, as the dump does.
 - Store the upload's ROM address per artwork, and the flags above.
 
-### The context bundle
+### The context bundle: what is left
 
-Everything needed to repaint exactly one asset, in one small folder.
-`asset bundle ID` writes:
+`asset bundle` and `asset show` are built (2026-11-23,
+[../uplift-studio.md](../uplift-studio.md), "Context bundles"): identity,
+colourings and ramps, size, wrap, where it shows in the map's frames,
+status and gates, the original, a mask and two crops. Not built:
 
-| File | Holds |
+| File or field | Holds |
 |---|---|
-| `bundle.json` | Identity, name, size, wrap per axis, alpha rule, variants with colours and screen share, flags, partners, the scenes it shows in with boxes, the style rules for its category, the output size, the gates it must pass, its status |
-| `original.png` | The elected look, at 1x and enlarged without smoothing |
 | `variants.png` | Every colouring, labelled |
-| `uv-mask.png` | The texels ever visible on screen, over all scenes (from `raster::visible_uv`, `crates/model2/src/raster.rs:1989`) |
 | `tiled.png` | A 3x3 repeat, when the game repeats or mirrors it |
-| `context-N.png` | Crops of up to three scenes where it shows largest, boxed |
-| `brief.txt` | The prompt text for an image model, filled from the above |
-
-It is built from the catalogue and the scenes' facts, with no emulator.
-`bundle.json` alone is enough to decide what to do; an agent should need
-at most two of the pictures.
+| `brief.txt` | The prompt text for an image model, filled from the bundle |
+| `scenes[]` | The scenes it shows in with boxes in the game's 496x384 (needs `scene where`); the built bundle gives the texture map's frames |
+| flags, partners, a name | `shared` is derived; the rest wait for names, links and the ROM anchor |
+| the style rules for its category | The built bundle points at `style.md` |
+| a mask over all scenes | The built mask is over the map's frames |
 
 ## Interfaces
 
 | Verb | Does |
 |---|---|
 | `asset list` | Filter by `--kind`, `--scene`, `--status`, `--flag`, `--category`; ranked by screen share |
-| `asset show ID` | The `bundle.json` content, without writing pictures |
-| `asset bundle ID` | Writes the bundle |
 | `asset name ID SLUG` | Names an artwork in the project |
 | `asset same ID ID` | Links two artworks; `--suggest` lists candidates with a difference score |
 | `pack rekey` | Rewrites names after a scheme change |
@@ -252,7 +248,7 @@ resolves to its artwork.
 
 - **Pack lead.** Says "replace the wall base" and means one row, not six
   hashes. `asset list --flag shared` shows where judgement is needed.
-- **Art agent.** `asset bundle wall-base` is its whole briefing. It writes
+- **Art agent.** `asset bundle wall-base` is its whole briefing (built). It writes
   one image and never learns the variants exist. Budget: 2 calls and 2
   pictures to understand an asset.
 - **Artist.** Opens the bundle folder: the original, the mask and the
@@ -422,8 +418,7 @@ catalogue and texture maps; baking and copying by the distance rule
 exist; an artwork list (`studio artworks`). The remaining steps:
 
 1. `asset list` and `asset show` over `artworks.tsv`, with names (item 6).
-2. Bundle v0: `bundle.json`, `original.png`, `uv-mask.png` and two context
-   crops (item 7).
+2. (Built: bundle v0.)
 3. The ramp elected by most-used look, and `follow` for unseen colours,
    after trying both tints on a colour held out of the catalogue, with the
    game's real tables read.

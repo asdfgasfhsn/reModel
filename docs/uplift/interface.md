@@ -1,6 +1,6 @@
 # The interface in one place
 
-Shared words, roles and rules: [README.md](README.md). Of the verbs, `scene list/make/verify/render`, `coverage`, `tour`, `asset check`, `pack check`, `project init/status/approve/reject`, `pack build` and `pack resolve` are built
+Shared words, roles and rules: [README.md](README.md). Of the verbs, `scene list/make/verify/render`, `coverage`, `tour`, `asset check`, `asset bundle`, `asset show`, `pack check`, `project init/status/approve/reject`, `pack build` and `pack resolve` are built
 (on a studio project: [../uplift-studio.md](../uplift-studio.md)); the rest is not. This page gathers what the other specs each define a part of: every
 verb, where files live, who needs what, the status of an asset, and three
 tasks written out command by command. Where a spec and this page differ,
@@ -15,7 +15,7 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 | Noun | Verbs | Spec |
 |---|---|---|
 | `scene` | `list`, `make`, `verify`, `render`, `what`, `where`, `sheet`, `clip` | [scenes-and-server](scenes-and-server.md) |
-| `asset` | `list`, `show`, `bundle`, `name`, `set`, `same`, `make`, `normalise`, `check` (built: `check`; the artwork index and the colour copies are today `studio artworks` and `studio bake`, [uplift-studio.md](../uplift-studio.md), "Artworks") | [asset-identity](asset-identity.md), [generation](generation.md), [quality-gates](quality-gates.md) |
+| `asset` | `list`, `show`, `bundle`, `name`, `set`, `same`, `make`, `normalise`, `check` (built: `check`, `bundle`, `show`; the artwork index and the colour copies are today `studio artworks` and `studio bake`, [uplift-studio.md](../uplift-studio.md), "Artworks") | [asset-identity](asset-identity.md), [generation](generation.md), [quality-gates](quality-gates.md) |
 | `region` | `capture`, `list`, `check`, `field` | [2d-cells](2d-cells.md) |
 | `glyphs` | `infer`, `show`, `confirm` | [2d-cells](2d-cells.md) |
 | `project` | `init`, `status`, `approve`, `reject` (built), `brief`, `review` | [../uplift-studio.md](../uplift-studio.md), [pack-project](pack-project.md) |
@@ -44,7 +44,9 @@ An art agent's job uses eleven of them: `project brief`, `asset show`,
   (`tex_..._WxH`). A region is an asset of kind `layout`, and its slug is
   the region's name.
 - **Coordinates.** Every `X,Y,W,H` is in the game's own picture, 496x384,
-  whatever the view. A wide view extends to negative and larger X.
+  whatever the view. The one exception today: `asset show` and `asset bundle`
+  give `shows[].box` in the picture of the texture map's frame (`picture`,
+  1024x768 as `make texmap` drew it), until `scene where` exists. A wide view extends to negative and larger X.
 - **`--view`** sets the size and aspect drawn. **`--overlay`** replaces
   the picture with a diagnostic one. They are independent.
 - **Exit codes.** 0 done. 1 a gate at `error` failed. 2 the request was
@@ -79,8 +81,8 @@ listed in the last column.
 | `scene sheet NAME --label art\|layouts\|models` | `picture`, and `labels[]`: `n`, `id`, `name`, `box`, so the picture need not be read to get names and boxes. `layouts` covers everything 2D: tiles, regions and text |
 | `scene clip NAME --frames N` | `clip`, `frames`, `flicker[]` |
 | `asset list [--status S,...] [--category C] [--kind K] [--scene NAME]` | `assets[]`: `id`, `name`, `kind`, `status`, `category` |
-| `asset show ID` | The row: `id`, `name`, `kind`, `status`, `category`, `colour`, `draw`, `size`, `variants`, `scenes[]`, `draft`, `art`, and `last`: `actor`, `verb`, `time`, `note` (a rejection's reason is here) |
-| `asset bundle ID` | As in task A; `folder` holds the original, the mask and the crops |
+| `asset show ID [--project DIR]` (**built**) | The bundle's `bundle.json` with no pictures: `id`, `name`, `kind`, `size`, `wrap`, `repeats`, `cutout`, `flags[]`, `category`, `screen`, `artwork` (`art`, `colourings`, `variants[]` with `ramp`, `mode`), `shows[]` (`map`, `frame`, `pixels`, `box`, `picture`), `status` (`status`, `colour`, `source`, `hash`, `by`, `date`, `note`, `last`, `provenance`; for an `art_` ID `status` is null and `colourings` counts theirs), `gates` (`required[]`, `last`), `style`, `output`, `mask`, `next`, `ms`. Not built: `scenes[]` with boxes in game pixels, `draw`, `draft` |
+| `asset bundle ID [--out DIR]` (**built**) | `asset show`'s answer, and writes `cache/bundles/ID/` (`bundle.json`, `original.png`, `original-big.png` when small, `uv-mask.png`, `context-1.png`, `context-2.png`); `folder` is its path from the project and `files` names the pictures. `ID` is a name, a 16-digit key or a slug; an unknown one is exit 2 with near matches, no project or no map is exit 3 |
 | `asset name ID SLUG` | `id`, `name` |
 | `asset set ID KEY=VALUE...` | The changed row |
 | `asset same ID ID`, `asset same --suggest` | `merged`, or `pairs[]` with a likeness |
@@ -201,16 +203,29 @@ colourings from the one image (built today as `remodel studio bake`:
 
 ```sh
 remodel project brief --json          # my assets, scenes, budgets
-remodel asset bundle wall-base --json
+remodel asset bundle art_d7af0295c80329a9_128x128 --json
 ```
 ```json
-{"ok":true,"data":{"id":"art:...","name":"wall-base","size":[128,128],
- "wrap":["repeat","clamp"],"variants":6,"colour":"baked",
- "flags":[],"category":"wallbase","scenes":["course-start","course-sand"],
- "gates":["file","alpha","stale","seam","changed","noise"],
- "suggest":"recipe","folder":"cache/bundles/wall-base/"},
- "next":"remodel asset make wall-base --with recipe"}
+{"ok":true,"data":{"id":"art_d7af0295c80329a9_128x128","name":null,"kind":"art",
+ "size":[128,128],"wrap":["repeat","repeat"],"flags":["repeats","shared"],
+ "category":null,"screen":{"pixels":904461,"share_pct":7.15,"frames":7},
+ "artwork":{"colourings":6,"mode":null,"variants":[{"name":"tex_98da..._128x128",
+   "share_pct":69.5,"elected":true,"ramp":["#000000","#59534b","..."]}]},
+ "shows":[{"map":"map","frame":4800,"pixels":388817,"box":[0,0,1024,768],"picture":[1024,768]}],
+ "status":{"status":null,"colourings":{"todo":4}},
+ "gates":{"required":[{"gate":"file","error":true,"rule":"a PNG at a whole scale 1 to 8 of 128x128, at most 4 MB"}],"last":null},
+ "output":{"file":"draft/art_d7af..._128x128.png","sizes":[[128,128],[256,256]]},
+ "mask":{"visible_texels":16384,"texels":16384,"share_pct":100.0,"frames_read":7},
+ "files":{"original":"original.png","original_big":"original-big.png","mask":"uv-mask.png",
+          "context":[{"file":"context-1.png","frame":4800},{"file":"context-2.png","frame":5400}]},
+ "folder":"cache/bundles/art_d7af..._128x128","ms":544},
+ "next":null}
 ```
+
+(Abbreviated; the full object is in [../uplift-studio.md](../uplift-studio.md),
+"Context bundles". The bundle does not yet say which backend to use: the
+`suggest` field below is not built, and neither are `asset make` and the
+`recipe` backend.)
 
 `suggest` is `recipe` because the asset tiles and is not flagged as a
 picture: recipes are the `recipe` backend.

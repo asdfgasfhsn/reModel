@@ -575,11 +575,18 @@ studio-compare: release ## Before and after (without and with STUDIO's pack/), w
 	$(RUN) studio compare $(STUDIO) $(if $(SCENES),--scene $(SCENES),--steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS)) $(STUDIO_ARGS)
 
 GATE_ARGS ?=
+BUNDLE_ARGS ?=
 PROJECT_ARGS ?=
 PACKS ?=
 asset-check: release ## Asset gates (docs/uplift-studio.md, "Gates") on images of STUDIO: ASSET="NAME NAME" (a name, 16-digit key or file stem) or ASSET=--all; GATE_ARGS="--from pack|draft --json"; errors (file, alpha, stale) exit 1, warnings (seam, changed, noise) do not; each result states its number and limit; no ROM, no GPU, milliseconds each
 	$(if $(ASSET),,$(error asset-check needs ASSET="NAME ..." or ASSET=--all))
 	$(CAP) $(REMODEL) asset check --project $(STUDIO) $(ASSET) $(GATE_ARGS)
+asset-bundle: release ## An agent's whole briefing for one asset of STUDIO (docs/uplift-studio.md, "Context bundles"): ASSET=NAME (a name, 16-digit key or slug; tex_, tile_ or art_), writes STUDIO/cache/bundles/NAME/ with bundle.json (identity, colourings and ramps, size, wrap, where it shows, status, gates), original.png, uv-mask.png and two context crops; BUNDLE_ARGS="--out DIR --json"; no ROM, no GPU, under a second
+	$(if $(ASSET),,$(error asset-bundle needs ASSET=NAME))
+	$(CAP) $(REMODEL) asset bundle --project $(STUDIO) $(ASSET) $(BUNDLE_ARGS)
+asset-show: release ## The same answer as asset-bundle with no pictures: ASSET=NAME, BUNDLE_ARGS="--json"
+	$(if $(ASSET),,$(error asset-show needs ASSET=NAME))
+	$(CAP) $(REMODEL) asset show --project $(STUDIO) $(ASSET) $(BUNDLE_ARGS)
 pack-gates: release ## Every gate level on STUDIO's pack/ and a report in STUDIO/reports/DATE-VERSION (report.json, gates.tsv, report.md): asset gates on each image, lint, budget, known, selected, and scene coverage when the scenes are made (a GPU, no ROM); GATE_ARGS="--level asset|pack|scene --asset NAME --release --json" (--release makes selected and coverage errors); limits are STUDIO/gates.txt; exit 1 when a gate is at error
 	$(LOCK_RENDER) $(RUN) pack check --project $(STUDIO) $(GATE_ARGS)
 project-init: release ## Make STUDIO a project (docs/uplift-studio.md, "Projects"), or import a workspace: PROJECT_ARGS="--from-studio WORKSPACE [--with-cache] --approver NAME --pack-version V"; writes assets.tsv, log.tsv, provenance/ and records the approved images' hashes; needs REMODEL_ACTOR (make agent-setup writes it); no ROM

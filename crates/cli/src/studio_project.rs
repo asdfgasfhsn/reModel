@@ -225,7 +225,7 @@ impl Project {
     /// Every selected asset with the status its files give it now.
     /// `recorded` supplies who, when and the note for a row whose status and
     /// hash have not changed since, and a rejection (which no file records).
-    fn derive(&self) -> Vec<Row> {
+    pub(super) fn derive(&self) -> Vec<Row> {
         let approved = self.hashes("approved.tsv");
         let checked = self.hashes("checked.tsv");
         let ledger = self.ledger();
@@ -344,7 +344,7 @@ impl Project {
             .collect()
     }
 
-    fn provenance_path(&self, id: &str) -> PathBuf {
+    pub(super) fn provenance_path(&self, id: &str) -> PathBuf {
         self.p("provenance").join(format!("{id}.txt"))
     }
 

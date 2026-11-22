@@ -213,6 +213,9 @@ remodel asset check [ID ...|--all] [--project DIR] [--from draft|pack] [--json]
   The asset gates on one image: file, alpha, seam, changed, noise (errors: file, alpha, stale; the rest warn).
   ID is a name, a 16-digit key or a file stem; --all checks every image in draft/ and pack/.
   Exit 0 when no gate is at error, 1 when one is. A draft with none is recorded as checked.
+remodel asset bundle ID [--project DIR] [--out DIR] [--json]   an agent's whole briefing for one asset, in a folder
+remodel asset show ID [--project DIR] [--json]                  the same answer, no pictures
+  (docs/uplift-studio.md, \"Context bundles\")
 ";
 
 pub fn asset_main(o: &crate::Opts) -> std::process::ExitCode {
@@ -227,10 +230,12 @@ pub fn asset_main(o: &crate::Opts) -> std::process::ExitCode {
 fn asset_run(rest: &[String]) -> Result<(Answer, String), Answer> {
     use crate::scene::Args;
     let Some(sub) = rest.iter().find(|a| !a.starts_with("--")) else {
-        return Err(Answer::fail(Code::BadRequest, "asset wants a verb: check").next("remodel asset check --help"));
+        return Err(Answer::fail(Code::BadRequest, "asset wants a verb: check, bundle, show")
+            .next("remodel asset check --help"));
     };
-    if sub != "check" {
-        return Err(Answer::unknown("asset verb", sub, &["check".to_string()]));
+    let verbs = ["check", "bundle", "show"].map(String::from);
+    if !verbs.contains(sub) {
+        return Err(Answer::unknown("asset verb", sub, &verbs));
     }
     let mut skipped = false;
     let argv: Vec<String> = rest
@@ -244,6 +249,9 @@ fn asset_run(rest: &[String]) -> Result<(Answer, String), Answer> {
         })
         .cloned()
         .collect();
+    if sub != "check" {
+        return super::bundle::run(sub, &argv);
+    }
     let a = Args::parse(&argv, &["--json", "--all"], &["--project", "--from"])?;
     let from = match a.one("--from") {
         None => None,

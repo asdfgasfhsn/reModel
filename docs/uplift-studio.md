@@ -525,6 +525,75 @@ or `needs` `regions` and `artworks`, `index.txt`, and the project's
 stack and `pack resolve` reports it; the rules are in
 [texture-packs.md](texture-packs.md), "Layers".
 
+## Context bundles
+
+An agent's whole briefing for one asset, in one call (roadmap item 7, built
+2026-11-23). `asset bundle` pulls together what the project already knows
+and writes it as one folder; `asset show` gives the same answer with no
+pictures. Neither needs a ROM, a GPU or the emulator: they read the
+project's texture map (the frames `make texmap` drew), `assets.tsv`, the
+provenance and the asset gates.
+
+```
+remodel asset bundle ID [--project DIR] [--out DIR] [--json]
+remodel asset show ID [--project DIR] [--json]
+make asset-bundle STUDIO=... ASSET=NAME     make asset-show STUDIO=... ASSET=NAME
+```
+
+`ID` is a name (`tex_KEY_WxH`, `tile_KEY`, `art_SURFACE_WxH`), a 16-digit
+key (a texture's, a tile's or an artwork's surface; two sizes of one key is
+an error that lists them) or a slug set in `assets.tsv`. A name that is not
+known is exit code 2 with near matches. The folder is `cache/bundles/ID/` in
+the project (git-ignored: it holds ROM-derived pictures); `--out DIR` picks
+another. Every call rewrites the files it makes, the same bytes for the same
+inputs.
+
+| File | Holds |
+|---|---|
+| `bundle.json` | The answer below. `asset bundle --json` prints the same object with `folder` and `ms` |
+| `original.png` | The image as the map dumped it (an artwork's: its most-drawn colouring), so a repaint is judged against the same texels. `original-big.png` is it enlarged without smoothing to at least 256 px, for a model that reads small pictures badly |
+| `uv-mask.png` | White: the texels some frame of the map draws. Black: never seen, so a repaint there is never shown. Read from the frames' ID and texel images (the texel position is kept to 1/256 of the texture, so a 512-wide image fills each step) |
+| `context-1.png`, `context-2.png` | The frames where it covers most pixels, cropped round its box with a margin, at most 640x480, the box drawn in magenta and everything the asset does not draw dimmed to 35% |
+
+`bundle.json` alone is enough to decide what to do; an agent needs at most
+the original and one crop. Its fields:
+
+| Field | Holds |
+|---|---|
+| `id`, `name`, `kind` | The pack file stem, the slug (or null) and `tex`, `tile` or `art` |
+| `size`, `wrap`, `repeats`, `cutout`, `flags` | Pixels; `repeat`, `mirror` or `clamp` per axis (as `seam` decides); `repeats` is how many texture sizes the coordinates run over per axis (above 1: it tiles; below 1: only part of the image is used); whether the original has transparent texels; `cutout`, `repeats`, `shared` (an artwork under more than one colouring), `tile` |
+| `category` | From the selection |
+| `screen` | `pixels` drawn, `share_pct` of the map's textured pixels, `frames` it shows in |
+| `artwork` | `art` stem, `surface`, `colourings`, `variants[]` (the eight most drawn: `name`, `pixels`, `share_pct`, `elected`, `ramp` as 16 `#rrggbb` colours, null for a catalogue made before ramps), `mode` (`baked` or `fixed`) and `reference` once `studio bake` has run |
+| `shows[]` | The five places it covers most: `map`, `frame`, `pixels`, `box` `[x, y, w, h]` and `picture` `[w, h]`, in the map's picture (not the game's 496x384) |
+| `status` | Of the asset's own row in `assets.tsv`: `status`, `colour`, `source`, `hash`, `by`, `date`, `note`, `last` (its latest line in `log.tsv`: a rejection's reason is here) and `provenance` (the `provenance/ID.txt` keys). An artwork has no row of its own: `status` is null and `colourings` counts the statuses of those of its colourings that are in the selection (`artwork.colourings` is all of them), each readable with `asset show NAME` |
+| `gates` | `required[]`: each gate, whether it is an error, and the rule with this asset's size and the project's limits in it; `last`: the results of `asset check` on the draft or approved image when there is one |
+| `style`, `output` | `style.md` and `recipes.txt` if the project has them; the file to write (`draft/ID.png`), the sizes that pass `file` and the rule |
+| `mask` | `visible_texels`, `texels`, `share_pct`, `frames_read` (the 60 biggest frames at most) |
+| `files`, `next` | The pictures written; the next command for the asset's status (`write draft/ID.png ... then asset check ID`, `project approve`, ...) |
+
+**Acceptance test** (2026-11-23): two mid-tier (Sonnet) agents that had read only [uplift/interface.md](uplift/interface.md) were given one artwork each and asked to brief an artist: what it is, size and wrap, colourings and the reference, where it shows, status, gates, and the file to write. Top Skater, a 6-colouring artwork: 3 calls and 0 pictures (the interface page, then `asset bundle --json` twice, the second only to read the tail of the output; a fourth call was lost to placeholders in my brief). `vf2`, a 10-colouring one: 2 calls (the page, `asset show --json`) and 0 pictures. Both found the verb from the page and got every fact asked for. They reported: the `shows` boxes are in 1024x768 (the page said 496x384; now stated), `repeats`, `reference` and the counts under `status.colourings` were undefined (now defined), and nothing said when to use `show` rather than `bundle` (`show` when no pictures are needed). Before the bundle the same briefing took, by the page's own verbs, `studio artworks` (colourings and ramps), the map's `inventory.tsv` (size, wrap, pixels), `studio status` and `asset check` (status, gates), `texmap.json` (frames and boxes) and a contact sheet or two pictures to see it in place: 5 to 6 calls and 1 to 3 pictures, counted from the verbs, not run. Not tested: Daytona by an agent (its bundle was made and read by me), and an agent that goes on to repaint from the pictures.
+
+**What it measured** (2026-11-23, on maps drawn for this, with ramps; the
+asset-gates call used on a draft as well):
+
+| | Top Skater | `vf2` | `daytona` |
+|---|---|---|---|
+| Map | 22 captured frames | the 3 scenes | 21 frames of a coin-start run |
+| An artwork under 6 to 10 colourings: `asset bundle`, wall time | 0.54 s | 0.34 s | 0.99 s |
+| Its frames, share of the map's pixels | 7 frames, 7.2% | 2 frames, 8.0% | 18 frames, 23.7% |
+
+**Not built:** the scenes it shows in with boxes in the game's own 496x384
+(`scene where`, and so `--asset`: the bundle reads the map's frames, which
+is what the project has, and says so in `shows`), `variants.png`,
+`tiled.png`, `brief.txt` (the prompt text), the style rules for the asset's
+category (it points at `style.md`), partners, a mask over all scenes rather
+than the map's frames, slugs (an asset has one only when `assets.tsv` has
+been given one by hand; `asset name` is not built), and a catalogue (rather
+than texmap) as the source: a map exported from the catalogue has no frames,
+so the bundle has no `shows`, mask or crops and says so as a warning. An
+old map with no `ramp=` gives `ramp: null`.
+
 ## Gates
 
 Checks that give a number, a limit and a verdict, so "done" is not a
@@ -1184,7 +1253,7 @@ flag only), no screen comparison in the crawler
 Built: the design above; named scenes and `scene render` (above); `remodel texmap` and `make texmap` (ID images,
 texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
-text to tiles, surface variants, artworks (`art_` images, colour ramps, `bake`), the seam check, the quality gates (`asset check`, `pack check`), projects (`project init/status/approve/reject`, `pack build`, `pack resolve`, stacked packs) and before and after
+text to tiles, surface variants, artworks (`art_` images, colour ramps, `bake`), the seam check, the quality gates (`asset check`, `pack check`), projects (`project init/status/approve/reject`, `pack build`, `pack resolve`, stacked packs), context bundles (`asset bundle`, `asset show`) and before and after
 (phase 1b: render side and tooling only, no emulation or state hash is
 touched). The catalogue (below) is built too: observing while playing and in
 scripted runs, loads, report, viewer, glyph mapping, and the studio reading it.

@@ -555,6 +555,13 @@ commands:
                        each with its number and limit; --json prints one
                        object; exit 1 when a gate is at error
                        (docs/uplift-studio.md, \"Gates\")
+  asset bundle ID [--project DIR] [--out DIR] | asset show ID
+                       an asset's whole briefing from a project's texture map:
+                       bundle.json (identity, colourings, ramps, size, wrap,
+                       where it shows, status, gates), the original, a mask of
+                       the texels that show and two context crops (show: no
+                       pictures); no ROM or GPU (docs/uplift-studio.md,
+                       \"Context bundles\")
   pack check [--project DIR] [--level asset|pack|scene|clip] [--release]
                        every gate level on a project's pack/ and a report in
                        reports/DATE-VERSION/ (report.json, gates.tsv,
