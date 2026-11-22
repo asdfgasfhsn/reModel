@@ -10,6 +10,8 @@
 //! is a gate that held. A gate that does not apply (`alpha` on a tile with
 //! nothing to cut out, `changed` on a tile) says `info` and why.
 
+#![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks, clippy::manual_checked_ops)]
+
 use crate::studio_img::{seam_axis, Image, Wrap};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

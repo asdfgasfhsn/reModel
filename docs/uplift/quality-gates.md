@@ -140,7 +140,7 @@ flagged.
 | `known` | 1,401 warn: not in the project's one map | pass (a stray file warns) |
 | `selected` | 227 of 6,500 not approved: warn | 14 of 54: warn |
 | `coverage` (10%) | 0.0, 0.0, 6.8, 88.0, 90.9 over five scenes | 4.0, 54.7, 53.1 over three |
-| `flicker` (5,000 px per 100 frames) | 10,342: error (993 changes, 1,725 frames) | 6,502: error (2 changes) |
+| `flicker` (5,000 px per 100 frames) | 10,304: error (983 changes, 1,725 frames) | 6,502: error (2 changes) |
 
 - **Observed:** the asset gates over the 6,286 files take 2.2 s on all
   cores; `pack check` of the whole showcase, 5 s with five scenes drawn.
@@ -151,7 +151,7 @@ flagged.
   E1 flagged 2.3%; "differs" had no level in E1. The "skaters that barely
   changed" case is not caught at this level.
 - **Observed:** the flicker limit is wrong in both directions. Top Skater's
-  attract run (993 changes) and `vf2`'s (2 changes, one the size of
+  attract run (983 changes) and `vf2`'s (2 changes, one the size of
   the screen) both fail it. A pixel-weighted total counts a screen-sized
   fade as flicker; the limit is a guess, and two logs do not settle it.
 - **Observed:** `coverage` reads 0.0% on Top Skater's two 2D scenes

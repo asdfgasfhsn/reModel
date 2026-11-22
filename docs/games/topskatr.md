@@ -181,7 +181,7 @@ docs/uplift/quality-gates.md, E2). Numbers only; no image is kept here.
   the pack draws nothing there or `scene render` does not draw the 2D
   replacements was not checked.
 - `flicker`: a 1,725-frame attract run with the pack (`make pack-log`)
-  gives 993 changes and 10,342 pixels involved per 100 frames.
+  gives 983 changes and 10,304 pixels involved per 100 frames.
 
 ## Lighting (smooth shading's side channel)
 

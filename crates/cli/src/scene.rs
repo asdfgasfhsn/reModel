@@ -779,15 +779,14 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
     })
 }
 
+/// `pack_coverage`'s answer: the share of changed pixels by scene, and the scenes skipped.
+pub type CoverageShares = (Vec<(String, f64)>, Vec<String>);
+
 /// `pack check`'s `coverage` gate: for each scene of `game` that has a local
 /// copy, draw it with `pack` and without at the native view and count the
 /// share of pixels that differ (0 to 1). Returns the shares by scene and
 /// the names of scenes with no local copy (skipped). One GPU for all.
-pub fn pack_coverage(
-    game: &'static Game,
-    project: Option<&Path>,
-    pack: &Path,
-) -> Result<(Vec<(String, f64)>, Vec<String>), Answer> {
+pub fn pack_coverage(game: &'static Game, project: Option<&Path>, pack: &Path) -> Result<CoverageShares, Answer> {
     let rs = recipes(game, project).map_err(|e| Answer::fail(Code::BadRequest, e))?;
     let root = scenes_dir(game);
     let (mut ready, mut missing) = (Vec::new(), Vec::new());
