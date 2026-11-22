@@ -208,7 +208,7 @@ mod tests {
         let mut n = Noise(12345);
         let flick: Vec<f32> = (0..240)
             .map(|i| {
-                let t = i as i32 - 60;
+                let t = i - 60;
                 let base = if t < 0 { 0.0 } else { ((t + 1) as f32 / 4.0).min(1.0) };
                 (base + NOISE * n.next()).clamp(-1.0, 1.0)
             })
@@ -313,8 +313,7 @@ mod tests {
 
     #[test]
     fn off_is_the_tuned_value_and_no_pad_resets() {
-        let mut t = Tuning::default();
-        t.smooth = Smoothing::Off;
+        let mut t = Tuning { smooth: Smoothing::Off, ..Tuning::default() };
         let mut f = SteerFilter::default();
         let mut raw = [0.0; 8];
         raw[1] = 0.7;
