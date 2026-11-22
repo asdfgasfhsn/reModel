@@ -322,6 +322,7 @@ pub fn run(o: &Opts, roms: &RomSet) -> ExitCode {
 /// before the CRC is fixed) loaded where the game keeps them, and a link board
 /// joined to a hub. Shared by `link-run` and `link-net`, so the same node is
 /// the same machine in both.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn node_machine(
     roms: &RomSet,
     o: &Opts,

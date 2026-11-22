@@ -108,8 +108,12 @@ pub struct LinkPlay {
     /// Bytes of a linked node's record that depend on the node and the number of nodes in the
     /// session, beyond the role and `car_off` (`sgt24h`'s LINK MAX must equal the number of
     /// machines): `(node, nodes)` gives (offset, value) pairs.
-    pub node_bytes: Option<fn(usize, usize) -> Vec<(usize, u8)>>,
+    pub node_bytes: Option<NodeBytes>,
 }
+
+/// A function of a node and the session's node count that gives bytes (offset, value) of the node's
+/// settings record ([`LinkPlay::node_bytes`]).
+pub type NodeBytes = fn(usize, usize) -> Vec<(usize, u8)>;
 
 /// One byte of the settings record the COIN ASSIGNMENT page's FREE PLAY
 /// changes: its offset, the value with free play on and the value at the
