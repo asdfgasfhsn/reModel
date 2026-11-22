@@ -169,6 +169,15 @@ for game in $GAMES; do
 		# Coin, the selects' button presses, then the slope with the others (the race is on from about frame 2700); 4 machines at most.
 		INPUT="coin1@1100-1104,coin1@1120-1124,blue@1250-1254,blue@1500-1504,blue@1800-1804,blue@2100-2104,blue@2400-2404,blue@2700-2704"; FRAMES=4000; MAXN=4; JITARG=--jit
 		LEAVE_AT=4400; FRAMES_DROP=5600; SHOTS_DROP=4700,5200,5600 ;;
+	daytonas|daytonase)
+		INPUT="coin1@1100-1104,start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710,gas=0xff@2400-99999"; FRAMES=4600
+		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
+	indy500d)
+		INPUT="coin1@1100-1104,coin1@1120-1124,coin1@1140-1144,start@1250-1254,start@1400-1404,start@1600-1604,start@1800-1804,gas=0xff@2000-99999"; FRAMES=4500
+		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
+	indy500to)
+		INPUT="coin1@1100-1104,coin1@1120-1124,start@1900-1904,start@2100-2104,start@2300-2304,gas=0xff@2500-99999"; FRAMES=4500
+		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
 	*) echo "no scripted race for $game"; exit 2 ;;
 	esac
 	BIN_RUN=("$(dirname "$0")/capped" "$BIN" --game "$game" --rom "$ROM" $JITARG)

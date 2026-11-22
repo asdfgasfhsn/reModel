@@ -539,9 +539,21 @@ mod tests {
         }
         assert!(play_for("vf2").is_none());
         // A variant links as its parent does where its record is the parent's, and not otherwise.
-        for id in ["manxttc", "srallycb", "srallyp", "daytonat", "daytonata"] {
+        for id in [
+            "manxttc",
+            "srallycb",
+            "srallyp",
+            "daytonat",
+            "daytonata",
+            "daytonas",
+            "daytonase",
+            "indy500d",
+            "indy500to",
+        ] {
             assert!(play_for(id).is_some(), "{id}");
         }
+        // `dayton93`'s program has no link code.
+        assert!(play_for("dayton93").is_none());
         assert!(play_for("topskatrj").is_none());
     }
 

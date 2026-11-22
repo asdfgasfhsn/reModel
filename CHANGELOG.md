@@ -32,6 +32,19 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   survey's "NETWORK BOARD IS NOT EXIST !"; the new `LinkBoard::Latch` answers it
   (`docs/hw/link-board.md` sections 15 to 17, `docs/hw/eeprom-records.md`).
 
+- Link play and free play for four more variants: `daytonas` (Saturn Ads) and
+  `daytonase` (Special Edition) up to 8 machines, `indy500d` (Deluxe, Rev A) and
+  `indy500to` (older Twin) up to 4, in split screen, `link-run` and over the
+  network. Each one's link role, cabinet number and FREE PLAY setting were found
+  from its own test menu, and the record romset writes is what the game writes
+  (`make link-record-test`): the Daytona sets keep the parent's layout with
+  their own version and defaults (byte 0x7C is the record's save counter, not a
+  free-play byte), `indy500to` the parent's, and `indy500d` an S32A record of
+  44 bytes with the role at 0x28 and the cabinet ID at 0x29. `dayton93` stays
+  without link play: its program has no link code (no LINK ID in its menu, no
+  access to the link board). `make link-net-test`, `link-free-play-test` and
+  `link-record-test` take the variants' ids.
+
 ## 0.13.1 (2026-11-22): network play over Wi-Fi
 
 - Network play over Wi-Fi: a held frame is tried again every half millisecond

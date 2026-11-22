@@ -438,6 +438,7 @@ pub static VARIANTS: &[Variant] = &[
         idle_loops: Some(&[crate::IdleLoop { start: 0x345d4, end: 0x345e8 }]),
         // The parent's attract frame (1500) is the title logo here; the demo race runs from 1650.
         attract_frame: Some(2250),
+        link: VariantLink::Own(&super::link_variants::INDY500D),
         ..Variant::BASE
     },
     // Indianapolis 500, the older Twin release: the program pair, the `.7/.8` pair and the sound program differ.
@@ -460,6 +461,7 @@ pub static VARIANTS: &[Variant] = &[
         // BUTTON): the same script with the start press at 1900.
         coin_start: Some("coin1@1100-1104,coin1@1120-1124,start@1900-1904,gas=0xff@2050-2060,gas=0xff@2250-2260,gas=0xff@2450-2460,gas=0xff@2650-99999"),
         attract_frame: Some(2250),
+        link: VariantLink::Own(&super::link_variants::INDY500TO),
         ..Variant::BASE
     },
     // Daytona USA '93 Edition: ten chips differ (program pair, main data `.8/.9` and `.6/.7`, polygons `.19/.23`, textures `.26/.27`), at other sizes.
@@ -519,6 +521,7 @@ pub static VARIANTS: &[Variant] = &[
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
             ],
         )]),
+        link: VariantLink::Own(&super::link_variants::DAYTONAS),
         ..Variant::BASE
     },
     // Daytona USA Special Edition: the program pair and `.6/.7`.
@@ -551,6 +554,7 @@ pub static VARIANTS: &[Variant] = &[
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
             ],
         )]),
+        link: VariantLink::Own(&super::link_variants::DAYTONASE),
         ..Variant::BASE
     },
     // Zero Gunner, Japan (Model 2B): the program pair `epr-20290.15/20291.16`.

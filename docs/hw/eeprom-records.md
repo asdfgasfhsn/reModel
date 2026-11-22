@@ -22,7 +22,7 @@ values, the lengths) are in `crates/romset/src/games/link.rs`. Marked
 
 | Kind | Games | Notes |
 |---|---|---|
-| **S32A**, shifting checksum | `indy500`, `motoraid`, `waverunr` (start value A), `overrev`, `overrevb`, `skisuprg` (start value B) | section 2 |
+| **S32A**, shifting checksum | `indy500`, `indy500d`, `indy500to`, `motoraid`, `waverunr` (start value A), `overrev`, `overrevb`, `skisuprg` (start value B) | section 2 |
 | **S32A**, byte-sum checksum | `sgt24h` | section 3 |
 | CRC-16 header (`srallyc`'s kind) | `srallyc`, `manxtt`, `manxttc` | `docs/hw/link-board.md` section 2; CCITT, start `0xFFFF`, complemented, over bytes 2 to the record's length |
 | `SEGA` I/O board record | `daytona` | `docs/hw/link-board.md` section 10 (not in the EEPROM) |
@@ -42,8 +42,9 @@ Layout of the 128-byte image (all numbers little-endian):
 | `0x08 + R` | R | **record B**, a copy of record A, checksum word included |
 | after | | `0xFF` |
 
-R is the record's size: 36 bytes in `indy500`, `motoraid` and `waverunr`
-(B at `0x2C`), 52 in `overrev` and `overrevb` (B at `0x3C`), 40 in
+R is the record's size: 36 bytes in `indy500`, `indy500to`, `motoraid` and `waverunr`
+(B at `0x2C`), 44 in `indy500d` (B at `0x34`, format word `0x0711`; its NETWORK TYPE and CABINET ID
+are `0x28` and `0x29`; the same routine and start value, 42 bytes fed), 52 in `overrev` and `overrevb` (B at `0x3C`), 40 in
 `skisuprg` (B at `0x30`). The settings are the game's menu values, one
 or two bytes each; `indy500`'s NETWORK TYPE and CABINET ID are bytes
 `0x1E` and `0x1F`.
@@ -76,8 +77,10 @@ reaches one byte past the end of its record without harm). Both copies
 give the same value, the data being the same.
 
 *Confirmed*: the stored checksum of both copies of an image written by
-the game itself, for `indy500`, `motoraid`, `waverunr`, `overrev`,
-`overrevb` and `skisuprg`, at the lengths and start values above, and
+the game itself, for `indy500`, `indy500d`, `indy500to`, `motoraid`, `waverunr`, `overrev`,
+`overrevb` and `skisuprg`, at the lengths and start values above (`indy500d`'s length of 42
+bytes was found by trying the routine over the lengths its image allows, not by reading its
+code), and
 nothing else matched over every start offset and length tried.
 
 ### What the game does at start and at each save (`indy500`, read from its code)

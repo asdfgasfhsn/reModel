@@ -34,6 +34,9 @@ for game in $GAMES; do
 	von) INPUT="start@1100-1104,start@1500-1504,start@1900-1904,start@2300-2304,lshot@3600-99999/6,rshot@3603-99999/9,lup@3600-4100"; FRAMES=5200; SHOTS=2000,3000,4400,5000; JITARG=--jit ;;
 	stcc) INPUT="start@1250-1254,start@1700-1704,start@2100-2104,start@2500-2504,start@2900-2904,start@3300-3304,gas=0xff@4100-99999"; FRAMES=7200; SHOTS=5000,6600,7200; JITARG=--jit ;;
 	skisuprg) INPUT="blue@1250-1254,blue@1500-1504,blue@1800-1804,blue@2100-2104,blue@2400-2404,blue@2700-2704"; FRAMES=4000; SHOTS=3000,3600,4000; JITARG=--jit ;;
+	daytonas|daytonase) INPUT="start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710,gas=0xff@2400-99999"; FRAMES=4600; SHOTS=2000,3300,4500 ;;
+	indy500d) INPUT="start@1250-1254,start@1400-1404,start@1600-1604,start@1800-1804,gas=0xff@2000-99999"; FRAMES=4500; SHOTS=2200,3300,4400 ;;
+	indy500to) INPUT="start@1900-1904,start@2100-2104,start@2300-2304,gas=0xff@2500-99999"; FRAMES=4500; SHOTS=2200,3300,4400 ;;
 	*) echo "no scripted race for $game"; exit 2 ;;
 	esac
 	run=("$(dirname "$0")/capped" "$BIN" --game "$game" --rom "$ROM" $JITARG)

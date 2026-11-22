@@ -318,12 +318,37 @@ supported variants (docs/variants.md); the Turbo hacks `daytonat`/`daytonata` we
   4 (Saturn Ads) and 3 (Special Edition) where the parent's is 2, the record has an extra
   item (a PROMOTE SATURN page) and its byte 0x7C is 1 by default (the parent's 0), and the
   CRC-16 is the parent's rule. Their `backup_ram` is that record with the link ID (0x0B)
-  set to SINGLE and the CRC recomputed. Their link play and free-play bytes were **not**
-  re-found, so linked play is off for them *(unconfirmed whether the parent's offsets hold)*.
+  set to SINGLE and the CRC recomputed.
+- *Confirmed (by running it):* **link play and free play of `daytonas` and `daytonase`.** Their
+  GAME SYSTEM pages (test menu: `test@1300-1330`, then `view4` up to the page's first row,
+  `view3`/`view2` value up/down) have LINK ID as the first row (SINGLE, MASTER, SLAVE) and CAR NUMBER
+  as the second, and changing them changes the I/O record exactly as in the parent: byte 0x0B
+  0 to 1 (MASTER; 2 for SLAVE), byte 0x0C 0 to 1 (CAR NUMBER 2), the CRC at 8 (the parent's rule).
+  The Saturn Ads page has nine rows (a PROMOTE SATURN row), the Special Edition eight (and its
+  COUNTRY and CABINET read JPN and SPECIAL). COIN ASSIGNMENT is the parent's page: stepping
+  COIN/CREDIT SETTING down from #1 wraps to #27 FREE PLAY and the record gets 0x10 0 to 0x1A and
+  0x14 0 to 1, as the parent's; **byte 0x7C is not a free-play byte**: it goes 1 to 2 with any
+  saved change (the LINK ID change alone did it, and a run that changed nothing left it at 1), so it
+  is the record's save counter (the parent's goes 0 to 1 for the same reason, which the parent's
+  free-play table lists as a derived byte). Free play shows "FREEPLAY" in attract and a start press
+  with no coin goes to Circuit Select. `romset::LinkPlay` entries `DAYTONAS` and `DAYTONASE`
+  (`games/link_variants.rs`) carry the program's own default record (versions 4 and 3) and the
+  free-play bytes with 0x7C counting 1 to 2, so the record equals what the game saves
+  (`make link-record-test GAMES="daytonas daytonase"`: a role save and a free-play save from the
+  game's menu against `link-run`'s images; the free-play one byte for byte). Two, and eight, machines
+  reach a race with every node in it (POSITION 1/8 to 8/8), `make link-net-test` and
+  `link-free-play-test` pass (split screen goes through the same `LinkPlay`: not run by hand).
 - `dayton93` has ten chips of its own at other sizes and its own textures; of the parent's
   two idle loops only the first exists in its program (0x12B0); the second is a function
   this older program lacks (its instructions are not in the chips). With an empty store its
   program writes its own record (version 1, link ID already 0 SINGLE); with the parent's
   preset it rewrites it to version 1 keeping the parent's settings bytes (the manifest
-  keeps the preset; whether it is accepted or only migrated was not separated). Linked
-  play is off for it.
+  keeps the preset; whether it is accepted or only migrated was not separated).
+- *Confirmed (by running it):* **`dayton93` has no link play.** Its GAME SYSTEM page has four rows
+  (ADVERTISE SOUND, COUNTRY, CABINET, DIFFICULTY): no LINK ID, no CAR NUMBER. With the link board
+  fitted and idle (`make link-trace LINK=idle`) a coin-start run makes no access at all to the
+  board's range, and two `link-run` nodes with link IDs 1 and 2 in their records each ran a solo
+  race (the hub never saw "starts the board"; both screens show POSITION 40/40). Its COIN
+  ASSIGNMENT page has the parent's FREE PLAY at #27 (bytes 0x10, 0x14; 0x7C is the counter again),
+  but free play is only built into link play, so there is none. The program was not read through
+  for link code, only run.

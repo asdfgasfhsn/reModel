@@ -17,12 +17,50 @@
 #             for von, stcc, stcca and stccb it must be the free play bytes romset::LinkPlay::free_play sets
 #   von keeps its settings in the backup SRAM, not the EEPROM: the written record is a dump of it
 #   (REMODEL_RAM_DUMP) and a node's is what `link-run` saves of it (eeprom-N.bin, from its settings store)
+#   changed   (indy500) the game's own save of a changed setting (FREE PLAY from its COIN
+#             ASSIGNMENTS page, so a new value, counter and checksum) passes the check as well
+#   menu      (indy500d, indy500to, daytonas, daytonase: the variants, whose games write their records
+#             from their own menus) the variant's test menu changes the settings (NETWORK TYPE or
+#             LINK ID to MASTER with CABINET ID or CAR NUMBER 2; and, apart, FREE PLAY from its COIN
+#             ASSIGNMENT page) and the game saves; the record romset writes for the same settings
+#             (`link-run --link-types 1,1` node 1, and `--nodes 1 --link-types 0 --free-play`) must
+#             be the game's, byte for byte except the checksums and the write counter (the games'
+#             own save raises it: the S32A counter at 0x0C and its copy, the I/O board record's
+#             byte 0x7C where the role page was the only change)
 # Scratch output stays under OUT_DIR.
 set -u
 BIN=$1; ROM=$2; OUT=$3; shift 3
 GAMES=${*:-manxtt indy500 motoraid waverunr}
 mkdir -p "$OUT"
 fail=0
+# pr NAME START COUNT GAP [LEN]: COUNT presses of an input, GAP frames apart, each held LEN (3) frames.
+pr() { local n=$1 s=$2 k=$3 gap=$4 l=${5:-3} o="" i; for ((i=0;i<k;i++)); do o="$o$n@$((s+i*gap))-$((s+i*gap+l)),"; done; echo -n "${o%,}"; }
+# The inputs of each variant's test menu (found by running it; the cursor wants presses spaced well apart).
+# The GAME ASSIGNMENTS (GAME SYSTEM) page: NETWORK TYPE MASTER, CABINET ID 2 (indy); LINK ID MASTER, CAR NUMBER 2 (daytona).
+menu_role() {
+	local base="test@1300-1330,$(pr service 1500 7 20),test@1750-1753,$(pr service 2000 7 20),test@2200-2203,service@2300-2303,test@2400-2403"
+	case $1 in
+	indy500d) echo "$base,service@2500-2503,test@2600-2603,$(pr service 2800 5 20),test@3100-3103" ;;
+	indy500to) echo "$base,$(pr service 2500 3 20),test@2700-2703,$(pr service 2800 5 20),test@3100-3103" ;;
+	daytonas | daytonase)
+		local up=9
+		[ "$1" = daytonase ] && up=8
+		echo "test@1300-1330,$(pr view4 1600 9 20),start@1900-1903,$(pr view4 2000 $up 20),view3@2300-2303,service@2400-2403,view3@2500-2503,view4@2600-2603,view4@2700-2703,start@2800-2803,$(pr service 3000 9 20),start@3300-3303" ;;
+	esac
+}
+# The COIN ASSIGNMENT page: COIN/CREDIT SETTING #27, FREE PLAY.
+menu_free() {
+	case $1 in
+	indy500d | indy500to)
+		local n=6
+		[ "$1" = indy500to ] && n=8
+		echo "test@1300-1330,$(pr service 1500 8 20),test@1800-1803,service@2000-2003,$(pr test 2100 $n 100 0),service@3000-3003,service@3100-3103,test@3200-3203,$(pr service 3400 4 100 0),test@3900-3903" ;;
+	daytonas | daytonase)
+		echo "test@1300-1330,$(pr view4 1600 8 20),start@1900-1903,view4@2100-2103,view2@2200-2203,service@2400-2403,start@2500-2503,$(pr service 2700 9 20),start@3000-3003" ;;
+	esac
+}
+# The 1-based byte offsets (as cmp -l prints) at which files $1 and $2 differ, except those listed in $3.
+diff_but() { cmp -l "$1" "$2" | awk -v skip=" $3 " '{ if (index(skip, " " $1 " ") == 0) print $1 }' | tr '\n' ' '; }
 ok() { echo "link-record $1: ok${2:+ ($2)}"; }
 bad() { echo "link-record $1: FAIL ${2:-}"; fail=1; }
 cap="$(dirname "$0")/capped"
@@ -34,8 +72,12 @@ for game in $GAMES; do
 	von) roles="1 0"; file=sram.bin; dump="REMODEL_RAM_DUMP=0x1D00000:$d/written/sram.bin" ;;
 	stcc | stcca | stccb) roles="33 65" ;;
 	esac
-	env ${dump:+"$dump"} "$cap" "$BIN" --game "$game" --rom "$ROM" --out "$d/written" --input 'test@1300-1330,test@1500-1505' run 300000000 100000 >"$d/written.log" 2>&1
-	if msg=$("$cap" "$BIN" --game "$game" --rom "$ROM" link-settings "$d/written/$file" 2>&1); then ok "$game written" "$msg"; else bad "$game written" "$msg"; fi
+	case $game in
+	daytonas | daytonase) ;; # its record is the I/O board's, not an EEPROM the game writes unprompted: see `menu`
+	*)
+		env ${dump:+"$dump"} "$cap" "$BIN" --game "$game" --rom "$ROM" --out "$d/written" --input 'test@1300-1330,test@1500-1505' run 300000000 100000 >"$d/written.log" 2>&1
+		if msg=$("$cap" "$BIN" --game "$game" --rom "$ROM" link-settings "$d/written/$file" 2>&1); then ok "$game written" "$msg"; else bad "$game written" "$msg"; fi ;;
+	esac
 
 	input="coin-start"
 	[ "$game" = manxtt ] && input="coin1@1100-1104,start@1300-1304"
@@ -75,5 +117,28 @@ for game in $GAMES; do
 		*) bad "$game changed" "$msg" ;;
 		esac
 	fi
+
+	case $game in
+	indy500d | indy500to | daytonas | daytonase)
+		# The game's own saves: the role page, and the coin page (each on a fresh store), against romset's records.
+		store=eeprom.bin fresh="" steps=1000000000 skip="9 10 13 53 54 57"
+		[ "$game" = indy500to ] && skip="9 10 13 45 46 49"
+		skipr="$skip"
+		case $game in daytonas | daytonase) store=iostore.bin fresh="--fresh-eeprom" steps=700000000 skip="9 10" skipr="9 10 125" ;; esac
+		mkdir -p "$d/mr" "$d/mf" "$d/lr" "$d/lf"
+		"$cap" "$BIN" --game "$game" --rom "$ROM" --out "$d/mr" $fresh --input "$(menu_role "$game")" run $steps 100000 >"$d/mr.log" 2>&1 &
+		"$cap" "$BIN" --game "$game" --rom "$ROM" --out "$d/mf" $fresh --input "$(menu_free "$game")" run $steps 100000 >"$d/mf.log" 2>&1 &
+		wait
+		"$cap" "$BIN" --game "$game" --rom "$ROM" --out "$d/lr" link-run --nodes 2 --link-types 1,1 --frames 60 --delay 2 >"$d/lr.log" 2>&1
+		"$cap" "$BIN" --game "$game" --rom "$ROM" --out "$d/lf" link-run --nodes 1 --link-types 0 --free-play --frames 60 --delay 2 >"$d/lf.log" 2>&1
+		for c in "mr:lr/eeprom-1.bin:$skipr:role" "mf:lf/eeprom-0.bin:$skip:free play"; do
+			IFS=: read -r g f sk what <<<"$c"
+			if [ -s "$d/$g/$store" ] && [ -s "$d/$f" ] && msg=$("$cap" "$BIN" --game "$game" --rom "$ROM" link-settings "$d/$g/$store" 2>&1) && diffs=$(diff_but "$d/$g/$store" "$d/$f" "$sk") && [ -z "$diffs" ]; then
+				ok "$game menu $what" "the game's own save is the record romset writes: $msg"
+			else
+				bad "$game menu $what" "$msg; differing bytes (1-based) ${diffs:-?}"
+			fi
+		done ;;
+	esac
 done
 exit $fail

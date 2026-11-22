@@ -294,8 +294,8 @@ fn about_of(g: &romset::Game, has_versions: bool) -> Vec<String> {
         out.push(if crate::link::play_for(g.id).is_some() {
             "Link play works with this version, on one screen and over a network.".to_string()
         } else {
-            "Link play is off for this version: its settings record has not been checked against the title's, \
-             so reModel does not link it."
+            "Link play is off for this version: its program has no link play, or its settings record has not been \
+             checked against the title's, so reModel does not link it."
                 .to_string()
         });
     }

@@ -13,6 +13,7 @@ mod hotd;
 mod indy500;
 mod lastbrnx;
 mod link;
+mod link_variants;
 mod manxtt;
 mod motoraid;
 mod overrev;

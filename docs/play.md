@@ -919,8 +919,8 @@ genre, its name in the display face, and its facts (board, year, "Links 2 to
   "On this screen" with 2, 3 or 4 players, "Over the network" with Host a game
   and Join a game (the network panel's flows, "Network link play"), and the
   player name. Greyed out, "Not for this version", when the chosen version has
-  link play off (its settings record has not been checked against the
-  title's).
+  link play off (its program has no link play, or its settings record has not
+  been checked against the title's).
 - **Saves**: the game's states (where you left off, the quick save, slots 1 to
   4, each with its thumbnail when it has one); choosing one starts the game
   from it. The main menu's row says how many there are.
@@ -966,7 +966,9 @@ its variant and is refused by another with a message naming both ("this save
 state is from another version of the game: it is for Top Skater (Japan), this
 is Top Skater (USA)"). Texture packs fall back to the parent's
 (`pack_sets`), except for `dayton93`, whose textures are its own. Link play works for a variant whose settings record is its
-parent's (`srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`); network
+parent's (`srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`) and for the four with
+records of their own (`daytonas`, `daytonase`, `indy500d`, `indy500to`; `dayton93` has none: its
+program has no link code); network
 sessions require the same variant on every machine (the set id is part of the
 ROM hash).
 

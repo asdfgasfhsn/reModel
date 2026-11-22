@@ -153,5 +153,28 @@ the written settings records: `indy500to`'s has the parent's layout and checksum
 at 0x2C, role and cabinet bytes 0 at 0x1E/0x1F, `remodel link-settings` accepts it) with other
 default values (byte 0x1C 1 where the parent's is 2); `indy500d`'s has another version
 (0x11 0x07), the checksum over the parent's range fails and its bytes 0x1E/0x1F hold other
-values. The parent's test-menu script to FREE PLAY changes nothing in `indy500to`, so its
-free-play bytes and a link role were not found and linked play is off for both *(not done)*.
+values.
+
+- *Confirmed (by running it):* **link play and free play of both variants** (`games/link_variants.rs`).
+  Both have the parent's test menu, with NETWORK TYPE (STAND ALONE, MASTER, SLAVE) and CABINET ID
+  on GAME ASSIGNMENTS (`indy500to` adds ENGINE VOLUME and DEFAULT VIEW after CABINET ID) and the
+  COIN ASSIGNMENTS page. The cursor wants presses well apart (about 100 frames), and a held test
+  press repeats: every 3 or 4 frames of hold moved COIN/CREDIT SETTING two or three steps, which is
+  probably why the parent's script did not end on #27 in `indy500to` (*unconfirmed*: that script was not kept); one
+  frame of press, 100 frames apart, moves it by two (12 to 27 in 8 presses, `indy500to`; 17 to 27
+  in 6, `indy500d`, whose default is #17, 3 coins 1 credit). FREE PLAY is #27 in both and changes
+  the same bytes as the parent: 0x10 (to 0x1A), 0x11 (to 1, from 3 in `indy500d` and 2 in
+  `indy500to`), 0x15 (to 1), the write counter and the checksums.
+  - `indy500to`: the parent's layout (36-byte record, copy at 0x2C), NETWORK TYPE 0x1E and
+    CABINET ID 0x1F (copies 0x42, 0x43) as the parent; MASTER and SLAVE are accepted.
+  - `indy500d`: the record is **44 bytes** (the copy at 0x34, so the copies of the role bytes are
+    at +44), the checksum the same routine and start value over 42 bytes, NETWORK TYPE at **0x28**
+    and CABINET ID at **0x29** (the bytes 0x1E and 0x1F hold other settings, 18 and 17), format word
+    0x0711. Found by changing each setting in the menu and diffing the saved EEPROM, and by trying the
+    checksum over the lengths the image allows (its code was not read).
+  - Races: `link-run` with 2 machines (1/2 and 2/2, the other car in view) and 4 (1/4 to 4/4) in
+    both; `make link-free-play-test GAMES="indy500d indy500to"` and `make link-net-test` (hashes equal
+    `link-run`'s, with loss and jitter, drops and delay changes); `make link-record-test`: the game's
+    own save of NETWORK TYPE MASTER with CABINET ID 2, and of FREE PLAY, is what romset writes, byte
+    for byte except the checksums and the write counter. With the default #17 (3 coins 1 credit)
+    `indy500d` needs three coins a credit, so its races use free play or three coins.

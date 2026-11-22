@@ -110,10 +110,10 @@ wherever nothing else changed.
 | `vf2b` Rev B | revision | four program chips | `6790a5d07fdfd8f7` | plays; loop 0x10B3C |
 | `vstrikro` Original | revision | four program chips and the `.7/.8` pair | `940ba002561c05cb` | plays: ranking, a match; loop found by the hot spots of the run |
 | `vonj` Japan | region | program pair | `c3bf3413fbdd155b` | plays; loop 0x28E2C; **link on** (the parent's data) |
-| `indy500d` Deluxe, Rev A | revision | program pair, `.7/.8` pair, sound program | `db57fdba291b8487` | plays; Japan warning then races; loop 0x345D4; attract frame 2250; **link off** |
-| `indy500to` Twin, older | revision | program pair, `.7/.8` pair, sound program | `56b54eb96991f0a8` | plays from its own `coin_start` (start press at 1900); loop 0x2E1C4; attract frame 2250; **link off** |
-| `dayton93` '93 Edition | revision | ten chips (program pair, main data `.8/.9` and `.6/.7`, polygons `.19/.23`, textures `.26/.27`), other sizes | `2a4707a921d968df` | plays; loop 0x12B0 (the parent's second loop is not in this program); own textures; **link off** |
-| `daytonas` Saturn Ads | revision | program pair and `.6/.7` | `39fb66ba9afb4930` | plays with its own preset settings record; loops 0x13A8 and 0x1BDA8; **link off** |
+| `indy500d` Deluxe, Rev A | revision | program pair, `.7/.8` pair, sound program | `db57fdba291b8487` | plays; Japan warning then races; loop 0x345D4; attract frame 2250; link play and free play: its own (below) |
+| `indy500to` Twin, older | revision | program pair, `.7/.8` pair, sound program | `56b54eb96991f0a8` | plays from its own `coin_start` (start press at 1900); loop 0x2E1C4; attract frame 2250; link play and free play: its own (below) |
+| `dayton93` '93 Edition | revision | ten chips (program pair, main data `.8/.9` and `.6/.7`, polygons `.19/.23`, textures `.26/.27`), other sizes | `2a4707a921d968df` | plays; loop 0x12B0 (the parent's second loop is not in this program); own textures; **no link play** (its program has none: below) |
+| `daytonas` Saturn Ads | revision | program pair and `.6/.7` | `39fb66ba9afb4930` | plays with its own preset settings record; loops 0x13A8 and 0x1BDA8; link play and free play: its own (below) |
 | `daytonase` Special Edition | revision | program pair and `.6/.7` | `e6e62eba70d36995` | as `daytonas`; loops 0x13A8, 0x1BD38 |
 | `zerogunj` Japan | region | program pair | `171d4f54c4caa140` | plays: mission 1, continue; its loop is in RAM-run code, found by the run's hot spots (0x5490A0) |
 | `dyndeka2` Dynamite Deka 2 | region | program `.12/.13` | `a3b912a344e41ee1` | plays; protection answers 0x10 lower (`protection_rom`); loop 0x71184 (82.8%) |
@@ -190,16 +190,22 @@ the survey's checks only*.
 | Variant | Link play | Why |
 |---|---|---|
 | `srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc` | the parent's | the settings record was checked to be the parent's |
-| `daytonas`, `daytonase` | off | the record has another version, other defaults and an extra item; the free-play bytes (0x10, 0x14, 0x7C in the parent) are not the same: the program's own default at 0x7C is 1, where the parent's is 0, and the link ID's place was not re-verified by a link run |
-| `dayton93` | off | its record is version 1 and was not checked against the parent's link and free-play bytes |
-| `indy500d` | off | another layout: the checksum over the parent's range fails, no copy at 0x2C, bytes 0x1E/0x1F hold 18 and 17 |
-| `indy500to` | off | the record has the parent's layout and checksum (valid by the parent's rule, copy at 0x2C, role and cabinet bytes 0 at 0x1E/0x1F), but the test-menu route to FREE PLAY and NETWORK TYPE that works on the parent (docs/games/indy500.md) changed nothing in this release (its menu is not the parent's), so its free-play bytes and the game's acceptance of a role were not found: *not done* |
+| `daytonas`, `daytonase` | own (up to 8, as the parent) | the I/O board's record, as the parent's kind (link ID 0x0B: 0 SINGLE, 1 MASTER, 2 SLAVE; CAR NUMBER 0x0C; CCITT CRC at 8), with the program's own version byte (4, 3) and defaults, found by running each program's GAME SYSTEM page (LINK ID is its first row; the Saturn Ads page also has PROMOTE SATURN). FREE PLAY is COIN ASSIGNMENT #27 as the parent's (bytes 0x10 and 0x14 the same); byte 0x7C is **not** a free-play byte: it is the record's save counter (the game raises it at every save, whichever setting changed: 1 to 2 here, 0 to 1 in the parent), which the entry carries so the record equals what the game writes. *Confirmed (by running it)*: `make link-record-test GAMES="daytonas daytonase"` |
+| `dayton93` | none: **no link code** | its GAME SYSTEM page has no LINK ID or CAR NUMBER (ADVERTISE SOUND, COUNTRY, CABINET, DIFFICULTY only); with the idle link board fitted (`make link-trace`) a coin-start run makes **no access** to the board's address range, and two `link-run` nodes with link IDs 1 and 2 in their records ran two stand-alone races (no "starts the board", 40 cars, POSITION 40/40 on both). *Confirmed (by running it)*; the program was not read through for link code. Its free play bytes are the parent's (found; byte 0x7C counts 1 to 2), but free play is only offered with link play, so none |
+| `indy500d` | own (up to 4, as the parent) | its record is the S32A kind with **another size**: the record is 44 bytes (the copy at 0x34, not 0x2C), the checksum the parent's routine (start 0xDEBDEC00) over the 42 bytes after the word, NETWORK TYPE at **0x28** and CABINET ID at **0x29** (copies 0x54, 0x55); the two bytes 0x1E/0x1F, 18 and 17, are other settings. FREE PLAY is COIN ASSIGNMENTS #27 as the parent's (bytes 0x10, 0x11, 0x15), from this variant's default #17 (3 coins 1 credit, byte 0x10 0x10, byte 0x11 3). Format word 0x0711. *Confirmed (by running it)*; the record equals the game's own save (`make link-record-test`) |
+| `indy500to` | own (up to 4, as the parent) | the parent's layout and checksum (record 36 bytes, copy at 0x2C; NETWORK TYPE 0x1E, CABINET ID 0x1F) with other defaults (byte 0x1C 1 where the parent's is 2). The earlier "the parent's test-menu route changed nothing" was the route's presses, not another menu (*probable*: that script was not kept): a test press held a few frames repeats, moving the value two or three steps, so 15 presses end away from #27; with one frame of press every 100 frames, 8 presses from #12 reach #27 FREE PLAY (the menu pages are the parent's, with ENGINE VOLUME and DEFAULT VIEW rows after CABINET ID). FREE PLAY bytes as the parent's (0x10, 0x11, 0x15; default #12). The game accepts MASTER and SLAVE. *Confirmed (by running it)* |
 | `vonj` | the parent's | the backup SRAM record (`SEGA.AM#3.VRON.`, the checksum, the defaults) is the parent's byte for byte, but for a run counter; a linked match runs (`docs/hw/link-board.md` section 15.4) |
 | `stcca`, `stccb` | their own (`VariantLink::Own`) | the record is `SEGASTCa`, four settings bytes shorter than the parent's and not the same defaults; the checksum rule (CCITT over `0x10`-`0x7F`), the role byte (`0x10` bits 5-7) and the link are the parent's; their free play bytes are at `0x14`-`0x15` (`docs/hw/link-board.md` section 16) |
 | the others (`vf2*`, `vstrikro`, `zerogunj`, `dyndeka2`, `doaa`) | none | their parents have none |
 
-`make link-free-play-test`, `link-state-check` and `link-record-test` run on the
-parents only and are unchanged.
+`make link-free-play-test`, `link-net-test` and `link-record-test` take the four variants
+with link play as well (`GAMES="daytonas daytonase indy500d indy500to"`): a two-machine
+race, free play from a start press, the network run's hashes equal `link-run`'s, and the
+records equal what each game writes from its own test menu. `link-run` also ran the parents'
+maximum: `daytonas` and `daytonase` with 8 machines (POSITION 1 to 8 of 8) and `indy500d` and
+`indy500to` with 4 (1 to 4 of 4). `link-state-check` runs on the parents only and is unchanged.
+Two machines of one variant link; a machine of another variant, or of the parent, is refused
+(the set id is in the ROM hash).
 
 ## Method
 
@@ -328,8 +334,8 @@ evidence that a clone can reject the parent's preset record.
 
 | Variant | Kind | Chips that differ | Run | Per-game data that differs | Effort |
 |---|---|---|---|---|---|
-| `indy500d` Deluxe | revision (Japan warning screen), official | program pair `epr-18251a.15/18252a.16` (20% equal), `.7/.8` pair `epr-18345/18346` (about 33%), sound program `epr-18253.31` (94%) | plays: Japan warning, race; `db57fdba291b8487`; idle skip 0% | idle loop 0x34914 to 0x345D4; **the settings record is another size and layout (checksum over the parent's range fails, no copy at 0x2C, role and cabinet bytes at 0x1E/0x1F hold other values: 18, 17)**, defaults differ (the race showed credit 2/3); needs its own `LinkPlay` or none | B |
-| `indy500to` Twin (older) | revision, official | program pair `epr-18254a.15/18255a.16` (19%), `.7/.8` `epr-18389/18390`, sound program `epr-18391.31` (98%) | boots, attract in Japanese, **the `coin-start` script's start press does not start a race by frame 3600** (still on "PRESS START BUTTON"); `ed4ac127b1c34bff`; idle skip 0% | idle loop to 0x2E1C4; the record has the parent's S32A checksum and seed (valid) but fewer settings, so offsets such as the role byte need re-finding; input timing | B |
+| `indy500d` Deluxe | revision (Japan warning screen), official | program pair `epr-18251a.15/18252a.16` (20% equal), `.7/.8` pair `epr-18345/18346` (about 33%), sound program `epr-18253.31` (94%) | plays: Japan warning, race; `db57fdba291b8487`; idle skip 0% | idle loop 0x34914 to 0x345D4; **the settings record is another size and layout (checksum over the parent's range fails, no copy at 0x2C, role and cabinet bytes at 0x1E/0x1F hold other values: 18, 17)**, defaults differ (the race showed credit 2/3); *since built*: its own `LinkPlay` (record 44 bytes, the copy at 0x34, checksum the parent's routine over 42 bytes, NETWORK TYPE 0x28, CABINET ID 0x29; see Link play and free play of the variants) | B |
+| `indy500to` Twin (older) | revision, official | program pair `epr-18254a.15/18255a.16` (19%), `.7/.8` `epr-18389/18390`, sound program `epr-18391.31` (98%) | boots, attract in Japanese, **the `coin-start` script's start press does not start a race by frame 3600** (still on "PRESS START BUTTON"); `ed4ac127b1c34bff`; idle skip 0% | idle loop to 0x2E1C4; the record has the parent's S32A checksum and seed (valid) but fewer settings, so offsets such as the role byte need re-finding (*since found*: the parent's 0x1E/0x1F); input timing | B |
 
 ### Last Bronx (`lastbrnx`, 2B): 2 clones
 
@@ -544,9 +550,9 @@ that is class C stays out of the list until it plays (a manifest flag, as
 - (Since built: `zerogunj`'s and `doaa`'s loops, and `vf2b`'s and the Saturn
   sets', are found and confirmed by their skips. Still open: the 2A clones'
   loops, which are not built.)
-- Link data of `daytonas`, `daytonase`, `dayton93`, `indy500d` and `indy500to`
-  (off for them: see the table in Status), and whether linked play between
-  variants could work.
+- (Since built: the link data of `daytonas`, `daytonase`, `indy500d` and `indy500to`;
+  `dayton93` has no link code. See the table in Status.) Whether linked play between
+  variants could work is open (not tried).
 - Whether `dayton93` accepts the parent's preset record or only migrates it
   (its program runs stand-alone either way).
 - Why the 2A clones `zeroguna`, `zerogunaj` and `pltkidsa` and the three 2B and
