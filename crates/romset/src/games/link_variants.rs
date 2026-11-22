@@ -41,6 +41,7 @@ pub static DAYTONAS: LinkPlay = LinkPlay {
     ghost_keep: &[(0x0b, 0x0d), (0x40, 0xe8)],
     ghost_sum: Some(0x3c),
     free_play: Some(DAYTONA_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `daytonase` (Special Edition), version 3: the I/O board's 128-byte record as the parent's (link ID at byte `0x0B`,
@@ -76,6 +77,7 @@ pub static DAYTONASE: LinkPlay = LinkPlay {
     ghost_keep: &[(0x0b, 0x0d), (0x40, 0xe8)],
     ghost_sum: Some(0x3c),
     free_play: Some(DAYTONA_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// COIN ASSIGNMENT, COIN/CREDIT SETTING #27 "FREE PLAY" in `daytonas` and `daytonase` (docs/games/daytona.md),
@@ -118,6 +120,7 @@ pub static INDY500D: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
     free_play: Some(INDY500D_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// `indy500to` (Twin, older): the "S32A" record in the EEPROM, 36 bytes at `0x08` and its copy at `0x2C`
@@ -150,6 +153,7 @@ pub static INDY500TO: LinkPlay = LinkPlay {
     ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
     ghost_sum: None,
     free_play: Some(INDY500TO_FREE_PLAY),
+    node_bytes: None,
 };
 
 /// COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 "FREE PLAY" in `indy500d` (default #17, 3 coins 1 credit):
