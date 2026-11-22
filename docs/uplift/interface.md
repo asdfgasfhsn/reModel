@@ -1,7 +1,7 @@
 # The interface in one place
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. This page gathers what the other specs each define a part of: every
+Shared words, roles and rules: [README.md](README.md). Of the verbs, `scene list/make/verify/render`, `coverage`, `tour`, `asset check` and `pack check` are built
+(on a studio project: [../uplift-studio.md](../uplift-studio.md)); the rest is not. This page gathers what the other specs each define a part of: every
 verb, where files live, who needs what, the status of an asset, and three
 tasks written out command by command. Where a spec and this page differ,
 this page is the intent and the spec needs correcting.
@@ -86,7 +86,7 @@ listed in the last column.
 | `asset same ID ID`, `asset same --suggest` | `merged`, or `pairs[]` with a likeness |
 | `asset make ID --with BACKEND [--replace]` | `outcome` (`ok`, `repaired`, `refit`, `gate:NAME`, `backend:WHY`), `draft`, `status`, `gates[]`, `sheet` |
 | `asset normalise ID FILE [--replace]` | `draft`, `status`, `changes[]`. `FILE` is any PNG anywhere; a corrected copy is written to `draft/<slug>.png` |
-| `asset check ID` | `status`, `gates[]`: `gate`, `value`, `limit`, `verdict` (`pass`, `warn`, `review`, `error`), `fix`; `sheet` if a gate failed |
+| `asset check [ID..\|--all] [--from draft\|pack]` (**built**, on a studio project) | `assets[]`: `asset`, `status`, `from`, `file`, `checked`, `verdict`, `gates[]`: `gate`, `value`, `limit`, `verdict` (`pass`, `info`, `warn`, `error`), `rule` (the pass criterion with its number), `axis`, `fix`; `counts`, `ms`; for one ID also `status` and `gates[]` at the top. No `sheet` yet, and `review` is not used yet |
 | `region capture SCENE X,Y,W,H --name NAME [--replace]` | As in task B |
 | `region list` | `regions[]`: `name`, `cells`, `status` |
 | `region check NAME` | `scenes[]`: `scene`, `matched`, `cells_matched`, `cells` |
@@ -96,7 +96,7 @@ listed in the last column.
 | `project approve ID...\|--category C [--accept "REASON"]` | `approved[]`, `skipped[]`: `asset`, `why`. With `--category`, assets not yet `checked`, or with a `review` item and no `--accept`, are skipped with the reason, not errors. A named ID that is not `checked` is exit code 2 |
 | `project reject ID --reason "TEXT"` | The changed row |
 | `pack build [--archive] [--out DIR] [--replace]` | `out` (default `build/` in the project), `files`, `bytes`, and `archive`, the path of the file to publish. It builds whatever is approved and does not need `pack check` first |
-| `pack check [--level asset\|scene\|clip\|pack]` | As in task C. `done` is true when nothing is at `error`, no required asset is short of `approved`, and every required scene meets its coverage. With no level it runs every level it can and lists the rest under `skipped` |
+| `pack check [--level asset,pack,scene,clip] [--asset ID].. [--release]` (**built** for a studio project: `data.done`, `counts`, `gates[]` per gate, `failures[]`, `lint[]`, `overrides[]`, `skipped[]`, `report`; `--out DIR` for the files) | As in task C. `done` is true when nothing is at `error` (under `--release` an unapproved selected asset and a scene short of its coverage are errors; the project's list of required scenes is not built). With no level it runs every level it can and lists the rest under `skipped` |
 | `tour list`, `tour run NAME\|--all`, `coverage` | [content-coverage](content-coverage.md) |
 | `pack find`, `pack install`, `pack update`, `pack publish --check` | [distribution](distribution.md) |
 
@@ -126,7 +126,7 @@ Rules the table leans on:
   to choose a scene, `scene sheet --label layouts` for boxes and names
   as data, then `scene what` on a box.
 
-This table is hand-written because nothing is built. Once slice A
+This table is hand-written. Once slice A
 exists it is generated from the code (`remodel help --json`), and the
 cold read becomes a repeatable test of that output.
 

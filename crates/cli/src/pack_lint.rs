@@ -41,6 +41,8 @@ enum Level {
 #[derive(Default)]
 struct Report {
     found: BTreeMap<(Level, char, String), Vec<String>>,
+    /// GPU bytes of every image and material drawn at once: plain, mipmapped.
+    gpu: [u64; 2],
 }
 
 impl Report {
@@ -474,6 +476,36 @@ fn lint_regions(dir: &Path, files: &[File], manifest: Option<&Manifest>, r: &mut
 
 /// Lint the pack in `dir`, print the findings and return them.
 fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Report, String> {
+    lint_report_with(dir, dump, max_side, false)
+}
+
+/// What `pack check` takes from a lint: the findings (level, check letter,
+/// message, files) and the GPU memory the pack needs (docs/uplift/quality-gates.md).
+pub struct Findings {
+    pub found: Vec<(&'static str, char, String, Vec<String>)>,
+    /// Bytes of every image and material at once: plain, with mipmaps.
+    pub gpu: [u64; 2],
+}
+
+impl Findings {
+    pub fn count(&self, level: &str) -> usize {
+        self.found.iter().filter(|f| f.0 == level).count()
+    }
+}
+
+/// The lint of the pack in `dir`, printing nothing.
+pub fn findings(dir: &Path, max_side: usize) -> Result<Findings, String> {
+    let r = lint_report_with(dir, None, max_side, true)?;
+    let found = r
+        .found
+        .iter()
+        .filter(|((l, ..), _)| *l != Level::Note)
+        .map(|((l, c, w), items)| (if *l == Level::Error { "error" } else { "warning" }, *c, w.clone(), items.clone()))
+        .collect();
+    Ok(Findings { found, gpu: r.gpu })
+}
+
+fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: bool) -> Result<Report, String> {
     let mut r = Report::default();
     let mut files = vec![];
     let mut other = BTreeSet::new();
@@ -774,6 +806,7 @@ fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Repor
     }
     let mb = |b: u64| format!("{:.1} MB", b as f64 / (1 << 20) as f64);
     let total = [images[0] + materials[0], images[1] + materials[1]];
+    r.gpu = total;
     let over = |b: u64| match (b > pack::BUDGET_NATIVE, b > pack::BUDGET_WASM) {
         (true, _) => "over both budgets",
         (false, true) => "over the browser's budget",
@@ -800,6 +833,9 @@ fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Repor
         "",
     );
 
+    if quiet {
+        return Ok(r);
+    }
     let count = |p: fn(&FileKind) -> bool| files.iter().filter(|f| f.kind.as_ref().is_ok_and(p)).count();
     println!(
         "pack-lint {}: {} PNGs: {} images, {} tiles, {} material maps; manifest: {}",

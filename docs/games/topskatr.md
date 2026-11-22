@@ -163,6 +163,26 @@ documentation and hasn't been contradicted yet.
   into it: topskatr uploads none. That page lists the footage that would
   settle it (this scene, about 75 s after power-on).
 
+## Pack gates on the Top Skater showcase pack (2026-11-22)
+
+`remodel pack check` on the showcase's last pack (6,286 files; the gates are
+in docs/uplift-studio.md, "Gates"; the evidence and its caveats in
+docs/uplift/quality-gates.md, E2). Numbers only; no image is kept here.
+
+- Asset gates, 2.2 s for the lot: `file` passes all; `alpha` is an error on 7
+  of 303 textures (2.3%) and a warning on 552 of 5,970 tiles; `alpha.soft`
+  warns on 34; `seam` on 1 of 219 checked; `noise` on 167 (2.7%); `changed`
+  on none (the lowest texture still differs over 11.5% of its texels).
+- Pack gates: `lint` 0 errors and 0 warnings; `budget` 263.1 MB mipmapped, over
+  the browser's 192 MB; 227 of 6,500 selected rows have no approved image.
+- `coverage` of pixels that differ from the original, per scene at the native
+  view: coin-up 0.0%, course-select 0.0%, skater-select 6.8%, race-go 88.0%,
+  race-course 90.9%. *Unconfirmed:* the two 0.0% scenes are 2D screens; whether
+  the pack draws nothing there or `scene render` does not draw the 2D
+  replacements was not checked.
+- `flicker`: a 1,725-frame attract run with the pack (`make pack-log`)
+  gives 993 changes and 10,342 pixels involved per 100 frames.
+
 ## Lighting (smooth shading's side channel)
 
 Measured with `remodel --geo native --light --input coin-start run 900000000` (6209 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):

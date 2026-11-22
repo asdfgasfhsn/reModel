@@ -6,8 +6,13 @@
 
 #![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
 
+#[path = "studio_gates.rs"]
+mod asset_gates;
 #[path = "studio_regions.rs"]
 mod regions;
+
+#[allow(unused_imports)] // `refusals`: for `project approve` (item 6)
+pub use asset_gates::{asset_main, check_assets, refusals, Src};
 
 use crate::studio_answer::unknown;
 use crate::studio_img::{self as img, Image, Wrap};
@@ -33,7 +38,7 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
   region PROJECT --frame F --region X,Y,W,H [--scale S] [--map NAME]   what is drawn there (TSV)
   select PROJECT [--key K,..] [--group N] [--surface S] [--frame F --region X,Y,W,H]
          [--kind tex|tile] [--min-pixels N] [--all] [--category C] [--reason TEXT]
-  status PROJECT [--tsv] [--missing]
+  status PROJECT [--tsv] [--missing] [--strict]   (--strict: exit 1 unless every selected image is approved)
   approve PROJECT [NAME..] [--drafted] [--category C] [--group N] [--undo] [--replace]
   import PROJECT --from DIR --tool TEXT [NAME..|--group N|--category C|--all] [--replace]   drafts made elsewhere, with provenance
   pack PROJECT [--approve-all] [--no-lint] [--replace]      pack.txt, index.txt, pack-lint
@@ -116,7 +121,7 @@ const OPTIONS: &[(&str, &[&str])] = &[
             "--scale",
         ],
     ),
-    ("status", &["--tsv", "--missing"]),
+    ("status", &["--tsv", "--missing", "--strict"]),
     ("approve", &["--drafted", "--category", "--group", "--undo", "--all", "--replace"]),
     ("import", &["--from", "--tool", "--prompts", "--group", "--category", "--all", "--replace"]),
     ("pack", &["--approve-all", "--no-lint", "--replace"]),
@@ -429,7 +434,7 @@ impl Project {
     /// Every map's inventory, merged: a name in several maps is listed once,
     /// from the first map that has it (maps in name order); `id`s are only
     /// meaningful with `Inv::map`.
-    fn inventory(&self) -> Result<Vec<Inv>, String> {
+    pub(crate) fn inventory(&self) -> Result<Vec<Inv>, String> {
         let maps = self.maps();
         if maps.is_empty() {
             return Err(format!("{}: no texture map (run `make texmap`, then init --map)", self.p("map").display()));
@@ -480,7 +485,7 @@ impl Project {
             .collect())
     }
 
-    fn selection(&self) -> Vec<Sel> {
+    pub(crate) fn selection(&self) -> Vec<Sel> {
         std::fs::read_to_string(self.p("selection.tsv"))
             .unwrap_or_default()
             .lines()
@@ -677,7 +682,7 @@ fn name_matches(row: &str, tok: &str) -> bool {
             && (row == format!("tile_{tok}") || row.starts_with(&format!("tex_{tok}_"))))
 }
 
-fn today() -> String {
+pub(crate) fn today() -> String {
     let secs =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let z = secs / 86400 + 719468;
@@ -1067,7 +1072,7 @@ fn status(p: &Project, a: &Args) -> Result<bool, String> {
             let l = ledger.get(&r.name).cloned().unwrap_or(("-".into(), "-".into(), "-".into()));
             println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", r.name, r.kind, r.group, r.category, s.name(), l.0, l.1, l.2);
         }
-        return Ok(true);
+        return Ok(!(a.has("--strict") && st.iter().any(|x| x.1 != Status::Approved)));
     }
     let count = |s: Status| st.iter().filter(|x| x.1 == s).count();
     let meta = p.meta();
@@ -1117,10 +1122,17 @@ fn status(p: &Project, a: &Args) -> Result<bool, String> {
     if unrecorded > 0 {
         println!("unrecorded    {unrecorded} images have no line in status/status.txt (made by hand)");
     }
-    Ok(true)
+    // With --strict the gate of `pack check`'s `selected`: every selected image approved.
+    let short = st.iter().filter(|x| x.1 != Status::Approved).count();
+    println!(
+        "# selected gate: {short} of {} not approved (pass: 0{})",
+        st.len(),
+        if a.has("--strict") { "; exit 1 otherwise" } else { "; --strict makes it exit 1" }
+    );
+    Ok(!(a.has("--strict") && short > 0))
 }
 
-fn png_names(dir: &Path) -> Vec<String> {
+pub(crate) fn png_names(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .map(|d| {
             d.filter_map(|e| e.ok())
@@ -1144,29 +1156,40 @@ fn approve(p: &Project, a: &Args) -> Result<bool, String> {
     };
     let (mut n, mut skipped) = (0, 0);
     let mut kept: Vec<(String, &str)> = Vec::new();
+    // The hash of each approved file, for the `stale` gate (status/approved.tsv).
+    let mut records: Vec<(String, Option<u64>)> = Vec::new();
+    let recorded = p.hashes("approved.tsv");
     for r in &rows {
         let (d, k) = (p.p("draft").join(format!("{}.png", r.name)), p.p("pack").join(format!("{}.png", r.name)));
         if a.has("--undo") {
             if k.is_file() {
                 std::fs::remove_file(&k).map_err(|e| e.to_string())?;
+                records.push((r.name.clone(), None));
                 n += 1;
             }
         } else if d.is_file() {
             // Copy only what changed, so a second run does nothing; an
             // approved image that differs from the draft is replaced only
             // on request.
-            if std::fs::read(&d).ok() != std::fs::read(&k).ok() {
+            let (draft, approved) = (std::fs::read(&d).ok(), std::fs::read(&k).ok());
+            if draft != approved {
                 if k.is_file() && !a.has("--replace") {
                     kept.push((r.name.clone(), "approved, and the draft differs"));
                 } else {
                     copy_file(&d, &k)?;
+                    records.extend(draft.map(|b| (r.name.clone(), Some(crate::gates::hash_bytes(&b)))));
                     n += 1;
+                }
+            } else if let Some(b) = draft {
+                if !recorded.contains_key(&r.name) {
+                    records.push((r.name.clone(), Some(crate::gates::hash_bytes(&b))));
                 }
             }
         } else {
             skipped += 1;
         }
     }
+    p.record_hashes("approved.tsv", &records)?;
     println!(
         "{}      {n} images, {skipped} without a draft",
         if a.has("--undo") { "unapproved" } else { "approved  " }
@@ -1635,19 +1658,11 @@ fn seam(p: &Project, a: &Args) -> Result<bool, String> {
     let (mut checked, mut suspects) = (0, 0);
     for name in png_names(&p.p(from)) {
         let im = img::load(&p.p(from).join(format!("{name}.png")))?;
-        let (mut wu, mut wv) = tile_wrap(inv.get(&name), &name);
-        // A texture the game never draws past its own size shows no seam:
-        // an axis whose coordinates stay within one size is not checked.
-        let (mut once_u, mut once_v) = (false, false);
-        if let Some(i) = inv.get(&name).filter(|i| i.kind == "tex") {
-            (once_u, once_v) = (i.span_u <= 1.0, i.span_v <= 1.0);
-            if once_u {
-                wu = Wrap::Clamp;
-            }
-            if once_v {
-                wv = Wrap::Clamp;
-            }
-        }
+        let (wu, wv) = asset_gates::wraps(inv.get(&name), &name);
+        let (once_u, once_v) = match inv.get(&name).filter(|i| i.kind == "tex") {
+            Some(i) => (i.span_u <= 1.0, i.span_v <= 1.0),
+            None => (false, false),
+        };
         let u = img::seam_axis(&im, true, wu);
         let v = img::seam_axis(&im, false, wv);
         // Does the original have the same seam? Then it is the game's own.
@@ -1676,7 +1691,11 @@ fn seam(p: &Project, a: &Args) -> Result<bool, String> {
             v.ratio
         );
     }
-    println!("# seam check: {checked} images in {from}/, {suspects} suspect");
+    println!(
+        "# seam check: {checked} images in {from}/, {suspects} suspect (pass: edge jump at most {} levels or {}x the typical step; a warning, an error with --strict)",
+        crate::gates::SEAM_LEVELS,
+        crate::gates::SEAM_RATIO
+    );
     Ok(!(a.has("--strict") && suspects > 0))
 }
 

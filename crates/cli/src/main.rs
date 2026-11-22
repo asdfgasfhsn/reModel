@@ -4,6 +4,7 @@ mod catalogue;
 mod catalogue_viewer;
 mod coverage;
 mod depth_check;
+mod gates;
 mod geo_check;
 mod glyphs;
 mod gpu_check;
@@ -15,6 +16,7 @@ mod link_run;
 mod look_render;
 mod music;
 mod pack_check;
+mod pack_gates;
 mod pack_lint;
 mod pack_log_run;
 mod recomp_crates;
@@ -342,7 +344,9 @@ commands:
   pack-flicker LOG..   report on --pack-log files: what alternates between
                        its replacement and the original over the run, ranked
                        by the pixels involved, with frames, positions and
-                       reasons (--top N rows, default 30)
+                       reasons (--top N rows, default 30). Exits 1 when the
+                       pixels involved per 100 frames pass --limit PX (default
+                       5000; docs/uplift-studio.md, \"Gates\")
   pack-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) on the GPU with the pack
@@ -537,6 +541,17 @@ commands:
                        (ok, code, error, data, warnings, next); exit 0 done,
                        1 a check failed, 2 bad request, 3 missing, 4 internal;
                        `remodel scene` lists the options
+  asset check [ID..|--all] [--project DIR] [--from draft|pack]
+                       the asset gates on images of a studio project: file,
+                       alpha, stale (errors), seam, changed, noise (warnings),
+                       each with its number and limit; --json prints one
+                       object; exit 1 when a gate is at error
+                       (docs/uplift-studio.md, \"Gates\")
+  pack check [--project DIR] [--level asset|pack|scene|clip] [--release]
+                       every gate level on a project's pack/ and a report in
+                       reports/DATE-VERSION/ (report.json, gates.tsv,
+                       report.md); scene coverage needs the scenes made and a
+                       GPU; --out DIR chooses where the report goes
   sound-disasm ADDR [COUNT]
                        disassemble the sound board's 68000 program (its own
                        address space: ROM at 0x600000; at 0 on the original
@@ -1084,6 +1099,8 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "pack-flicker" => cmd_pack_flicker(o),
         "studio" => cmd_studio(o),
         "scene" => scene::main(o),
+        "asset" => studio::asset_main(o),
+        "pack" => pack_gates::main(o),
         "img" => cmd_img(o),
         "catalogue" => cmd_catalogue(o),
         "tour" if o.args.get(1).map(String::as_str) != Some("run") => tour::list(o),
@@ -1284,11 +1301,20 @@ fn cmd_pack_lint(o: &Opts) -> ExitCode {
 
 fn cmd_pack_flicker(o: &Opts) -> ExitCode {
     let mut top = 30;
+    let mut limit = gates::FLICKER_PX_PER_100_FRAMES;
     let mut files = Vec::new();
     let mut it = o.args[1..].iter();
     while let Some(a) = it.next() {
         if a == "--top" {
             top = it.next().and_then(|v| v.parse().ok()).unwrap_or(top);
+        } else if a == "--limit" {
+            match it.next().and_then(|v| v.parse::<f64>().ok()).filter(|v| *v >= 0.0) {
+                Some(v) => limit = v,
+                None => {
+                    eprintln!("error: --limit wants a number of pixels per 100 frames");
+                    return ExitCode::from(2);
+                }
+            }
         } else {
             files.push(Path::new(a));
         }
@@ -1300,6 +1326,24 @@ fn cmd_pack_flicker(o: &Opts) -> ExitCode {
     match model2::packlog::report(&files, top) {
         Ok(r) => {
             print!("{r}");
+            // The `flicker` gate: pixels involved in changes per 100 frames, on each log.
+            let mut over = 0;
+            for f in &files {
+                let fl = model2::packlog::flicker(&std::fs::read_to_string(f).unwrap_or_default());
+                let v = fl.px_per_100_frames();
+                println!(
+                    "flicker gate  {}: {v:.0} px per 100 frames over {} frames, {} changes (pass: at most {limit:.0}): {}",
+                    f.display(),
+                    fl.blocks,
+                    fl.changes,
+                    if v > limit { "ERROR" } else { "pass" }
+                );
+                over += (v > limit) as usize;
+            }
+            if over > 0 {
+                eprintln!("error: flicker over the limit in {over} log(s)");
+                return ExitCode::from(1);
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

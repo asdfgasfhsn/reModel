@@ -277,14 +277,14 @@ fn state_of(dir: &Path, recipe: Option<&Recipe>) -> State {
 // ------------------------------------------------------------------ args
 
 #[derive(Default)]
-struct Args {
-    pos: Vec<String>,
-    vals: HashMap<String, Vec<String>>,
-    sw: HashSet<String>,
+pub struct Args {
+    pub pos: Vec<String>,
+    pub vals: HashMap<String, Vec<String>>,
+    pub sw: HashSet<String>,
 }
 
 impl Args {
-    fn parse(a: &[String], switches: &[&str], valued: &[&str]) -> Result<Args, Answer> {
+    pub fn parse(a: &[String], switches: &[&str], valued: &[&str]) -> Result<Args, Answer> {
         let mut r = Args::default();
         let mut it = a.iter();
         while let Some(x) = it.next() {
@@ -305,11 +305,11 @@ impl Args {
         Ok(r)
     }
 
-    fn has(&self, f: &str) -> bool {
+    pub fn has(&self, f: &str) -> bool {
         self.sw.contains(f)
     }
 
-    fn one(&self, f: &str) -> Option<&str> {
+    pub fn one(&self, f: &str) -> Option<&str> {
         self.vals.get(f).and_then(|v| v.last()).map(String::as_str)
     }
 }
@@ -777,6 +777,38 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
         warnings,
         millis: started.elapsed().as_secs_f64() * 1e3,
     })
+}
+
+/// `pack check`'s `coverage` gate: for each scene of `game` that has a local
+/// copy, draw it with `pack` and without at the native view and count the
+/// share of pixels that differ (0 to 1). Returns the shares by scene and
+/// the names of scenes with no local copy (skipped). One GPU for all.
+pub fn pack_coverage(
+    game: &'static Game,
+    project: Option<&Path>,
+    pack: &Path,
+) -> Result<(Vec<(String, f64)>, Vec<String>), Answer> {
+    let rs = recipes(game, project).map_err(|e| Answer::fail(Code::BadRequest, e))?;
+    let root = scenes_dir(game);
+    let (mut ready, mut missing) = (Vec::new(), Vec::new());
+    for r in &rs {
+        if state_of(&root.join(&r.name), Some(r)) == State::Missing {
+            missing.push(r.name.clone());
+        } else {
+            ready.push(r);
+        }
+    }
+    if ready.is_empty() {
+        return Ok((vec![], missing));
+    }
+    let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
+    let mut out = Vec::new();
+    for r in ready {
+        let o = DrawOpts { pack: Some(pack.to_path_buf()), crop: None, against: true, view: View::native() };
+        let d = draw(game, &root.join(&r.name), &o, &mut gpu)?;
+        out.push((r.name.clone(), d.changed_share.unwrap_or(0.0)));
+    }
+    Ok((out, missing))
 }
 
 fn scene_name(dir: &Path) -> String {

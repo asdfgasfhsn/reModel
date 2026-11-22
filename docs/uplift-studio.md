@@ -54,6 +54,10 @@ studio/<project>/
   recipes.txt         recipes of the local style processor (below)
   briefs/             briefs for the batch generator (below)
   status/status.txt   one line per drafted image: name, tool, prompt file, date
+  status/approved.tsv name, hash, date of each approved file (`approve` writes it; the `stale` gate reads it)
+  status/checked.tsv  the same for drafts that passed `asset check`
+  gates.txt           limit overrides, each with a reason (below, "Gates")
+  reports/            what `pack check` writes: DATE-VERSION/report.json, gates.tsv, report.md
   prompts/            the prompt or parameters behind each generated image
   original/           copies of the textures as dumped (tex_*.png, tile_*.png)
   draft/              replacements not yet approved (same names)
@@ -117,15 +121,15 @@ scriptable (below, "Strict, with answers").
 | `region-capture` | cut a 2D region override out of a captured frame's tile maps (below, "Regions") |
 | `regions` | the project's regions and which have a replacement (`--tsv`) |
 | `select` | add rows by `--key` (name, hash or ID), `--group`, `--surface`, `--frame F --region X,Y,W,H`, `--all`, with `--category` and `--reason`; copies the originals |
-| `status` | counts by category, what has no draft, strays, images with no record; `--tsv` for rows |
-| `approve` | copy drafts into `pack/` (`--drafted`, a group, a category, names; `--undo`; an approved image that differs from its draft is replaced only with `--replace`) |
+| `status` | counts by category, what has no draft, strays, images with no record; `--tsv` for rows; `--strict` exits 1 unless every selected row is approved |
+| `approve` | copy drafts into `pack/` (`--drafted`, a group, a category, names; `--undo`; an approved image that differs from its draft is replaced only with `--replace`); records each file's hash in `status/approved.tsv` for the `stale` gate (below, "Gates") |
 | `import` | bring in images made elsewhere with a `--tool` record |
 | `pack` | write `pack.txt` and `index.txt` from `pack/`, run pack-lint |
 | `draft` | the batch generator runner (below) |
 | `style` | the local style processor (below) |
 | `variants` | one restyled image for every key of its surface, tinted per key |
 | `text` | text to tiles (below) |
-| `seam` | the seam check (below) |
+| `seam` | the seam check (below); the `seam` gate runs the same test |
 | `compare` | before and after sheets (below) |
 
 **Several maps.** A project may hold more than one texture map: a course
@@ -252,7 +256,7 @@ looks for an edge line unlike the next one (a doubled ink line); clamped
 axes, and axes whose coordinates the map saw stay within one texture size
 (`once`: a skater's UV map), are not checked. An axis is suspect above 2.5 times the typical step
 and 12 levels, unless the original is just as suspect (the game's own
-seam). `--strict` fails on suspects.
+seam). `--strict` fails on suspects; the last line states the limits (12 levels, 2.5 times).
 
 **Image tools (`remodel img`).** The per-pixel jobs that went through
 shell and ImageMagick, in the binary, with no ROM and `--json`:
@@ -279,6 +283,85 @@ changed, mean difference). It needs the ROMs and the `--input` and view
 `remodel run` has `--out DIR` for it: where `run` writes `frames/`,
 `eeprom.bin` and the captured programs (default `out/GAME` in the working
 directory, as before; the eeprom is copied there from `out/GAME` first).
+
+## Gates
+
+Checks that give a number, a limit and a verdict, so "done" is not a
+matter of looking. Built 2026-11-22 (roadmap item 4); what is not built
+yet is in [uplift/quality-gates.md](uplift/quality-gates.md). A verdict is
+`pass`, `info` (the gate does not apply here, and says why), `warn` or
+`error`. Only `error` blocks: exit code 1. Every result carries its
+number (`value`), its `limit`, a `rule` that states the pass criterion
+with the number in it, and, on a failure, a `fix` line (the next step).
+
+```
+remodel asset check [ID..|--all] [--project DIR] [--from draft|pack] [--json]
+remodel pack check [--project DIR] [--level asset,pack,scene,clip] [--asset ID].. [--release] [--json]
+make asset-check ASSET="NAME ..."|--all     make pack-gates GATE_ARGS="--release"
+```
+
+**Asset gates** (`asset check`; no ROM, no GPU; the 6,290 files of the
+Top Skater showcase in 2.2 s on all cores). `ID` is a name, a 16-digit
+key or a file stem. The image checked is the draft if there is one, else
+the approved one (`--from` chooses). A draft with no gate at `error` is
+recorded as `checked` in `status/checked.tsv`.
+
+| Gate | Passes when | Level | Limit |
+|---|---|---|---|
+| `file` | It decodes, has the original's aspect and a whole-number scale from 1 to 8, and is at most 4 MB. Run on the finished image, so after `asset normalise` | error | scale 8, 4 MB |
+| `alpha` | The cut-out (alpha 0.5) of the image and its original disagree over at most 2% of their union. For a tile only a warning | error (textures) | 2% |
+| `alpha.soft` | At most 0.1% of the image's pixels are part-transparent where the original has none | warn | 0.1% |
+| `seam` | Each repeated or mirrored axis jumps at most 12 levels across its edge, or at most 2.5 times the typical step inside (the `studio seam` test), unless the original has the same seam | warn | 12 levels, 2.5x |
+| `changed` | At least 5% of the original's visible texels differ from it by more than 12 levels. Textures only | warn | 5%, 12 levels |
+| `noise` | The noise estimate (Immerkaer's, on luma over opaque 3x3 neighbourhoods) is at most 16 levels | warn | 16 |
+| `stale` | The file's hash is the one recorded when it was approved (`status/approved.tsv`, written by `studio approve`). No record: `info` | error | hash |
+
+The gates that compare with the original run only when `file` holds; a
+missing original makes them `info`. Library entry points for item 6's
+`project approve`: `studio::check_assets` and `studio::refusals` (the
+assets among those named that have a gate at `error`).
+
+**Pack gates, scene gates** (`pack check`, a studio project's `pack/`):
+
+| Gate | Passes when | Level |
+|---|---|---|
+| `lint` | `pack-lint` finds no errors (its warnings are listed in `report.json`) | error |
+| `budget` | GPU memory of every image and material drawn at once, with mipmaps, is at most 512 MB native; above 192 MB it warns (the browser) | error, warn |
+| `known` | Every `tex_` and `tile_` file is a name of the project's texture map (`map/`); the files that are not are listed | warn |
+| `selected` | Every selected row has an approved image | warn; error with `--release` |
+| `coverage` | Per scene with a local copy (`scene make`; a GPU, no ROM): at least 10% of the native view's pixels differ from the original once the pack is drawn | warn; error with `--release` |
+
+`coverage` counts changed pixels (`scene render --against original`'s
+`changed_share`), which is a lower bound of "drawn from replaced
+assets": a replacement that looks like the original is not counted. The
+default 10% is not calibrated; a project says what each scene needs. The
+`clip` level is the `pack-flicker` gate and needs a run (below), so
+`pack check` lists it under `skipped`.
+
+`pack check` writes `reports/DATE-VERSION/` in the project (`--out DIR`
+chooses another): `report.json` (every result), `gates.tsv` (`asset`,
+`gate`, `value`, `limit`, `verdict`, `rule`: one row per asset and gate)
+and `report.md` (totals, failures first, overrides, what was not run).
+`--json` prints the shared answer: `data.done` (nothing at `error`),
+`counts`, `gates[]` (per gate: `checked`, `pass`, `warn`, `error`,
+`limit`, `criterion`), the first 50 `failures[]`, `lint[]`, `overrides[]`,
+`skipped[]` and `report`.
+
+**Limits.** The defaults are the named constants at the top of
+`crates/cli/src/gates.rs`, each with the calibration it comes from
+([uplift/quality-gates.md](uplift/quality-gates.md), E1 and E2). A project
+overrides one in `gates.txt`: `GATE`, `VALUE` and a `REASON`, by tabs, for
+`file` (the biggest scale), `alpha`, `alpha.soft`, `seam`, `changed`,
+`noise`, `budget` (MB), `flicker` and `coverage` (percent). An override
+without a reason, or for an unknown gate, is refused, and the report lists
+each one.
+
+**Clips.** `remodel pack-flicker LOG` (what `make pack-log` ends with)
+exits 1 when the pixels involved in changes between replacement and
+original, per 100 frames drawn, pass `--limit PX` (default 5,000); it
+prints `flicker gate ...` with the number and the limit. `studio seam
+--strict` fails on a suspect, and `studio status --strict` when a selected
+row has no approved image (the `selected` gate).
 
 ## Regions
 
@@ -727,7 +810,7 @@ its MVP).
 Built: the design above; named scenes and `scene render` (above); `remodel texmap` and `make texmap` (ID images,
 texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
-text to tiles, surface variants, the seam check and before and after
+text to tiles, surface variants, the seam check, the quality gates (`asset check`, `pack check`) and before and after
 (phase 1b: render side and tooling only, no emulation or state hash is
 touched). The catalogue (below) is built too: observing while playing and in
 scripted runs, loads, report, viewer, glyph mapping, and the studio reading it.

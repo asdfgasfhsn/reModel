@@ -932,7 +932,12 @@ pub fn seam_axis(img: &Image, vertical: bool, wrap: Wrap) -> SeamAxis {
     };
     let worst = jump.max(edge_line);
     let ratio = worst / typical;
-    SeamAxis { wrap, jump: worst, ratio, suspect: ratio > 2.5 && worst > 12.0 }
+    SeamAxis {
+        wrap,
+        jump: worst,
+        ratio,
+        suspect: ratio > crate::gates::SEAM_RATIO && worst > crate::gates::SEAM_LEVELS,
+    }
 }
 
 // ---------------------------------------------------------------- tests

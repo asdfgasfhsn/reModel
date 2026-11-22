@@ -549,6 +549,13 @@ img: release ## Image tools, no ROM (docs/uplift-studio.md, "Image tools"): IMG_
 studio-compare: release ## Before and after (without and with STUDIO's pack/), written as side-by-side sheets to STUDIO/compare: SCENES=all (or NAME,NAME) draws the project's named scenes from their captures in seconds, with no run and no ROM (make scene-make first); without SCENES it runs the game twice (BENCH_STEPS, INPUT default BENCH_INPUT, JOBS at once) and refuses a folder that already holds a run (STUDIO_ARGS="--into DIR --frames F,.. --run-args '--height 1080 --aspect 16:9' --pack DIR --force")
 	$(RUN) studio compare $(STUDIO) $(if $(SCENES),--scene $(SCENES),--steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS)) $(STUDIO_ARGS)
 
+GATE_ARGS ?=
+asset-check: release ## Asset gates (docs/uplift-studio.md, "Gates") on images of STUDIO: ASSET="NAME NAME" (a name, 16-digit key or file stem) or ASSET=--all; GATE_ARGS="--from pack|draft --json"; errors (file, alpha, stale) exit 1, warnings (seam, changed, noise) do not; each result states its number and limit; no ROM, no GPU, milliseconds each
+	$(if $(ASSET),,$(error asset-check needs ASSET="NAME ..." or ASSET=--all))
+	$(CAP) $(REMODEL) asset check --project $(STUDIO) $(ASSET) $(GATE_ARGS)
+pack-gates: release ## Every gate level on STUDIO's pack/ and a report in STUDIO/reports/DATE-VERSION (report.json, gates.tsv, report.md): asset gates on each image, lint, budget, known, selected, and scene coverage when the scenes are made (a GPU, no ROM); GATE_ARGS="--level asset|pack|scene --asset NAME --release --json" (--release makes selected and coverage errors); limits are STUDIO/gates.txt; exit 1 when a gate is at error
+	$(LOCK_RENDER) $(RUN) pack check --project $(STUDIO) $(GATE_ARGS)
+
 LOOK      ?= comic
 LOOK_OUT  ?= $(OUT)/look-render
 LOOK_OPTS ?=

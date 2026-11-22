@@ -9,7 +9,8 @@ Status, 2026-11-20: a design, written from the code at `7d8f099`, the
 record of the Top Skater showcase, a survey of other projects'
 documentation, and 27 spikes on seven games ("Spikes" below). Nothing
 described here is built into reModel except item 1, scenes and
-`scene render`, built 2026-11-21 (with the shared `--json` answer and exit
+`scene render`, built 2026-11-21, and the first part of item 4, the asset
+gates and `pack check`, built 2026-11-22 (with the shared `--json` answer and exit
 codes in `crates/cli/src/answer.rs`; user documentation in
 [uplift-studio.md](uplift-studio.md), "Scenes"). Spike code sits on two unmerged
 branches and is not for merging as it stands. Pass one (this page, the
@@ -118,7 +119,7 @@ findings change their shape or order.
 | | 2D: patterns, regions that fit, text fields | [2d-cells](uplift/2d-cells.md) | Tile images, regions |
 | | Draw rules: as painted, filtering, tags by category | [renderer-controls](uplift/renderer-controls.md) | Look tags per texture |
 | **See** | Draw a scene in seconds; live in the player; overlays | [scenes-and-server](uplift/scenes-and-server.md), [renderer-controls](uplift/renderer-controls.md) | `look-render` on captures |
-| **Check** | Gates with numbers; "done" defined | [quality-gates](uplift/quality-gates.md) | Seam, lint, flicker, each separate |
+| **Check** | Gates with numbers; "done" defined | [quality-gates](uplift/quality-gates.md) | `asset check` and `pack check` (asset, pack and scene-coverage gates, a report), `pack-flicker` with a limit; scene `misses`/`distance`, `review` and the style gates not built |
 | **Keep** | Manifest, status, provenance, history | [pack-project](uplift/pack-project.md) | Loose files |
 | **Share** | Build, layers, archive, discovery | [pack-project](uplift/pack-project.md), [distribution](uplift/distribution.md) | One pack; plans only |
 | **Cover** | Tours, read maps, the crawler, gaps | [content-coverage](uplift/content-coverage.md) | A catalogue from scripted runs |
@@ -141,7 +142,7 @@ agents soonest.
 | ★ | **2. Lock tool, worktree set-up, pinned binary, `remodel img`** | Ends the queue; no shell image scripts | S | Low | Nothing | `tools/lock` wired into the Makefile |
 | ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
 | ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage` (built 2026-11-21: `make tour-run`, `make coverage`); then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the crawler covers menus, not play | Nothing; cheats for pokes | Tours and `coverage` against the read map |
-| ★ | **4. Asset gates and `pack check`** | "Done" is a number | M | Medium: limits were set and reported on the same images | 1 for scene coverage | The first set of six gates, then limits checked on a second pack |
+| ★ | **4. Asset gates and `pack check`** (built 2026-11-22: `file`, `alpha`, `seam`, `changed`, `noise`, `stale`; `lint`, `budget`, `known`, `selected`, scene `coverage`; reports; `pack-flicker --limit`; limits checked on `vf2` with a synthetic pack only, so a second real pack is still wanted; `review`, `pack report`, failure sheets and the scene `misses`/`distance`/clip `steady` gates remain) | "Done" is a number | M | Medium: limits were set and reported on the same images | 1 for scene coverage | The first set of six gates, then limits checked on a second pack |
 | | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium | Nothing | Each key's colour ramp in the catalogue; `art_` images, with the build baking or copying the colour copies |
 | | **6. Project manifest and provenance** | Work survives hand-over | M | Low | 5 for names | Import the showcase workspace |
 | | **7. Context bundles** | An agent's whole briefing in one call | M | Low | 1, 5 | `bundle.json`, original, mask, two crops |

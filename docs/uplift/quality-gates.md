@@ -1,189 +1,81 @@
 # Quality gates
 
-Shared words, roles and rules: [README.md](README.md). Nothing is built
-into reModel; what was tried is in "Evidence" (spike code is on
-unmerged branches, not for merging as it stands).
+Shared words, roles and rules: [README.md](README.md). **Status: the
+first part is built** (2026-11-22, roadmap item 4): the asset gates
+`file`, `alpha`, `alpha.soft`, `seam`, `changed`, `noise` and `stale`
+(`remodel asset check`), the pack gates `lint`, `budget`, `known` and
+`selected`, the scene gate `coverage` (`remodel pack check`, with
+`gates.tsv`, `report.md` and `report.json`), limit overrides in
+`gates.txt`, and the clip gate `flicker` (`remodel pack-flicker` exits 1
+over its limit). How to use them, their limits and their output are in
+[../uplift-studio.md](../uplift-studio.md), "Gates"; this page keeps what
+is not built, and the evidence the limits come from.
 
-## The problem
+## What the re-check found (rule 1, 2026-11-22)
 
-The showcase pack was checked mostly by eye, late, and by whoever came
-next. Checks exist, but they are scattered, they print prose, and most
-cannot fail.
+The spec's "Observed" claims, against the code at `7695599`:
 
-**Observed today.**
+- Held, with line numbers moved: the seam test is `seam_axis` in
+  `studio_img.rs` (2.5 times and 12 levels); `pack-lint`'s output is
+  prose with a letter per check; `pack-flicker` exited 0 when it found
+  flicker; `studio status` always returns 0; `studio compare` has no
+  threshold.
+- Changed: the seam limits were literals; they are now named constants in
+  `gates.rs` that the seam check reads. `finish_draft` (`studio.rs`)
+  now keeps a cut-out's transparency (fixed in slice A), so "a draft does
+  not inherit alpha" is true only of an image from outside, which
+  `alpha` catches.
+- Wrong or missing: nothing recorded what was approved, so `stale` had
+  nothing to compare with; `studio approve` now writes
+  `status/approved.tsv`. A pack's showcase files approved before that have
+  no record, and `stale` says `info` for them. E1's `noise` measure was
+  not specified: the built one is Immerkaer's estimate. "Scene coverage as a
+  share of pixels drawn from replaced assets" needs per-pixel identity,
+  which `scene what` (not built) would give; the built `coverage` counts
+  pixels that differ from the original, a lower bound.
+- The project the spec calls a project is, today, a studio project
+  (`project.txt`, `pack/`, `draft/`); `project approve` and the pack
+  project (item 6) are not built, so the gates work on the studio layout.
 
-| Check | Measures | Can it fail? |
-|---|---|---|
-| `studio seam` | Edge jump over typical; suspect above 2.5 times and 12 levels (`crates/cli/src/studio_img.rs:935`) | Only with `--strict` |
-| `pack-lint` | Manifest, names, sizes, maps, memory | Yes, on errors; output is prose with a letter per check (`crates/cli/src/pack_lint.rs:4`) |
-| `pack-flicker` | Replacement coming and going, ranked | No: exits 0 when flicker is found (`crates/cli/src/main.rs:1175-1200`) |
-| `studio compare` | Share of pixels changed per frame | No threshold |
-| `studio status` | Counts by state | No: always 0 |
+## Not built
 
-Nothing checks what an image generator returns: alpha, borders, aspect or
-whether the image changed at all. A generated draft for a cut-out texture
-does not inherit the original's alpha (inferred: `finish_draft`,
-`crates/cli/src/studio.rs:1761`, only crops and resizes; not run).
+| Gate | Passes when | Level | Why it waits |
+|---|---|---|---|
+| `kept`, `palette`, `luma-order`, halo | Structure, palette and brightness order stay related to the original's. Faithful packs only | warn | E1: they cannot judge a restyle; a project must say it is a faithful pack (item 6), and none exists to test them on |
+| `text` | Any readable text or logo is on the project's allow-list (`[words]` of `style.txt`) | review | Needs an outside tool; it can only flag |
+| `browser` | A pack that claims the browser uses nothing the browser cannot show | warn | `budget` already warns over the browser's 192 MB |
+| `misses` | No pixel misses for `colour`, `sibling` or `pending` in a scene | warn | Needs `--overlay miss` (item 10) |
+| `distance` | Replaced surfaces drawn at 1x are close to a supersampled reference, as `pack-check` measures | warn | Untested idea; needs calibration |
+| `steady` | Still pixels change from frame to frame no more than 1.5 times what the original's do | warn | Untested idea; needs a clip |
 
-**What slipped through in the showcase.** A sand floor painted purple. An
-ink seam across the ground. Halftone turning into a grid at a distance.
-Skater textures that "barely change". A pack over the browser's memory
-budget. 9,564 changes between replacement and original in one run, none of
-them visible in a still. And repeatedly, a final report saying the last
-fixes were "not seen in a render".
+Also not built: `pack report` (write the report again from the last
+results); `project approve` calling `studio::refusals` and refusing on an
+error unless given `--override "reason"` (item 6; the function is there and
+tested); a `review` verdict and its recorded decisions; the sheet made on
+a failure (source, candidate rolled by half, difference map); the
+project's list of required scenes and each scene's own coverage target (a
+`gates.txt` limit sets one for all); coverage as a share of pixels drawn
+from replaced assets, with the largest unreplaced assets listed; the
+player's pack page showing the gates to an artist; `asset check` on a tile's
+cut-out as anything but a warning, which E1 settled.
 
-reModel already has the pattern to copy. `temporal-check` and
-`lighting-check` state pass criteria as numbers and keep them as set
-(`docs/enhancements.md`, "How good it is" and "How it is verified").
-
-## Design
-
-One command, `pack check`, runs gates at four levels and writes one report.
-Each gate gives a number, a limit and a verdict: `error`, `warn`, `info` or
-`review` (a person must look). Only `error` blocks and sets exit code 1.
-A `review` item is settled when an approver accepts it with a reason.
-
-### Asset gates: no ROM, no GPU, milliseconds each
-
-The first set is `file`, `alpha` and `stale` as errors, and `seam`,
-`changed` (textures) and `noise` as warnings, with the limits below
-(E1). The style gates (`kept`, `palette`, `luma-order` and a halo
-test) cannot judge a restyle. They may suit a faithful pack, which
-nothing here tests: a project states whether it is a restyle or a
-faithful pack, and they apply only to the second. `category` is dropped
-(E1).
-
-| Gate | Passes when | Level |
-|---|---|---|
-| `file` | It decodes, has the original's aspect, a whole-number scale (up to 8), and is within the size limit (4 MB). Run on the finished image | error |
-| `alpha` | Its cut-out at 0.5 agrees with the original's (overlap of at least 98%), and it has no part-transparent pixels where the original had none (over 0.1% of pixels warns). For tiles the cut-out check is a warning | error (textures) |
-| `seam` | Each repeated or mirrored axis is under the seam limit (12 levels across the edge). Ink drawn on a wrapped edge cannot be a gate for cel art | warn |
-| `stale` | The file's hash is the one that was approved | error |
-| `changed` | Inside the visible-texel mask, enough of the image differs from the original (under 5% differing fails). Textures only | warn |
-| `noise` | Noise measure at most 16 | warn |
-| `kept` | Its structure is still related to the original's (a similarity band, so UV layout and lettering positions survive). Faithful packs only | warn |
-| `palette` | Most pixels are near the style's palette for its category (CIEDE2000). Faithful packs only | warn |
-| `luma-order` | Dark stays dark: brightness correlates with the original's, so the game's lighting still reads. Faithful packs only | warn |
-| `category` | Its *original* is not an outlier among its category's originals. Dropped: it did not separate good from bad (E1) | none |
-| `text` | Any readable text or logo found is on the project's allow-list | review |
-
-Nothing catches a small offset or a blur at any limit (E1).
-
-### Pack gates
-
-| Gate | Passes when | Level |
-|---|---|---|
-| `lint` | Today's `pack-lint` checks | error |
-| `budget` | Images and maps fit 512 MB native; 192 MB for a pack that claims the browser | error or warn |
-| `known` | Every file resolves to an asset the catalogue has seen; unused files are listed | warn |
-| `selected` | Every selected asset is approved | error for a release |
-| `browser` | A pack that claims the browser uses nothing the browser cannot show | warn |
-
-### Scene gates: from captures, about 2 s a scene
-
-| Gate | Passes when | Level |
-|---|---|---|
-| `coverage` | The share of the scene's pixels drawn from replaced assets meets the project's target; the largest unreplaced assets are listed | error for a release |
-| `misses` | No pixels miss for reason `colour`, `sibling` or `pending` in the frame | warn |
-| `distance` | Replaced surfaces drawn at 1x are close to a supersampled reference, as `pack-check` measures | warn |
-
-### Clip gates: need the ROM
-
-| Gate | Passes when | Level |
-|---|---|---|
-| `flicker` | Pixel-weighted changes between replacement and original per 100 frames are under the limit | error |
-| `steady` | Still pixels change from frame to frame no more than 1.5 times what the original's do | warn |
+Nothing catches a small offset or a blur at any limit (E1). Whether a
+scene looks right is the pack lead's call, made from one sheet per scene;
+the gates exist so that call is about taste and not about defects.
 
 ### What each would have caught
 
 | Showcase problem | Gate | Confidence |
 |---|---|---|
-| Opaque draft for a cut-out | `alpha` | High |
-| Ink seam on the ground | `seam` | Low (E1): ink on an edge is normal in cel art, and the file was not there to test |
-| Skaters that barely changed | `changed` | High |
-| Over the browser budget | `budget` | High (lint already notes it) |
-| 9,564 replacement changes | `flicker` | High |
-| Assets missing past frame 6212 | `coverage` on later scenes | High, given the scenes exist |
-| Halftone grid at a distance | `distance`, `steady` | Medium: needs calibration |
-| Purple sand floor | None | The `category` guess was tested and failed (E1) |
-| Stray outlines | None | These were renderer defects, fixed in the renderer |
-
-Not everything has a number. Whether a scene looks right is the pack lead's
-call, made from one sheet per scene. The gates exist so that call is about
-taste and not about defects.
-
-### Limits and overrides
-
-Defaults ship with reModel. A project overrides one in `gates.txt` with a
-reason, and the report shows the override. The first defaults come from
-measuring the showcase's approved assets (E1), and are re-set once a
-second pack exists to check them on.
-
-### What "done" means
-
-A pack revision is done when: no gate is at `error`; every selected asset
-is approved and not stale; `coverage` meets the target on every scene the
-project lists as required; `flicker` passes on every clip; and each
-`review` item has a recorded decision.
-
-## Interfaces
-
-| Verb | Does |
-|---|---|
-| `asset check ID` | Asset gates for one asset, in under a second. The art agent's check |
-| `pack check` | Everything. `--level asset`, `pack`, `scene` or `clip` narrows it; `--scene NAME` and `--asset ID` too |
-| `pack report` | Writes the report again from the last results |
-
-An asset that passes becomes `checked`. `project approve` runs the asset
-gates again and refuses on an error unless given `--override "reason"`,
-which is recorded. The `text` gate's allow-list is the `[words]` section
-of the project's `style.txt`.
-
-Output files in the project's `reports/<date>-<commit>/`: `report.json` (all
-results), `gates.tsv` (one row per asset and gate: value, limit, verdict)
-and `report.md` (for people: totals, failures first, the sheets).
-
-One result:
-
-```json
-{"asset":"wall-base","gate":"seam","value":14.2,"limit":12,
- "verdict":"warn","axis":"x",
- "fix":"set seamless for this asset in recipes.txt, or repaint the left and right edges",
- "sheet":"cache/sheets/wall-base-seam.png"}
-```
-
-The `fix` line matters for a mid-tier model: it turns a failure into a
-next step. The sheet is made only on failure: source, candidate, the
-candidate rolled by half so the seam is in the middle, and a difference
-map.
-
-## The roles
-
-- **Art agent.** `asset check` after each write. On a pass it reads no
-  picture. Budget: 1 call per attempt, 1 small sheet per failure.
-- **Tester.** `pack check --json` is the sign-off. Nothing needs to be
-  looked at to know whether a revision is complete.
-- **Pack lead.** Reads `report.md`: what changed since the last revision,
-  what failed, what needs a decision.
-- **Artist.** The same gates show in the player's pack page as a short
-  list, in plain words.
-- **Tool engineer.** A new uplift kind adds its gates to the same table,
-  with synthetic tests.
-
-## Testing
-
-- **Without ROMs:** each asset gate on synthetic images made to pass and to
-  fail (the seam check's tests are the model). The report formats.
-- **With ROMs:** the scene and clip gates on the showcase pack, with
-  numbers recorded in `docs/games/topskatr.md`. No images enter the
-  repository.
-
-## Performance
-
-Asset gates are simple image arithmetic. Target: the whole showcase (6,290
-files) in under a minute on all cores; one asset in under 100 ms. Scene
-gates cost a scene render each. Clip gates run the game and are the slow
-part, so they run on request and before a release, not on every edit.
+| Opaque draft for a cut-out | `alpha` | High: found 7 of 303 textures in the approved pack |
+| Ink seam on the ground | `seam` | Low (E1): ink on an edge is normal in cel art |
+| Skaters that barely changed | `changed` | Unproven at the built limit (E2) |
+| Over the browser budget | `budget` | High: 263 MB against 192 MB |
+| 9,564 replacement changes | `flicker` | High, but the limit is a guess (E2) |
+| Assets missing past frame 6212 | `coverage` on later scenes | Needs those scenes |
+| Halftone grid at a distance | `distance`, `steady` | Medium: not built |
+| Purple sand floor | None | The `category` guess failed (E1) |
+| Stray outlines | None | Renderer defects, fixed in the renderer |
 
 ## Evidence
 
@@ -217,18 +109,65 @@ pack.
   suit a faithful pack was not tested.
 - **Observed:** `category` scored the purple-sand originals as ordinary,
   the one case it was guessed for, and flagged 5% to 10% of originals.
+  Dropped.
 - **Observed:** `file` must run on the finished image: 26 of the 30 raw
   image-model outputs fail it before normalising.
 - **Observed:** cost 0.7 ms an image at the median, 33 ms at the 99th
   percentile; the whole pack in about 35 s on one core.
 - **Thin:** limits were set on the same images they are reported on.
-  `stale`, `text` and the pack, scene and clip gates were not run.
+
+**E2. 2026-11-22, the built gates on two games.** The Top Skater
+showcase's last pack (6,286 files, 6,500 selected) and, for `vf2`, a
+throwaway pack made for the purpose: 40 images made by script from 54 real
+`vf2` textures (28 restyled and good; the rest deliberately bad: two
+opaque for a cut-out, a wrong aspect, a 2.5x scale, a 9x scale, a ramp
+across a repeated edge, two unchanged copies, two noisy, one edited after
+approval). The second pack tests that each gate fails when it should and
+that restyles are not flagged; it cannot say how often real art is wrongly
+flagged.
+
+| Gate (limit) | Top Skater showcase, 6,286 files | `vf2`, 40 images, 8 gates demonstrated both ways |
+|---|---|---|
+| `file` (scale 1 to 8, 4 MB) | 6,286 pass | 3 error (aspect, 2.5x, 9x), 37 pass |
+| `alpha` (2%) | 7 error of 303 textures (2.3%); 552 warn of 5,970 tiles (9.2%) | 2 error, the 2 made; 35 pass |
+| `alpha.soft` (0.1%) | 34 warn (0.54%) | 0 |
+| `seam` (12 levels, 2.5x) | 1 warn of 219 checked | 1 warn of the 2 made (the other's original has the same seam, so it is not flagged) |
+| `changed` (5%, 12 levels) | 0 of 303 (E1: 2.3%); the lowest is 11.5% | 2 warn, the 2 copies |
+| `noise` (16) | 167 warn (2.7%; E1: 1.3%) | 2 warn, the 2 made; 27 on the noisy ones |
+| `stale` | `info`: no approval record | 1 error, the one edited |
+| `lint` | 0 errors, 0 warnings | 0 errors |
+| `budget` (512 MB; 192 MB browser) | 263.1 MB: warn | 25.6 MB: pass (fail shown with a 20 MB override) |
+| `known` | 1,401 warn: not in the project's one map | pass (a stray file warns) |
+| `selected` | 227 of 6,500 not approved: warn | 14 of 54: warn |
+| `coverage` (10%) | 0.0, 0.0, 6.8, 88.0, 90.9 over five scenes | 4.0, 54.7, 53.1 over three |
+| `flicker` (5,000 px per 100 frames) | 10,342: error (993 changes, 1,725 frames) | 6,502: error (2 changes) |
+
+- **Observed:** the asset gates over the 6,286 files take 2.2 s on all
+  cores; `pack check` of the whole showcase, 5 s with five scenes drawn.
+- **Observed:** E1's `alpha` figures reproduce (textures 2.3%, soft 0.54%
+  against 0.7%); tiles come out lower (9.2%, E1 14.6%) and `noise`
+  higher (2.7%, E1 1.3%), since E1's noise measure is not recorded.
+- **Observed:** `changed` at 12 levels flags none of the 303 textures, where
+  E1 flagged 2.3%; "differs" had no level in E1. The "skaters that barely
+  changed" case is not caught at this level.
+- **Observed:** the flicker limit is wrong in both directions. Top Skater's
+  attract run (993 changes) and `vf2`'s (2 changes, one the size of
+  the screen) both fail it. A pixel-weighted total counts a screen-sized
+  fade as flicker; the limit is a guess, and two logs do not settle it.
+- **Observed:** `coverage` reads 0.0% on Top Skater's two 2D scenes
+  (coin-up, course-select) with a pack that has regions and tile images; it
+  is not checked whether the 2D layer draws the pack in `scene render`, or
+  whether those scenes show none of it.
+- **Observed:** `known` resolves against the project's `map/` only; a pack
+  made from several runs warns for the textures of the runs that are not
+  linked.
+- **Thin:** the second pack is synthetic. Limits are still set on the
+  showcase; a second real pack is needed to check the false-flag rates.
 
 ## Open questions
 
-- **Limits.** The scene, clip and pack gates need calibrating, and the
-  first asset limits need a second pack to check them on. `distance`,
-  `steady`, `kept` and `category` are untested ideas.
+- **Limits.** The flicker and coverage limits need real clips and scenes.
+  `distance`, `steady`, `kept` and `category` are untested ideas.
 - **Text and logo detection** would need an outside tool. Nothing was
   found on its accuracy at 32 to 64 pixels. It can only flag, never pass.
 - **Learned measures** such as LPIPS need model weights and are left out.
@@ -236,13 +175,9 @@ pack.
 - **Trademark checks on invented brand names** remain a web search by a
   person. The showcase's were checked "by reasoning only".
 
-## MVP: a few days
+## What is left of the MVP
 
-1. `asset check` with `file`, `alpha` and `stale` as errors and `seam`,
-   `changed` and `noise` as warnings, and `project approve` refusing on
-   errors.
-2. `pack check --json` adding `lint`, `budget`, `known`, `selected` and
-   scene `coverage`, with `gates.tsv` and `report.md`.
-3. `pack-flicker` exits 1 over a limit.
-4. Limits from the calibration (E1), re-set once a second pack exists
-   to check them on.
+The MVP's four steps are built, except that `project approve` does not
+exist: item 6 calls `studio::refusals`. Next in this spec: the `review`
+verdict with recorded decisions, `pack report`, the failure sheet, and
+re-setting the limits above from a second real pack.

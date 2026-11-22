@@ -225,7 +225,40 @@ pub fn report(paths: &[&Path], top: usize) -> Result<String, String> {
     Ok(out)
 }
 
+/// The flicker totals of a log, for a gate (`remodel pack-flicker --limit`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Flicker {
+    /// Frames drawn (blocks in the log).
+    pub blocks: usize,
+    /// Subjects that change between replacement and original.
+    pub subjects: usize,
+    /// Changes in all.
+    pub changes: u32,
+    /// Pixels involved: for each change, the smaller of the pixel counts either side.
+    pub px: f64,
+}
+
+impl Flicker {
+    /// Pixels involved per 100 frames drawn (0 for an empty log).
+    pub fn px_per_100_frames(&self) -> f64 {
+        if self.blocks == 0 {
+            0.0
+        } else {
+            self.px * 100.0 / self.blocks as f64
+        }
+    }
+}
+
 pub fn report_text(text: &str, top: usize) -> String {
+    analyse(text, top).0
+}
+
+/// The flicker totals of the log `text`.
+pub fn flicker(text: &str) -> Flicker {
+    analyse(text, 0).1
+}
+
+fn analyse(text: &str, top: usize) -> (String, Flicker) {
     let mut series: BTreeMap<(char, String), Series> = BTreeMap::new();
     let (mut block, mut frame) = (0usize, 0u64);
     let mut blocks = 0usize;
@@ -404,7 +437,7 @@ pub fn report_text(text: &str, top: usize) -> String {
             r.frames
         );
     }
-    out
+    (out, Flicker { blocks, subjects: rows.len(), changes: total_flips, px: total_w })
 }
 
 fn kind_name(k: char) -> &'static str {
@@ -489,5 +522,27 @@ mod tests {
         assert!(r.contains("1 subjects change"), "{r}");
         assert!(r.contains("colour x9"), "{r}");
         assert!(!r.contains("dd"), "{r}");
+    }
+
+    #[test]
+    fn flicker_totals_are_the_gate_number() {
+        let mk = |alternate: bool| {
+            let mut log = String::new();
+            for f in 0..100u64 {
+                log += &format!("F\t{f}\n");
+                let o = if alternate && f % 2 == 0 { "miss:colour" } else { "hit" };
+                log += &format!("t\t000000000000000a\t00000000000000bb\t32x32\t{o}\t1\t500\t10\t20\t0:0:0\n");
+            }
+            flicker(&log)
+        };
+        let steady = mk(false);
+        assert_eq!((steady.changes, steady.px), (0, 0.0));
+        assert_eq!(steady.px_per_100_frames(), 0.0);
+        let f = mk(true);
+        assert_eq!(f.blocks, 100);
+        assert_eq!(f.changes, 99);
+        assert_eq!(f.px, 99.0 * 500.0);
+        assert_eq!(f.px_per_100_frames(), 99.0 * 500.0, "per 100 frames over 100 frames is the total");
+        assert_eq!(Flicker::default().px_per_100_frames(), 0.0, "an empty log has none");
     }
 }

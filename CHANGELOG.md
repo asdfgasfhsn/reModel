@@ -52,6 +52,21 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   without link play: its program has no link code (no LINK ID in its menu, no
   access to the link board). `make link-net-test`, `link-free-play-test` and
   `link-record-test` take the variants' ids.
+- Quality gates for texture packs (uplift item 4): `remodel asset check`
+  (`make asset-check`) runs the asset gates on a studio project's images,
+  without a ROM or a GPU: `file`, `alpha` and `stale` are errors (exit 1),
+  `alpha.soft`, `seam`, `changed` and `noise` warn, and every result states its
+  number, its limit and a fix. `remodel pack check` (`make pack-gates`) adds
+  `lint`, `budget`, `known`, `selected` and per-scene `coverage` and writes
+  `reports/DATE-VERSION/` with `gates.tsv`, `report.md` and `report.json`
+  (`--json` gives the shared answer); limits are named constants taken from a
+  calibration on the Top Skater showcase, overridden in the project's
+  `gates.txt` with a reason. `studio approve` records each approved file's
+  hash for `stale`; `studio status --strict` exits 1 while a selected row is not
+  approved; `studio seam` states its limits; `remodel pack-flicker` exits 1 when
+  the pixels involved in replacement/original changes per 100 frames pass
+  `--limit` (default 5,000, a first guess). The whole showcase's 6,286 files
+  take 2.2 s. See docs/uplift-studio.md, "Gates".
 
 ## 0.13.1 (2026-11-22): network play over Wi-Fi
 
