@@ -2,8 +2,8 @@
 # Windows (a zip) and macOS (a universal reModel.app in a .dmg, `make app`),
 # all from `make dist` (interpreter and JIT only: never recompiled game
 # code), for a pushed release tag `vX.Y.Z` (`make release-tag` makes it). The
-# archives go on a draft GitHub release with the tag's notes, to be checked
-# and published by hand. Run by hand (workflow_dispatch), it builds the
+# archives go on a published GitHub release with the tag's notes, marked
+# the latest, once all three builds pass. Run by hand (workflow_dispatch), it builds the
 # archives as workflow artifacts and makes no release. docs/usage.md,
 # "Versions and releases".
 name: release
@@ -81,7 +81,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Draft release
+      - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -89,4 +89,4 @@ jobs:
           title=$(git tag -l --format='%(contents:subject)' "$tag")
           git tag -l --format='%(contents:body)' "$tag" > notes.md
           (cd dist && sha256sum * > SHA256SUMS.txt)
-          gh release create "$tag" --draft --verify-tag --title "${title:-reModel $tag}" --notes-file notes.md dist/*
+          gh release create "$tag" --latest --verify-tag --title "${title:-reModel $tag}" --notes-file notes.md dist/*

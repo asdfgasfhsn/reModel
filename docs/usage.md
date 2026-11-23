@@ -349,9 +349,11 @@ pack of a newer format than the build reads is refused with a message.
    tarball and the AppImage; on Windows (x86_64) `make dist`, a zip; on
    macOS `make app`, one universal `reModel.app` (Apple silicon and Intel,
    bundle id `io.github.asdfgasfhsn.remodel`) in a `.dmg`; then a
-   **draft** GitHub release named after the tag's subject, with its notes,
-   the four files and `SHA256SUMS.txt`. Download one or
-   two, check they start, and publish the draft by hand. The workflow can
+   published GitHub release named after the tag's subject and marked the
+   latest, with its notes, the four files and `SHA256SUMS.txt`, once all
+   three builds pass (a failed build makes no release; fix it and tag the
+   next patch version). The releases page is where people get builds.
+   The workflow can
    also be run by hand (Actions, release, Run workflow): it then builds
    the archives as workflow artifacts and makes no release, a way to try a
    build before tagging.
