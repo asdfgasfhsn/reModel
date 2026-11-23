@@ -15,6 +15,8 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+## 0.14.0 (2026-11-24): more link games, Zero Gunner, texture pack authoring
+
 - `--record-tour`: a shifter's virtual buttons (neutral, gear up, gear
   down: no port bits) are no longer written as held for the whole run,
   and a gear whose bits hold another's (Daytona's gear 1 holds gear 3's
