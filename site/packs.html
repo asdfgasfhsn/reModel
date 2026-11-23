@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Texture packs · reModel</title>
+<meta name="description" content="Replace a Model 2 game’s textures and 2D art with your own images in reModel; the player swaps a changed image in while the game runs.">
+<link rel="canonical" href="https://asdfgasfhsn.github.io/reModel/packs.html">
+<meta property="og:url" content="https://asdfgasfhsn.github.io/reModel/packs.html">
+<meta property="og:title" content="Texture packs · reModel">
+<meta property="og:description" content="Replace a Model 2 game’s textures and 2D art with your own images in reModel; the player swaps a changed image in while the game runs.">
+<meta name="twitter:title" content="Texture packs · reModel">
+<meta name="twitter:description" content="Replace a Model 2 game’s textures and 2D art with your own images in reModel; the player swaps a changed image in while the game runs.">
+<!-- include _head.html -->
+</head>
+<body>
+
+<header class="pagehead">
+  <div class="ht a"></div>
+  <!-- include _nav.html -->
+  <div class="pagehead-in">
+    <span class="kicker">FOR ARTISTS AND MODDERS</span>
+    <h1 class="disp">Texture packs</h1>
+    <p class="lead">Replace a game&#39;s textures and 2D art with your own images, and watch each change in the running game.</p>
+  </div>
+</header>
+
+<!-- 7b. TEXTURE PACKS -->
+<section class="packs" id="packs">
+  <div class="wrap">
+    <p class="lead">Images can be any size. reModel ships no packs: you dump the textures from your own ROMs, repaint or upscale them, and put them in the game&#39;s pack&nbsp;folder.</p>
+    <div class="pack-ba" id="packBA">
+      <figure><img src="shots/pack/off.webp" alt="Top Skater's skater on the Novice course, original textures" width="600" height="460" fetchpriority="low" onerror="document.getElementById('packBA').remove()"><figcaption>ORIGINAL</figcaption></figure>
+      <figure><img src="shots/pack/on.webp" alt="The same frame with a cel-shaded texture pack" width="600" height="460" fetchpriority="low" onerror="document.getElementById('packBA').remove()"><figcaption>WITH A PACK</figcaption></figure>
+    </div>
+    <p class="fine-p">Top Skater&#39;s Novice course with the cel-shaded showcase pack, a local project made with the studio tools. It isn&#39;t a download.</p>
+    <div class="pack-grid">
+      <div class="lcard rise"><h3 class="disp">In the player</h3><p>The player loads a pack for each game and swaps in a changed image about 0.15 s after you save it, so you can paint with the game running. A look adds ink outlines, toon lighting and halftone on top. Packs change only the picture: the game&#39;s state hash stays the&nbsp;same.</p></div>
+      <div class="lcard rise"><h3 class="disp">The studio, from source</h3><p>Command-line tools for pack projects: a map of which texture appears where, a catalogue of everything a game shows, checks that catch broken images and seams, and saved scenes for before-and-after renders. They&#39;re built from source; the release builds have the player&nbsp;only.</p></div>
+    </div>
+    <p class="fine-p">How to make one: <a href="https://github.com/asdfgasfhsn/reModel/blob/main/docs/texture-packs.md" target="_blank" rel="noopener">docs/texture-packs.md</a>. The studio: <a href="https://github.com/asdfgasfhsn/reModel/blob/main/docs/uplift-studio.md" target="_blank" rel="noopener">docs/uplift-studio.md</a>.</p>
+  </div>
+</section>
+
+<nav class="next" aria-label="Next page"><span>NEXT</span><a href="about.html">How it works &rarr;</a></nav>
+
+<!-- include _footer.html -->
+</body>
+</html>

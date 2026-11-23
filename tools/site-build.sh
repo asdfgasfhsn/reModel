@@ -18,11 +18,27 @@ command -v magick >/dev/null || { echo "site-build: needs ImageMagick (magick)";
 
 rm -rf "$SITE_OUT"
 mkdir -p "$SITE_OUT/posters" "$SITE_OUT/shots"
-# The page and its art; site/README.md documents the site and is not served.
-(cd site && find . -type f ! -name README.md) | while read -r f; do
+# The pages and their art; site/README.md documents the site and is not served.
+# Files named _*.html are parts shared by the pages (head, header, footer): a
+# page line `<!-- include _NAME.html -->` is replaced by that file, and the
+# parts themselves are not served.
+(cd site && find . -type f ! -name README.md ! -name '_*.html') | while read -r f; do
 	mkdir -p "$SITE_OUT/$(dirname "$f")"
-	cp "site/$f" "$SITE_OUT/$f"
+	case "$f" in
+	*.html) awk -v dir=site '
+		match($0, /<!-- include _[A-Za-z0-9-]+\.html -->/) {
+			name = substr($0, RSTART + 13, RLENGTH - 17)
+			while ((getline line < (dir "/" name)) > 0) print line
+			close(dir "/" name)
+			next
+		}
+		{ print }' "site/$f" >"$SITE_OUT/$f" ;;
+	*) cp "site/$f" "$SITE_OUT/$f" ;;
+	esac
 done
+if grep -l '<!-- include ' "$SITE_OUT"/*.html >/dev/null 2>&1; then
+	echo "site-build: an include was left unexpanded:"; grep -n '<!-- include ' "$SITE_OUT"/*.html; exit 1
+fi
 cp assets/posters/*.webp "$SITE_OUT/posters/"
 # GitHub Pages: serve files as they are (no Jekyll).
 : > "$SITE_OUT/.nojekyll"

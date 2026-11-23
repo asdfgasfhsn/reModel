@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>How it works · reModel</title>
+<meta name="description" content="How reModel runs Sega Model 2 games: a JIT for each game’s own program, reimplemented hardware, and the specifications.">
+<link rel="canonical" href="https://asdfgasfhsn.github.io/reModel/about.html">
+<meta property="og:url" content="https://asdfgasfhsn.github.io/reModel/about.html">
+<meta property="og:title" content="How it works · reModel">
+<meta property="og:description" content="How reModel runs Sega Model 2 games: a JIT for each game’s own program, reimplemented hardware, and the specifications.">
+<meta name="twitter:title" content="How it works · reModel">
+<meta name="twitter:description" content="How reModel runs Sega Model 2 games: a JIT for each game’s own program, reimplemented hardware, and the specifications.">
+<!-- include _head.html -->
+</head>
+<body>
+
+<header class="pagehead">
+  <div class="ht a"></div>
+  <!-- include _nav.html -->
+  <div class="pagehead-in">
+    <span class="kicker">HOW IT WORKS</span>
+    <h1 class="disp">How it works</h1>
+    <p class="lead">What reModel is made of, why it exists now, and the specifications.</p>
+  </div>
+</header>
+
+<!-- 2. 1996 NIGHT -->
+<section class="night" id="night">
+  <div class="plate-duo" aria-hidden="true"><img src="art/arcade-night.webp" alt="" width="1920" height="1080"></div>
+  <div class="night-in">
+    <span class="kicker">THE GAMES</span>
+    <h2 class="disp wipe">The Model 2 games</h2>
+    <p class="lines"><span class="ln">Sega&#39;s Model 2 family of arcade boards ran Daytona USA, Sega Rally, Virtua Fighter 2, The House of the Dead and thirty more.</span></p>
+  </div>
+</section>
+
+<!-- 3. THE HARDWARE: the flyer sun-fades -->
+<section class="problem" id="problem" data-seen>
+  <div class="fadewrap">
+    <div class="prob-head"><span class="tab">THE HARDWARE</span></div>
+    <div class="prob-grid">
+      <div class="prob-copy">
+        <h2 class="disp wipe">The boards are wearing out.</h2>
+        <p class="lines dark"><span class="ln">Model 2 boards are thirty years old and failing. reModel runs their games on ordinary PCs, faithfully by default, with optional upgrades.</span></p>
+      </div>
+      <figure class="plate-duo red" aria-hidden="true"><img src="art/dying-board.webp" alt="" width="1920" height="1080"></figure>
+    </div>
+  </div>
+</section>
+
+<!-- 4. HOW IT WORKS: reprinted at full saturation -->
+<section class="solution" id="solution" data-seen>
+  <div class="reprint">
+    <div class="sol-head"><span class="tab red">HOW IT WORKS</span></div>
+    <h2 class="disp wipe">How reModel runs them</h2>
+    <p class="sol-intro">reModel is an open-source toolkit written in Rust. It runs each game&#39;s own program and reimplements the hardware around it.</p>
+    <figure class="plate-full"><img src="art/board-reborn.webp" alt="A circuit board dissolving into a glowing wireframe" width="1920" height="1080"></figure>
+    <div class="cards3">
+      <div class="fcard rise"><i>1</i><h3 class="disp">JIT</h3><p>The native player translates each game&#39;s program into machine code as it runs. The release builds work this&nbsp;way.</p></div>
+      <div class="fcard rise"><i>2</i><h3 class="disp">Reimplemented hardware</h3><p>The geometry processors, the 3D renderer (on your GPU), the sound and music boards, and the I/O and link boards are all reimplemented.</p></div>
+      <div class="fcard rise"><i>3</i><h3 class="disp">Static recompilation</h3><p>A developer option: the recompiler turns a game&#39;s program into Rust ahead of time. It&#39;s a build setting and isn&#39;t in the&nbsp;downloads.</p></div>
+    </div>
+    <div class="note"><b>Faithful by default.</b> Arcade original is the default picture style. The upgrades are opt-in and render-only: with them on, the game&#39;s state hash doesn&#39;t change.</div>
+  </div>
+  <div class="star cy q3 slapin">No ROMs inside</div>
+</section>
+
+<!-- 10. SPECIFICATIONS -->
+<section class="hood" id="specs">
+  <div class="wrap">
+    <span class="kicker">AT A GLANCE</span>
+    <h2 class="disp wipe">Specifications</h2>
+    <div class="hood-grid">
+      <aside class="spec" aria-label="Specifications">
+        <h3 class="disp">Specifications<small>OPERATOR'S DATA SHEET</small></h3>
+        <dl>
+          <dt>Product</dt><dd>reModel, an open-source toolkit for Sega Model 2 games</dd>
+          <dt>Games</dt><dd><b>31</b> (Model 2: 3, 2A: 7, 2B: 13, 2C: 8), plus 30 more versions</dd>
+          <dt>Games included</dt><dd>None; bring your own ROMs</dd>
+          <dt>Written in</dt><dd>Rust, MIT licence</dd>
+          <dt>Platforms</dt><dd>Linux, Windows and macOS; a browser build (WebGPU)</dd>
+          <dt>Graphics</dt><dd>Vulkan, Metal, DirectX 12, WebGPU</dd>
+          <dt>CPU</dt><dd>JIT in the native player; static recompilation as a developer build&nbsp;option</dd>
+          <dt>Window shapes</dt><dd>4:3 to 32:9</dd>
+          <dt>Linked play</dt><dd>11 games, over a LAN (up to <b>8</b> machines in Daytona&nbsp;USA) or on a split screen (up&nbsp;to&nbsp;4)</dd>
+          <dt>Texture packs</dt><dd>Loaded live by the player; none included</dd>
+          <dt>Photo mode</dt><dd>Native player, captures up to 7680&times;4320</dd>
+          <dt>Upgrades</dt><dd>Opt-in and render-only</dd>
+          <dt>Warranty</dt><dd>None, as the MIT licence says</dd>
+        </dl>
+      </aside>
+      <div class="stats">
+        <div class="stat rise"><b class="disp">31</b><span>games across four boards, plus 30 more versions</span></div>
+        <div class="stat rise red"><b class="disp">4:3&ndash;32:9</b><span>window shapes, with the HUD moved toward the edges</span></div>
+        <div class="stat rise"><b class="disp">8</b><span>linked Daytona USA machines over a LAN</span></div>
+        <div class="stat rise blue"><b class="disp">6</b><span>picture styles, from Arcade original to Comic</span></div>
+        <div class="stat rise"><b class="disp">11</b><span>games with linked play</span></div>
+        <div class="stat rise red"><b class="disp">MIT</b><span>open source, written in Rust</span></div>
+      </div>
+    </div>
+    <p class="fine-p">Performance figures in the docs come from one development machine.</p>
+  </div>
+</section>
+
+<nav class="next" aria-label="Next page"><span>NEXT</span><a href="./">Overview &rarr;</a></nav>
+
+<!-- include _footer.html -->
+</body>
+</html>

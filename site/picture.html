@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>The picture · reModel</title>
+<meta name="description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead and anti-aliasing in reModel.">
+<link rel="canonical" href="https://asdfgasfhsn.github.io/reModel/picture.html">
+<meta property="og:url" content="https://asdfgasfhsn.github.io/reModel/picture.html">
+<meta property="og:title" content="The picture · reModel">
+<meta property="og:description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead and anti-aliasing in reModel.">
+<meta name="twitter:title" content="The picture · reModel">
+<meta name="twitter:description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead and anti-aliasing in reModel.">
+<!-- include _head.html -->
+</head>
+<body>
+
+<header class="pagehead">
+  <div class="ht a"></div>
+  <!-- include _nav.html -->
+  <div class="pagehead-in">
+    <span class="kicker">THE PICTURE</span>
+    <h1 class="disp">The picture</h1>
+    <p class="lead">Any resolution and any window shape from 4:3 to 32:9, six picture styles, and smoother motion with less input lag. Every upgrade is optional; Arcade original is the default.</p>
+  </div>
+</header>
+
+<!-- 5. BEYOND THE CABINET (the one long pin) -->
+<section class="seq" id="beyond" aria-labelledby="seq-h">
+  <div class="seq-intro">
+    <h2 id="seq-h" class="disp wipe">One frame, six ways</h2>
+  </div>
+
+  <div class="seq-track">
+  <div class="seq-stage" id="stage" data-step="0" data-game="Daytona USA">
+    <div class="ht ht-seq"></div>
+    <div class="slab" aria-hidden="true"></div><div class="ghost disp" aria-hidden="true" id="ghost">4:3</div>
+    <div class="cols" aria-hidden="true"><span>COLUMN GRID</span><span>COLUMN GRID</span></div>
+    <div class="stage-head"><span class="mono game" id="gameName"></span></div>
+    <div class="plate-wrap" id="pw">
+      <div class="plate" id="plate">
+        <img class="l-nat" src="shots/seq/native-px.png" alt="The game at its native 496 by 384" id="lNat">
+        <img class="l-enh" src="shots/seq/enhanced.webp" alt="" id="lEnh" style="opacity:0">
+        <img class="l-side" src="shots/seq/wide.webp" alt="" id="lSide" style="opacity:0">
+        <img class="l-wide" src="shots/seq/wide.webp" alt="" id="lWide" style="opacity:0">
+        <img class="l-ultra" src="shots/seq/ultra.webp" alt="" id="lUltra" style="opacity:0">
+        <img class="l-bez" src="shots/seq/bezel.webp" alt="" id="lBez" style="opacity:0">
+      </div>
+      <div class="stk" data-i="0">Native<br>496&times;384</div>
+      <div class="stk red" data-i="1">Upscaled</div>
+      <div class="stk cy l" data-i="2">Bezel</div>
+      <div class="stk red" data-i="3">No<br>bezel</div>
+      <div class="stk" data-i="4">16:9</div>
+      <div class="stk red cy" data-i="5">21:9</div>
+      <div class="capbar" aria-live="polite">
+        <div class="fig">FIG. <span id="fign">1</span>/6</div>
+        <div class="txt">
+          <span class="c0">Native 496&times;384: the picture the arcade monitor showed.</span>
+          <span class="c1">Upscaled: the same polygons drawn at your window&#39;s resolution.</span>
+          <span class="c2">A 4:3 window with a bezel drawn for reModel.</span>
+          <span class="c3">The bezel goes, and the 3D view widens to fill the window.</span>
+          <span class="c4">16:9: the HUD moves toward the edges.</span>
+          <span class="c5">21:9. Any window shape from 4:3 to 32:9 works.</span>
+        </div>
+      </div>
+    </div>
+    <div class="whip" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="progress" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  </div>
+  <div class="static" aria-label="Same game, six views">
+    <figure><div class="fr"><img src="shots/seq/native-px.png" alt="" style="image-rendering:pixelated" fetchpriority="low"></div><figcaption><b>1/6</b>Native 496&times;384: the picture the arcade monitor showed.</figcaption></figure>
+    <figure><div class="fr"><img src="shots/seq/enhanced.webp" alt="" fetchpriority="low"></div><figcaption><b>2/6</b>Upscaled: the same polygons drawn at your window&#39;s resolution.</figcaption></figure>
+    <figure><div class="fr"><img src="shots/seq/bezel.webp" alt="" fetchpriority="low"></div><figcaption><b>3/6</b>A 4:3 window with a bezel drawn for reModel.</figcaption></figure>
+    <figure><div class="fr"><img src="shots/seq/enhanced.webp" alt="" fetchpriority="low"></div><figcaption><b>4/6</b>The bezel goes, and the 3D view widens to fill the window.</figcaption></figure>
+    <figure><div class="fr"><img src="shots/seq/wide.webp" alt="" fetchpriority="low"></div><figcaption><b>5/6</b>16:9: the HUD moves toward the edges.</figcaption></figure>
+    <figure><div class="fr"><img src="shots/seq/ultra.webp" alt="" fetchpriority="low"></div><figcaption><b>6/6</b>21:9. Any window shape from 4:3 to 32:9 works.</figcaption></figure>
+  </div>
+  <p class="seq-note">* Bezels appear in 4:3 windows. HUD placement is set per game, and not every HUD is perfect yet.</p>
+</section>
+
+<!-- 6. PICTURE STYLES -->
+<section class="looks" id="looks">
+  <div class="wrap">
+    <span class="kicker">PICTURE STYLES</span>
+    <h2 class="disp wipe">Six picture styles</h2>
+    <p class="lead">Arcade original (the default), Sharp, Smooth modern, CRT, Comic and Custom. Choosing one applies it at once to the paused game, and Compare shows the original and your choice side&nbsp;by&nbsp;side.</p>
+    <div class="cmp" id="cmp" style="--x:50%">
+      <img class="cmp-a" id="cmpA" alt="" width="1440" height="1080">
+      <img class="cmp-b" id="cmpB" alt="" width="1440" height="1080">
+      <div class="cmp-lab l">ARCADE ORIGINAL</div><div class="cmp-lab r" id="cmpLab">STYLE</div>
+      <div class="cmp-h" id="cmpH" role="slider" tabindex="0" aria-label="Compare the arcade original with your pick" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><i></i></div>
+      <div class="cmp-hint">DRAG TO COMPARE</div>
+    </div>
+    <div class="chips" id="chips" role="group" aria-label="Picture style"></div>
+    <p class="chipnote" id="chipNote"></p>
+    <p class="fine-p">The full style menu is in the native player; the browser build has presets. These shots are one frame of Sega Rally.</p>
+  </div>
+</section>
+
+<!-- 7. MOTION -->
+<section class="motion" id="motion">
+  <div class="wrap">
+    <span class="kicker">MOTION AND INPUT</span>
+    <h2 class="disp wipe long">Smooth motion, run-ahead and anti-aliasing</h2>
+    <div class="tiles3">
+      <article class="tile rise"><div class="big disp">120<small>Hz</small></div><h3 class="disp">Smooth motion</h3><p>Smooth motion draws in-between frames for displays above 60 Hz by interpolating the game&#39;s own geometry. It adds one game frame of latency. Tested on a 120 Hz display.</p></article>
+      <article class="tile rise"><div class="big disp">1&ndash;3<small>frames</small></div><h3 class="disp">Run-ahead</h3><p>Run-ahead runs a second copy of the machine one to three frames ahead, so the picture answers your input sooner. It only helps games with lag to hide, and it&#39;s in the native player only.</p></article>
+      <article class="tile rise"><div class="big disp">4&times;<small>MSAA</small></div><h3 class="disp">Anti-aliasing</h3><p>MSAA 4x, or 8x where the GPU supports it. The native player also has temporal anti-aliasing.</p>
+        <div class="zooms" id="zooms"><figure><div class="zoom"><img src="shots/aa/off.webp" alt="Edges without anti-aliasing, zoomed" fetchpriority="low" onerror="document.getElementById('zooms').remove()"></div><figcaption>OFF</figcaption></figure><figure><div class="zoom"><img src="shots/aa/on.webp" alt="Edges with anti-aliasing, zoomed" fetchpriority="low"></div><figcaption>ON</figcaption></figure></div>
+      </article>
+    </div>
+    <p class="fine-p">All three are opt-in. Timings in the docs were measured on one development machine.</p>
+  </div>
+</section>
+
+<nav class="next" aria-label="Next page"><span>NEXT</span><a href="link.html">Play together &rarr;</a></nav>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.13.0/gsap.min.js"></script>
+<!-- include _footer.html -->
+</body>
+</html>

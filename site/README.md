@@ -37,6 +37,24 @@ sequence; the game's name is `data-game` on `#stage` in `index.html`),
 out), `shots/aa/{off,on}.webp`, `shots/link/2p.webp`, `shots/hero.webp` and
 `shots/gallery/<set>.webp`. Optional ones hide themselves when missing.
 
+## Pages
+
+`index.html` is the overview (what reModel is, one frame at three window
+shapes, a card per page, the download). Behind it: `picture.html` (the
+4:3-to-21:9 sequence, picture styles, motion), `link.html` (linked play),
+`games.html` (the games and their versions), `packs.html` (texture packs)
+and `about.html` (how it works, the specifications). The head, the header
+with its navigation and the footer are shared parts, `_head.html`,
+`_nav.html` and `_footer.html`: a page line `<!-- include _NAME.html -->` is
+replaced by the part when `make site` assembles the site.
+
+Motion stays cheap on purpose: nothing restyles the page on every scroll
+frame except the sequence, whose stage is held by `position: sticky` in a
+tall track (sized in `svh`, so a phone's toolbar moves nothing) and reads one
+rectangle a frame. Reveals and the panels' one-time fades are driven by
+IntersectionObserver, and the hero's ticker pauses off screen. GSAP is loaded
+only on `picture.html`, for the sequence's timeline.
+
 ## What lives where
 
 - `site/`: the page and its original art. Committed.
