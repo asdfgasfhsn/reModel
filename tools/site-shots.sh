@@ -29,9 +29,16 @@
 # `remodel run --input`. size: WxH. flags: remodel-play flags and these
 # tokens: @enh (--aa 8 --depth on --shading pixel), preset=NAME (picture
 # style), crop=WxH+X+Y and scale=N (cut the PNG and enlarge it N times,
-# nearest neighbour, with ImageMagick). Unless preset= is given, every
-# picture option is first set to off, whatever the defaults. Add a shot by
-# adding a line; names are what site/ refers to.
+# nearest neighbour, with ImageMagick), pack=DIR (a texture pack folder under
+# the repository, drawn in real time so its images have decoded; the shot is
+# skipped with a note when the folder isn't there, as packs are local studio
+# projects), slow (real time instead of --fast). Unless preset= is given, every
+# picture option is first set to off, whatever the defaults.
+#
+# Launcher and menu shots: game -, frame is the run's length in seconds and
+# input the --nav script (pad presses at seconds), e.g. right@2,accept@3.5.
+# The clean profile matters doubly here: no player name, saves or recent games.
+# Add a shot by adding a line; names are what site/ refers to.
 set -eu
 set -f
 : "${CAP:=}"
@@ -66,27 +73,39 @@ shoot() { # name game frame input size flags
 		return
 	fi
 	case $input in @cs) input=coin-start ;; @coins) input=$COINS ;; @gas) input=$GAS ;; @race) input=$RACE ;; @link) input=$LINK ;; esac
-	preset= crop= scale= args=
+	preset= crop= scale=1 pack= slow= args=
 	for t in $flags; do
 		case $t in
 		@enh) args="$args $ENH" ;;
 		preset=*) preset=${t#preset=} ;;
 		crop=*) crop=${t#crop=} ;;
 		scale=*) scale=${t#scale=} ;;
+		pack=*) pack=${t#pack=} ;;
+		slow) slow=1 ;;
 		*) args="$args $t" ;;
 		esac
 	done
 	[ -n "$preset" ] || args="$OFF $args"
+	if [ -n "$pack" ]; then
+		[ -d "$root/$pack" ] || { echo "site-shots: $name skipped: no pack at $pack (a local studio project)"; return; }
+		args="$args --texture-pack $root/$pack"
+		slow=1
+	fi
+	if [ "$game" = - ]; then
+		run="--seconds $frame${input:+ --nav $input}" what="launcher, $frame s"
+	else
+		run="--game $game --input $input --frames $frame" what="$game, frame $frame"
+		[ -n "$slow" ] || run="$run --fast"
+	fi
 	case $args in *--players*) args="$args --input2 $input --input3 $input --input4 $input" ;; esac
 
 	rm -rf "$work/xdg" && mkdir -p "$work/xdg/remodel/$game" "$(dirname "$out")"
 	[ -z "$preset" ] || printf 'preset = %s\n' "$preset" >"$work/xdg/remodel/$game/settings.txt"
 	tmp=$work/shot.png
 	rm -f "$tmp"
-	echo "site-shots: $name ($game, frame $frame, $size${preset:+, style $preset})"
+	echo "site-shots: $name ($what, $size${preset:+, style $preset}${pack:+, pack})"
 	# shellcheck disable=SC2086
-	(cd "$work/cwd" && XDG_DATA_HOME=$work/xdg $TO $CAP "$PLAY" --game "$game" --rom "$ROM" \
-		--no-sound --no-splash --fast --input "$input" --frames "$frame" \
+	(cd "$work/cwd" && XDG_DATA_HOME=$work/xdg $TO $CAP "$PLAY" --rom "$ROM" --no-sound --no-splash $run \
 		--shot-size "$size" --shot "$tmp" $args >"$work/log" 2>&1) || { tail -5 "$work/log"; echo "site-shots: $name FAILED"; echo "$name" >>"$work/failed"; return; }
 	[ -f "$tmp" ] || { tail -5 "$work/log"; echo "site-shots: $name made no picture"; echo "$name" >>"$work/failed"; return; }
 	if [ -n "$crop" ]; then
@@ -119,6 +138,16 @@ link/2p|daytona|5000|@link|2560x1440|--players 2 --aa 8
 link/4p|daytona|5000|@link|2560x1440|--players 4 --aa 8
 # Hero: the most striking gameplay frame, for a big plate near the top.
 hero|indy500|3000|@gas|2560x1440|--aspect fit --hud edges @enh
+# The launcher on a clean profile: Daytona USA in the carousel (its versions
+# and link line), and its game page's Version list, cut to the panel (the
+# preview beside it shows the game's logo).
+ui/carousel|-|16|right@2,right@2.6|2560x1440|
+ui/version|-|36|right@2,right@2.6,accept@3.5,down@30,accept@31|2560x1440|crop=1000x1010+1480+66
+# Texture packs: one Top Skater frame (the Novice course scene) without and
+# with the studio's cel-shaded showcase pack, cut to the skater and the ground
+# (the full frame has real brand boards and a song credit). Local only.
+pack/off|topskatr|3300|@cs|1440x1080|--aspect 4:3 --bezel off --aa 4 crop=600x460+420+500
+pack/on|topskatr|3300|@cs|1440x1080|--aspect 4:3 --bezel off --aa 4 pack=out/topskatr/studio/cel-pack4/pack crop=600x460+420+500
 # Gallery.
 gallery/bel|bel|4000|@coins|2560x1440|--aspect fit --hud edges @enh
 gallery/desert|desert|4000|@coins|2560x1440|--aspect fit --hud edges @enh
