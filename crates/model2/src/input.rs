@@ -213,8 +213,14 @@ impl Recorder {
         self.last = Some(frame);
         self.guns |= !controls.guns.is_empty();
         let mut now: Vec<(String, Option<u8>)> = Vec::new();
+        // A button reads down when all its bits are low. One with no bits
+        // (a shifter's neutral, up and down: they only move the lever) is
+        // never written, and one whose bits are part of another's that is
+        // down (Daytona's gear 3, 0x10, in gear 1, 0x50) is that one.
+        let down = |b: &romset::ButtonInput| b.bit != 0 && inputs[b.port as usize] & b.bit == 0;
         for b in controls.buttons {
-            if inputs[b.port as usize] & b.bit == 0 {
+            let within = |o: &romset::ButtonInput| o.port == b.port && o.bit != b.bit && o.bit & b.bit == b.bit;
+            if down(b) && !controls.buttons.iter().any(|o| within(o) && down(o)) {
                 now.push((b.name.to_string(), None));
             }
         }
@@ -639,6 +645,24 @@ mod tests {
             assert_eq!(&i[..], &inputs[..], "buttons at frame {f}");
             assert_eq!(a[cur.channel as usize], analog[cur.channel as usize], "analog at frame {f}");
         }
+    }
+
+    /// A shifter's virtual buttons (no bits) are not written as held all
+    /// the time, and a gear whose bits hold another's (Daytona's gear 1,
+    /// 0x50, holds gear 3's 0x10) is written as itself alone.
+    #[test]
+    fn a_recording_writes_the_gear_not_the_lever_buttons() {
+        let c = &romset::games::find("daytona").unwrap().controls;
+        let g1 = c.button("gear1").unwrap();
+        let mut rec = Recorder::default();
+        for f in 0..10u64 {
+            let (mut inputs, analog) = ([0xffu8; 4], [0x80, 0, 0, 0x80, 0x80, 0x80, 0x80, 0x80]);
+            if (2..5).contains(&f) {
+                inputs[g1.port as usize] &= !g1.bit;
+            }
+            rec.sample(f, c, &inputs, &analog);
+        }
+        assert_eq!(rec.terms(), ["gear1@2-4"]);
     }
 
     #[test]

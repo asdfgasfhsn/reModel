@@ -15,6 +15,11 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- `--record-tour`: a shifter's virtual buttons (neutral, gear up, gear
+  down: no port bits) are no longer written as held for the whole run,
+  and a gear whose bits hold another's (Daytona's gear 1 holds gear 3's
+  bit) is written as itself alone. Tours replayed the same before; the
+  lines are now what was played.
 - Player: `--scene` and the pack watch (uplift item 8, first two parts).
   `remodel-play --game G --scene NAME` starts from a scene made by `remodel
   scene make` (its state, loaded as a save slot is). The player now watches

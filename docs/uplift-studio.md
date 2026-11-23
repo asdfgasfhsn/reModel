@@ -1226,6 +1226,18 @@ so it stalls at the first menu that reads nothing new. Where it goes next
 is a better policy (longer plans, an analog wheel held while a menu timer
 runs) or a person's recorded tour to branch from, not more tries.
 
+**Crawling from played tours (measured 2026-11-23).** A person's played
+Top Skater tour (20,550 frames, through courses the shipped tours do not
+reach) took the polygon ROM read from 27.9% to 38.0% and the texture ROM's
+from 17.4% to 23.0% on its own. Two played Daytona tours (a Beginner race,
+then the start of Advanced) added under 0.2%: the attract mode already
+shows those courses. Crawls from that play (Top Skater at frames 4,000,
+10,000 and 16,000; Daytona at the race's start and after its results), 8
+minutes each, about 1,000 tries in all, kept nothing: random presses from
+mid-race states read nothing new. Recorded play of what no tour has
+reached is what moves coverage; the crawler earns its tries at menus
+along such a tour, not in the race.
+
 **Recorder.** A scripted 4,200-frame Top Skater run in the player
 (`--input coin-start,selright@1330-1336,curving=0x50@3000-3400,jumpfront@3500-3510`)
 was recorded as `coin1@1100-1104,start@1250-1254,selright@1330-1336,...`,
