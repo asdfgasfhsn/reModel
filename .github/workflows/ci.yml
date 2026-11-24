@@ -7,7 +7,10 @@ name: check
 on:
   push:
     branches: [main]
+    # Docs and the website change nothing the check runs.
+    paths-ignore: ["docs/**", "site/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "site/**", "**/*.md"]
   workflow_dispatch:
 
 concurrency:
@@ -19,11 +22,18 @@ env:
   CARGO_INCREMENTAL: "0"
   # rustc's own stack, for the largest generated functions.
   RUST_MIN_STACK: "67108864"
+  # The runner has 4 CPUs and 16 GB: tests' dependencies are built optimised
+  # (Cargo.toml), which with debug info and four compilers at once starved
+  # it (a run lost its runner after 52 minutes, 2026-11-25). CI never needs
+  # the debug info; two compilers at once keep the memory down.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: System libraries (ALSA for sound, udev for gamepads)
