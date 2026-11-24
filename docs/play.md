@@ -2188,7 +2188,9 @@ events only, not yet with a real pad.
 - **Controls**: remap the game's keys and gamepad bindings, below.
 - **Back to games**: leave the game for the launcher (keeping a resume
   state for Continue). The launcher lists the supported sets in the ROM
-  folder, read as MAME keeps them: `<set>.zip` or a `<set>/` folder, one card
+  folder, read as MAME keeps them (`<set>.zip` or a `<set>/` folder; a game
+  whose chips are there under other names or layouts is listed too,
+  `docs/usage.md`, "ROM folder layouts"), one card
   a title, and a supported variant is a version of its parent's card when its
   chips are in the parent's (`overrevb` in `overrev.zip`, `topskatrj` in
   `topskatr.zip`'s `topskatrj/` folder). With none found, it says where

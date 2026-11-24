@@ -251,6 +251,35 @@ picking something else on the machine. `MEMCAP=16G` raises it for one
 command, `MEMCAP=` turns it off; elsewhere (macOS, Windows) runs aren't
 capped. For a direct run: `tools/capped target/release/remodel ...`.
 
+## ROM folder layouts
+
+`--rom` (the player's ROM folder setting) names a folder of sets "as MAME
+keeps them", but a chip is found by what it is, not by what it is called.
+The loader takes each chip of a game by its SHA-1 (the manifest's), looking
+first where the chip's name says (`<set>/NAME`, `<set>.zip`, then the
+parent's, then loose in the folder) and, if that holds nothing or another
+dump, in every file and zip member under the folder (subfolders down to four
+levels; zips are indexed by their member list, only the members of the right
+size are read). So merged, split and non-merged sets, a zip under any name, loose
+chips in any folders and renamed members all work, and the launcher lists a
+game when files with every chip's SHA-1 are anywhere in the folder.
+
+- A chip found by name that is not the known-good dump is named: the player
+  prints `warning: CHIP: FILE has sha1 X, not the known-good Y, and no file
+  in ROM_FOLDER has it; using it anyway` once and plays (as before); `verify`
+  and `scan` (checks on) fail with the same facts. If the right dump is
+  anywhere else in the folder it is used and nothing is said.
+- A manifest chip without a SHA-1 is taken by name only.
+- Zips over 128 MB (an emulator's download bundling whole sets) are not
+  searched.
+- Hashes are cached, so a start does not decompress the folder again: in
+  `$XDG_CACHE_HOME/remodel/rom-sha1.tsv` (`~/.cache/remodel/` by default),
+  keyed by path, size and modification time (and a zip member's CRC-32).
+  `REMODEL_ROM_CACHE=FILE` puts it elsewhere, `REMODEL_ROM_CACHE=off` keeps
+  it in memory. It is only a speed-up: delete it any time. A cached hash for
+  a zip member is shared with other members of the same CRC-32 and size; a
+  chip picked by content is read and hashed again before it is used.
+
 ## Shared machine: locks, worktrees, a pinned binary
 
 Several agents (or an agent and a person) share one machine. `tools/lock`

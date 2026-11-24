@@ -15,6 +15,15 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- ROMs: chips are found by their SHA-1, not only by file name. Sets with
+  renamed members, split, merged or non-merged zips, loose chips in any
+  folders work, and the launcher lists a game whose chips are there under
+  other names. A chip found by name that is the wrong dump is named in a
+  warning (the player) or an error (`verify`, `scan`: chip, file, expected
+  and found SHA-1), and the right dump is used if it is anywhere in the
+  folder. Zips are no longer read whole to look inside them, and hashes are
+  cached (`~/.cache/remodel/rom-sha1.tsv`, `REMODEL_ROM_CACHE`). See
+  docs/usage.md, "ROM folder layouts".
 - Launcher: the home screen's hint bar names **System settings** (Tab, the
   menu button) and **Quit** (Esc, B), both clickable; until now neither had
   anything on screen. Quit opens System settings with Quit reModel chosen, so

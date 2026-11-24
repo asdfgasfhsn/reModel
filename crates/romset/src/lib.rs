@@ -10,6 +10,7 @@
 pub mod bindings;
 pub mod controls;
 pub mod games;
+pub mod locate;
 mod sha1;
 pub mod variants;
 pub mod zip;
@@ -17,6 +18,9 @@ pub mod zip;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use locate::{Candidate, HashCache, Locator};
 
 pub use bindings::Bindings;
 pub use controls::{
@@ -797,8 +801,12 @@ pub enum Error {
         expected: usize,
         actual: usize,
     },
+    /// A chip whose SHA-1 is not the known-good dump's, and no file in the
+    /// ROM folder has the right one. `file` is where it was read from (empty for
+    /// chips handed over in memory).
     Hash {
         name: &'static str,
+        file: String,
         expected: &'static str,
         actual: String,
     },
@@ -822,8 +830,11 @@ impl fmt::Display for Error {
             Error::Size { name, expected, actual } => {
                 write!(f, "{name}: expected {expected:#x} bytes, found {actual:#x}")
             }
-            Error::Hash { name, expected, actual } => {
+            Error::Hash { name, file, expected, actual } if file.is_empty() => {
                 write!(f, "{name}: sha1 {actual} does not match known-good {expected}")
+            }
+            Error::Hash { name, file, expected, actual } => {
+                write!(f, "{name}: {file} has sha1 {actual}, not the known-good {expected}, and no file in the ROM folder has it")
             }
             Error::Missing { name, root, set } => {
                 let r = root.display();
@@ -846,10 +857,11 @@ pub struct RomSet {
 }
 
 /// Where a set's chips can be in a ROM directory: its own folder and zip,
-/// then its parent's, then the directory itself.
+/// then its parent's, then the directory itself. This is where a chip is
+/// looked for by its name; [`Locator`] looks by content.
 struct Places {
     root: PathBuf,
-    list: Vec<(PathBuf, Option<zip::Zip>)>,
+    list: Vec<(PathBuf, Option<Arc<zip::Zip>>)>,
 }
 
 impl Places {
@@ -857,60 +869,124 @@ impl Places {
         let mut list = Vec::new();
         for set in std::iter::once(game.id).chain(game.parent) {
             let zip_path = root.join(format!("{set}.zip"));
-            let archive = if zip_path.is_file() { Some(zip::Zip::open(&zip_path).map_err(Error::Zip)?) } else { None };
+            let archive =
+                if zip_path.is_file() { Some(Arc::new(zip::Zip::open(&zip_path).map_err(Error::Zip)?)) } else { None };
             list.push((root.join(set), archive));
         }
         Ok(Places { root: root.to_path_buf(), list })
     }
 
     /// The chip `name` of set `id`: `<id>/<name>` in each place first, then
-    /// the bare name in each place, then loose in the ROM directory.
-    fn read(&self, id: &str, name: &str) -> Option<Result<Vec<u8>, Error>> {
+    /// the bare name in each place, then loose in the ROM directory. Nothing
+    /// is read.
+    fn find(&self, id: &str, name: &str) -> Option<Candidate> {
         let prefixed = format!("{id}/{name}");
         for n in [prefixed.as_str(), name] {
             for (dir, archive) in &self.list {
-                if let Ok(d) = fs::read(dir.join(n)) {
-                    return Some(Ok(d));
+                if let Some(c) = Candidate::file(dir.join(n)) {
+                    return Some(c);
                 }
-                if let Some(member) = archive.as_ref().and_then(|z| z.read(n)) {
-                    return Some(member.map_err(Error::Zip));
+                if let Some(c) = archive.as_ref().and_then(|z| Candidate::member(z, n)) {
+                    return Some(c);
                 }
             }
         }
-        fs::read(self.root.join(name)).ok().map(Ok)
+        Candidate::file(self.root.join(name))
     }
 
-    /// Whether [`Places::read`] would find the chip (nothing is read).
+    /// Whether [`Places::find`] finds the chip.
     fn has(&self, id: &str, name: &str) -> bool {
-        let prefixed = format!("{id}/{name}");
-        [prefixed.as_str(), name].iter().any(|n| {
-            self.list.iter().any(|(dir, archive)| {
-                fs::metadata(dir.join(n)).is_ok_and(|m| m.is_file()) || archive.as_ref().is_some_and(|z| z.has(n))
-            })
-        }) || fs::metadata(self.root.join(name)).is_ok_and(|m| m.is_file())
+        self.find(id, name).is_some()
+    }
+}
+
+/// Print `warning` to stderr the first time this process has it (a player
+/// loads a set several times).
+fn warn_once(warning: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.iter().any(|w| w == warning) {
+        eprintln!("warning: {warning}");
+        seen.push(warning.to_string());
     }
 }
 
 impl RomSet {
-    /// Load `game`'s chips from ROM directory `root`: each chip from
-    /// `root/<set>/`, else `root/<set>.zip`, then (for a variant or clone)
-    /// the same for its parent set, else `root/` itself. A chip is looked
-    /// for as `<set id>/<name>` (a merged set keeps same-named chips of
-    /// several variants in folders, `topskatrj/epr-19753.15`) before its
-    /// bare name. With `verify`, sizes and hashes must match a known-good
-    /// dump.
+    /// Load `game`'s chips from ROM directory `root`. Each chip is taken by
+    /// its SHA-1 first: from where its name says (`root/<set>/`, else
+    /// `root/<set>.zip`, then for a variant or clone the same for its parent
+    /// set, else `root/` itself; a chip is looked for as `<set id>/<name>`,
+    /// a merged set keeps same-named chips of several variants in folders,
+    /// `topskatrj/epr-19753.15`, before its bare name), and if that is
+    /// missing or has another SHA-1, from any file or zip member under
+    /// `root` that has the right one, whatever it is called (MAME's naming
+    /// differs by set and version). A chip no file has the right SHA-1 for
+    /// is taken from where its name says if it has the size (a warning on
+    /// stderr, once, names the chip, the file and both hashes); with `verify`
+    /// that is an error. A chip with no hash in its manifest is taken by name
+    /// only. Hashes are remembered in the user's cache ([`HashCache::user`]),
+    /// so a set is not hashed again until a file changes.
     pub fn load(game: &'static Game, root: &Path, verify: bool) -> Result<Self, Error> {
+        let mut cache = HashCache::user();
+        let r = Self::load_with(game, root, verify, &mut cache);
+        cache.save();
+        let (set, warnings) = r?;
+        for w in &warnings {
+            warn_once(w);
+        }
+        Ok(set)
+    }
+
+    /// [`RomSet::load`] with the hash cache given, and the warnings returned rather than printed.
+    pub fn load_with(
+        game: &'static Game,
+        root: &Path,
+        verify: bool,
+        cache: &mut HashCache,
+    ) -> Result<(Self, Vec<String>), Error> {
         let places = Places::open(root, game)?;
+        let mut locator = Locator::new(root);
         let mut chips = Vec::with_capacity(game.files.len());
+        let mut warnings = Vec::new();
         for rom in game.files {
-            match places.read(game.id, rom.name) {
-                Some(data) => chips.push(data?),
-                None => {
-                    return Err(Error::Missing { name: rom.name, root: root.to_path_buf(), set: game.id });
+            let named = places.find(game.id, rom.name);
+            let hashed = !rom.sha1.is_empty();
+            // The named file's SHA-1 if it could be had; it is right if it is the manifest's.
+            let named_sha1 = named.as_ref().filter(|c| hashed && c.size == rom.size as u64).map(|c| c.sha1(cache));
+            let named_good = match (&named, &named_sha1) {
+                (Some(_), _) if !hashed => true,
+                (Some(_), Some(Ok(h))) => *h == rom.sha1,
+                _ => false,
+            };
+            if named_good {
+                chips.push(named.as_ref().unwrap().read().map_err(Error::Zip)?);
+                continue;
+            }
+            if hashed {
+                if let Some((_, data)) = locator.find(rom, cache, true) {
+                    chips.push(data);
+                    continue;
                 }
             }
+            let Some(c) = named else {
+                return Err(Error::Missing { name: rom.name, root: root.to_path_buf(), set: game.id });
+            };
+            let data = c.read().map_err(Error::Zip)?;
+            if let Some(Ok(actual)) = named_sha1 {
+                if verify {
+                    return Err(Error::Hash { name: rom.name, file: c.label(), expected: rom.sha1, actual });
+                }
+                warnings.push(format!(
+                    "{}: {} has sha1 {actual}, not the known-good {}, and no file in {} has it; using it anyway",
+                    rom.name,
+                    c.label(),
+                    rom.sha1,
+                    root.display()
+                ));
+            }
+            chips.push(data);
         }
-        Self::from_chips(game, chips, verify)
+        Ok((Self::from_chips(game, chips, verify)?, warnings))
     }
 
     /// Assemble a set from chip images already in memory, in manifest
@@ -923,7 +999,7 @@ impl RomSet {
             if verify {
                 let actual = sha1_hex(data);
                 if actual != rom.sha1 {
-                    return Err(Error::Hash { name: rom.name, expected: rom.sha1, actual });
+                    return Err(Error::Hash { name: rom.name, file: String::new(), expected: rom.sha1, actual });
                 }
             }
         }
@@ -1059,33 +1135,88 @@ pub fn sets_in(root: &Path) -> Vec<String> {
 /// no zip or folder of its own and every chip it swaps is there (a merged
 /// MAME set keeps a variant's chips in its parent's): a variant whose ROMs
 /// are missing is not listed. A variant that has its own zip or folder is
-/// listed as the set it is, wherever it sits.
+/// listed as the set it is, wherever it sits. A game with no zip or folder
+/// of its name is listed too when files under `root` have the SHA-1 of every
+/// one of its chips, however the set is laid out and the chips are named
+/// ([`RomSet::load`]).
 pub fn sets_with_clones(root: &Path) -> Vec<String> {
+    let mut cache = HashCache::user();
+    let out = sets_with_clones_in(root, &mut cache);
+    cache.save();
+    out
+}
+
+/// [`sets_with_clones`] with the hash cache given.
+pub fn sets_with_clones_in(root: &Path, cache: &mut HashCache) -> Vec<String> {
     let mut out = Vec::new();
     let sets = sets_in(root);
+    let mut locator = Locator::new(root);
     for set in &sets {
         out.push(set.clone());
-        let own: Vec<&Variant> = variants::of(set).filter(|v| v.plays && !sets.iter().any(|s| s == v.id)).collect();
-        let Some(parent) = games::find(set).ok().filter(|_| !own.is_empty()) else { continue };
-        let places = Places::open(root, parent);
-        for v in own {
-            let present = match (&places, variants::resolve(v)) {
-                (Ok(p), Some(game)) => v.own_chips(game).all(|f| p.has(v.id, f.name)),
-                _ => false,
-            };
-            if present {
-                out.push(v.id.to_string());
-            }
+        if let Ok(parent) = games::find(set) {
+            push_variants(root, parent, &sets, &mut locator, cache, &mut out);
+        }
+    }
+    for game in games::ALL {
+        if !sets.iter().any(|s| s == game.id) && has_every_chip(game, &mut locator, cache) {
+            out.push(game.id.to_string());
+            push_variants(root, game, &sets, &mut locator, cache, &mut out);
         }
     }
     out
 }
 
+/// The variants of `parent` that play, have no set of their own in `sets` and whose own chips
+/// are there (by name, else by content), onto `out`.
+fn push_variants(
+    root: &Path,
+    parent: &'static Game,
+    sets: &[String],
+    locator: &mut Locator,
+    cache: &mut HashCache,
+    out: &mut Vec<String>,
+) {
+    let own: Vec<&Variant> = variants::of(parent.id).filter(|v| v.plays && !sets.iter().any(|s| s == v.id)).collect();
+    if own.is_empty() {
+        return;
+    }
+    let places = Places::open(root, parent);
+    for v in own {
+        let Some(game) = variants::resolve(v) else { continue };
+        let present = v.own_chips(game).all(|f| {
+            places.as_ref().is_ok_and(|p| p.has(v.id, f.name))
+                || (!f.sha1.is_empty() && locator.find(f, cache, false).is_some())
+        });
+        if present {
+            out.push(v.id.to_string());
+        }
+    }
+}
+
+/// Whether files under the locator's folder have the SHA-1 of each of `game`'s chips.
+fn has_every_chip(game: &Game, locator: &mut Locator, cache: &mut HashCache) -> bool {
+    if game.files.iter().any(|f| f.sha1.is_empty()) {
+        return false;
+    }
+    // The chips whose size is rarest first: a game that is not there is found out soonest.
+    let mut chips: Vec<(usize, &RomFile)> = game.files.iter().map(|f| (locator.count(f.size), f)).collect();
+    chips.sort_by_key(|c| c.0);
+    chips.iter().all(|&(n, f)| n > 0 && locator.find(f, cache, false).is_some())
+}
+
 /// Whether every chip `variant` swaps in is in ROM directory `root`
-/// (its own folder or zip, else the parent's).
+/// (its own folder or zip, else the parent's, else by content).
 pub fn variant_available(variant: &'static Variant, root: &Path) -> bool {
     let Some(game) = variants::resolve(variant) else { return false };
-    Places::open(root, game).is_ok_and(|p| variant.own_chips(game).all(|f| p.has(variant.id, f.name)))
+    let places = Places::open(root, game);
+    let mut cache = HashCache::user();
+    let mut locator = Locator::new(root);
+    let found = variant.own_chips(game).all(|f| {
+        places.as_ref().is_ok_and(|p| p.has(variant.id, f.name))
+            || (!f.sha1.is_empty() && locator.find(f, &mut cache, false).is_some())
+    });
+    cache.save();
+    found
 }
 
 /// Concatenate the interleaved pairs of chips with `role`, in manifest order.
@@ -1243,5 +1374,212 @@ mod tests {
                 assert!(n % 2 == 0, "{}: {role:?} chips must come in pairs", g.id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod locate_tests {
+    //! Finding chips by content, with made-up chips (no ROM bytes anywhere).
+    use super::*;
+    use crate::zip::tests::archive_of;
+
+    fn chip(seed: u8) -> Vec<u8> {
+        (0..64u32).map(|i| (i as u8).wrapping_mul(seed | 1).wrapping_add(seed)).collect()
+    }
+
+    /// A game of four program chips (`hashed`: with their SHA-1s) on hotd's other settings.
+    fn game(
+        id: &'static str,
+        parent: Option<&'static str>,
+        names: [&'static str; 4],
+        seeds: [u8; 4],
+        hashed: bool,
+    ) -> &'static Game {
+        let files: Vec<RomFile> = names
+            .iter()
+            .zip(seeds)
+            .map(|(&name, s)| RomFile {
+                name,
+                size: 64,
+                sha1: if hashed { Box::leak(sha1_hex(&chip(s)).into_boxed_str()) } else { "" },
+                role: Role::Program,
+            })
+            .collect();
+        let mut g = games::find("hotd").unwrap().clone();
+        g.id = id;
+        g.parent = parent;
+        g.files = Box::leak(files.into_boxed_slice());
+        Box::leak(Box::new(g))
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("remodel-locate-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn load(g: &'static Game, root: &Path, verify: bool) -> Result<(RomSet, Vec<String>), Error> {
+        RomSet::load_with(g, root, verify, &mut HashCache::memory())
+    }
+
+    fn expect(set: &RomSet, seeds: [u8; 4]) {
+        for (c, s) in set.chips.iter().zip(seeds) {
+            assert_eq!(*c, chip(s));
+        }
+    }
+
+    const SEEDS: [u8; 4] = [3, 5, 7, 9];
+    const NAMES: [&str; 4] = ["a.1", "a.2", "a.3", "a.4"];
+
+    #[test]
+    fn renamed_members_of_a_zip_are_found() {
+        let g = game("t_renamed", None, NAMES, SEEDS, true);
+        let root = tmp("renamed");
+        // Not the set's name, not the chips' names, and in a different order.
+        let members: Vec<(String, Vec<u8>)> =
+            [3, 1, 0, 2].iter().map(|&i| (format!("x/{i:02}.bin"), chip(SEEDS[i]))).collect();
+        let refs: Vec<(&str, &[u8])> = members.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+        for method in [0, 8] {
+            fs::write(root.join("whatever.zip"), archive_of(&refs, method)).unwrap();
+            let (set, warnings) = load(g, &root, true).unwrap();
+            expect(&set, SEEDS);
+            assert!(warnings.is_empty());
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn loose_files_in_subfolders_are_found() {
+        let g = game("t_loose", None, NAMES, SEEDS, true);
+        let root = tmp("loose");
+        fs::create_dir_all(root.join("dump/one/two")).unwrap();
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::write(root.join("dump/one/two/p.bin"), chip(SEEDS[0])).unwrap();
+        fs::write(root.join("dump/one/q.bin"), chip(SEEDS[1])).unwrap();
+        fs::write(root.join("other/r"), chip(SEEDS[2])).unwrap();
+        fs::write(root.join("s.rom"), chip(SEEDS[3])).unwrap();
+        fs::write(root.join("other/same-size-other-bytes"), chip(42)).unwrap();
+        let (set, _) = load(g, &root, true).unwrap();
+        expect(&set, SEEDS);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_split_clone_finds_its_chips_in_its_own_and_its_parents_zip() {
+        let seeds = [11, 13, 15, 17];
+        let kid = game("t_kid", Some("t_par"), ["k.1", "k.2", "k.3", "k.4"], seeds, true);
+        let root = tmp("split");
+        // The clone's zip has its own two chips (renamed), the parent's holds the other two (renamed).
+        fs::write(root.join("t_kid.zip"), archive_of(&[("zz", &chip(seeds[0])), ("yy", &chip(seeds[1]))], 8)).unwrap();
+        fs::write(root.join("t_par.zip"), archive_of(&[("qq", &chip(seeds[2])), ("pp", &chip(seeds[3]))], 8)).unwrap();
+        let (set, warnings) = load(kid, &root, true).unwrap();
+        expect(&set, seeds);
+        assert!(warnings.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_wrong_dump_under_the_right_name_gives_way_to_the_right_one_elsewhere() {
+        let g = game("t_wrong", None, NAMES, SEEDS, true);
+        let root = tmp("wrong-elsewhere");
+        fs::create_dir_all(root.join("t_wrong")).unwrap();
+        for (n, s) in NAMES.iter().zip(SEEDS) {
+            fs::write(root.join("t_wrong").join(n), chip(s)).unwrap();
+        }
+        // a.2 is another dump of the same size under its name; the right one is in a zip, renamed.
+        fs::write(root.join("t_wrong/a.2"), chip(99)).unwrap();
+        fs::write(root.join("pack.zip"), archive_of(&[("renamed", &chip(SEEDS[1]))], 8)).unwrap();
+        let (set, warnings) = load(g, &root, true).unwrap();
+        expect(&set, SEEDS);
+        assert!(warnings.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_wrong_dump_with_no_right_one_is_named_and_still_plays() {
+        let g = game("t_bad", None, NAMES, SEEDS, true);
+        let root = tmp("wrong-only");
+        fs::create_dir_all(root.join("t_bad")).unwrap();
+        for (n, s) in NAMES.iter().zip(SEEDS) {
+            fs::write(root.join("t_bad").join(n), chip(s)).unwrap();
+        }
+        fs::write(root.join("t_bad/a.3"), chip(99)).unwrap();
+        let (set, warnings) = load(g, &root, false).unwrap();
+        assert_eq!(set.chips[2], chip(99));
+        assert_eq!(warnings.len(), 1);
+        let w = &warnings[0];
+        assert!(
+            w.contains("a.3")
+                && w.contains("t_bad/a.3")
+                && w.contains(&sha1_hex(&chip(99)))
+                && w.contains(g.files[2].sha1),
+            "{w}"
+        );
+        // With verify it is an error that says the same.
+        let e = load(g, &root, true).err().unwrap();
+        assert!(matches!(&e, Error::Hash { name: "a.3", file, .. } if file.ends_with("t_bad/a.3")), "{e}");
+        let text = e.to_string();
+        assert!(text.contains("a.3") && text.contains("t_bad/a.3") && text.contains(g.files[2].sha1), "{text}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_missing_chip_is_missing_and_a_manifest_without_hashes_goes_by_name() {
+        let g = game("t_missing", None, NAMES, SEEDS, true);
+        let root = tmp("missing");
+        fs::write(root.join("a.1"), chip(SEEDS[0])).unwrap();
+        assert!(matches!(load(g, &root, false).err().unwrap(), Error::Missing { name: "a.2", .. }));
+        let plain = game("t_plain", None, NAMES, SEEDS, false);
+        for (n, s) in NAMES.iter().zip(SEEDS) {
+            fs::write(root.join(n), chip(s.wrapping_add(100))).unwrap();
+        }
+        let (set, warnings) = load(plain, &root, false).unwrap();
+        expect(&set, SEEDS.map(|s| s.wrapping_add(100)));
+        assert!(warnings.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_game_is_listed_when_its_chips_are_there_under_any_names() {
+        let g = game("t_listed", None, NAMES, SEEDS, true);
+        let root = tmp("listed");
+        let mut cache = HashCache::memory();
+        assert!(!has_every_chip(g, &mut Locator::new(&root), &mut cache));
+        fs::write(root.join("m.zip"), archive_of(&[("a", &chip(SEEDS[0])), ("b", &chip(SEEDS[1]))], 8)).unwrap();
+        assert!(!has_every_chip(g, &mut Locator::new(&root), &mut cache), "two of four");
+        fs::create_dir_all(root.join("loose")).unwrap();
+        fs::write(root.join("loose/c"), chip(SEEDS[2])).unwrap();
+        fs::write(root.join("loose/d"), chip(SEEDS[3])).unwrap();
+        assert!(has_every_chip(g, &mut Locator::new(&root), &mut cache));
+        let plain = game("t_listed_plain", None, NAMES, SEEDS, false);
+        assert!(!has_every_chip(plain, &mut Locator::new(&root), &mut cache), "no hashes, no content match");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn hashes_are_cached_between_runs_and_a_changed_file_is_hashed_again() {
+        let g = game("t_cache", None, NAMES, SEEDS, true);
+        let root = tmp("cache");
+        let cache_file = root.join("cache/rom-sha1.tsv");
+        // The set sits under `sets`, so the cache file is not among its files.
+        let sets = root.join("sets");
+        fs::create_dir_all(&sets).unwrap();
+        let zip = |seeds: [u8; 4]| {
+            let chips: Vec<Vec<u8>> = seeds.iter().map(|&s| chip(s)).collect();
+            archive_of(&[("a", &chips[0]), ("b", &chips[1]), ("c", &chips[2]), ("d", &chips[3])], 8)
+        };
+        fs::write(sets.join("m.zip"), zip(SEEDS)).unwrap();
+        let mut cache = HashCache::at(&cache_file);
+        RomSet::load_with(g, &sets, true, &mut cache).unwrap();
+        cache.save();
+        let saved = fs::read_to_string(&cache_file).unwrap();
+        assert!(saved.contains(g.files[0].sha1), "the cache holds the chips' hashes");
+        assert_eq!(HashCache::at(&cache_file).len(), saved.lines().count());
+        // A zip with other content (so another stamp or CRC) does not borrow the old entries.
+        fs::write(sets.join("m.zip"), zip([1, 2, 4, 6])).unwrap();
+        let mut cache = HashCache::at(&cache_file);
+        assert!(RomSet::load_with(g, &sets, true, &mut cache).is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 }
