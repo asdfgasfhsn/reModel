@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <title>The picture · reModel</title>
-<meta name="description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead and anti-aliasing in reModel.">
+<meta name="description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead, anti-aliasing and photo mode in reModel.">
 <link rel="canonical" href="https://asdfgasfhsn.github.io/reModel/picture.html">
 <meta property="og:url" content="https://asdfgasfhsn.github.io/reModel/picture.html">
 <meta property="og:title" content="The picture · reModel">
-<meta property="og:description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead and anti-aliasing in reModel.">
+<meta property="og:description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead, anti-aliasing and photo mode in reModel.">
 <meta name="twitter:title" content="The picture · reModel">
-<meta name="twitter:description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead and anti-aliasing in reModel.">
+<meta name="twitter:description" content="One Model 2 frame from its native 496×384 to 21:9 ultrawide, six picture styles, smooth motion, run-ahead, anti-aliasing and photo mode in reModel.">
 <!-- include _head.html -->
 </head>
 <body>
@@ -19,7 +19,7 @@
   <div class="pagehead-in">
     <span class="kicker">THE PICTURE</span>
     <h1 class="disp">The picture</h1>
-    <p class="lead">Any resolution and any window shape from 4:3 to 32:9, six picture styles, and smoother motion with less input lag. Every upgrade is optional; Arcade original is the default.</p>
+    <p class="lead">Any resolution and any window shape from 4:3 to 32:9, six picture styles, smoother motion with less input lag, and a photo mode. Every upgrade is optional; Arcade original is the default.</p>
   </div>
 </header>
 
@@ -110,6 +110,35 @@
       </article>
     </div>
     <p class="fine-p">All three are opt-in. Timings in the docs were measured on one development machine.</p>
+  </div>
+</section>
+
+<!-- 8. PHOTO MODE -->
+<section class="photo" id="photo">
+  <div class="wrap">
+    <span class="kicker">PHOTO MODE</span>
+    <h2 class="disp wipe">Photo mode</h2>
+    <p class="lead">F8 pauses the game and opens photo mode. Move a free camera around the paused moment, scrub back through the last ten seconds, add depth of field and motion blur, grade the colour, and save a PNG at up to 8K. Close it and the game carries on from the same frame, its state untouched.</p>
+    <div class="ph-pair" id="phPair">
+      <figure class="ph-inset"><img src="shots/photo/live.webp" alt="The same Indianapolis 500 frame as the game shows it" width="1920" height="1080" loading="lazy" decoding="async" onerror="document.getElementById('phPair').remove()"><figcaption>THE GAME&#39;S VIEW</figcaption></figure>
+      <figure class="ph-main"><img src="shots/photo/indy.webp" alt="Indianapolis 500 in photo mode: the camera moved beside the car, with depth of field and motion blur" width="1480" height="800" loading="lazy" decoding="async" onerror="document.getElementById('phPair').remove()"><figcaption>THE SAME FRAME IN PHOTO MODE: CAMERA MOVED, DEPTH OF FIELD, MOTION BLUR</figcaption></figure>
+    </div>
+    <div class="ph-grid">
+      <figure id="phVf2"><img src="shots/photo/vf2.webp" alt="Virtua Fighter 2 in photo mode: the fighter seen from 45 degrees round, with depth of field" width="1920" height="1080" loading="lazy" decoding="async" onerror="document.getElementById('phVf2').remove()"><figcaption>VIRTUA FIGHTER 2: THE CAMERA TURNED 45&deg; ROUND THE FIGHTER</figcaption></figure>
+      <div class="ph-tabs">
+        <h3 class="disp">Six tabs</h3>
+        <p>A dock along the bottom edge holds the settings, one tab at a time, and is never in the photo. It works with a keyboard and mouse or a pad.</p>
+        <dl>
+          <dt>CAMERA</dt><dd>Field of view, roll and near clip.</dd>
+          <dt>TIME</dt><dd>Any frame of the last ten seconds.</dd>
+          <dt>FOCUS</dt><dd>Depth of field, focus distance, aperture and bokeh. Double-click the picture to focus there.</dd>
+          <dt>LOOK</dt><dd>Exposure, contrast, saturation, warmth, tint and shading.</dd>
+          <dt>EFFECTS</dt><dd>Vignette, film grain, chromatic aberration, bloom and motion blur.</dd>
+          <dt>FRAME</dt><dd>Letterbox, the HUD on or off, and the photo&#39;s size, up to 8K.</dd>
+        </dl>
+      </div>
+    </div>
+    <p class="fine-p">The free camera can only show what the game drew for its own view: turn it right round and the scene behind is usually&nbsp;empty. Photo mode is in the native player only. Photos go to a reModel folder in your Pictures folder.</p>
   </div>
 </section>
 

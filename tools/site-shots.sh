@@ -32,8 +32,11 @@
 # nearest neighbour, with ImageMagick), pack=DIR (a texture pack folder under
 # the repository, drawn in real time so its images have decoded; the shot is
 # skipped with a note when the folder isn't there, as packs are local studio
-# projects), slow (real time instead of --fast). Unless preset= is given, every
-# picture option is first set to off, whatever the defaults.
+# projects), slow (real time instead of --fast), photo=KEYS (the picture is a
+# scripted photo-mode photo taken at the frame instead of a --shot: KEYS are
+# --photo's KEY=VALUE pairs, comma-separated (docs/photo-mode.md, "Scripted"),
+# and the photo is size's height tall in the window's 16:9). Unless preset= is
+# given, every picture option is first set to off, whatever the defaults.
 #
 # Launcher and menu shots: game -, frame is the run's length in seconds and
 # input the --nav script (pad presses at seconds), e.g. right@2,accept@3.5.
@@ -73,11 +76,12 @@ shoot() { # name game frame input size flags
 		return
 	fi
 	case $input in @cs) input=coin-start ;; @coins) input=$COINS ;; @gas) input=$GAS ;; @race) input=$RACE ;; @link) input=$LINK ;; esac
-	preset= crop= scale=1 pack= slow= args=
+	preset= crop= scale=1 pack= slow= photo= args=
 	for t in $flags; do
 		case $t in
 		@enh) args="$args $ENH" ;;
 		preset=*) preset=${t#preset=} ;;
+		photo=*) photo=${t#photo=} ;;
 		crop=*) crop=${t#crop=} ;;
 		scale=*) scale=${t#scale=} ;;
 		pack=*) pack=${t#pack=} ;;
@@ -103,11 +107,23 @@ shoot() { # name game frame input size flags
 	[ -z "$preset" ] || printf 'preset = %s\n' "$preset" >"$work/xdg/remodel/$game/settings.txt"
 	tmp=$work/shot.png
 	rm -f "$tmp"
+	if [ -n "$photo" ]; then
+		# One photo session at the frame (a second session in the same run
+		# would open a few frames later), and a few frames past it to finish.
+		rm -rf "$work/photo"
+		run="--game $game --input $input --frames $((frame + 5)) --fast" what="$game, photo at frame $frame"
+		capture="--photo-dir $work/photo --photo $frame:$photo,res=${size#*x},name=shot"
+		made=$work/photo/shot.png
+	else
+		capture="--shot-size $size --shot $tmp"
+		made=$tmp
+	fi
 	echo "site-shots: $name ($what, $size${preset:+, style $preset}${pack:+, pack})"
 	# shellcheck disable=SC2086
 	(cd "$work/cwd" && XDG_DATA_HOME=$work/xdg $TO $CAP "$PLAY" --rom "$ROM" --no-sound --no-splash $run \
-		--shot-size "$size" --shot "$tmp" $args >"$work/log" 2>&1) || { tail -5 "$work/log"; echo "site-shots: $name FAILED"; echo "$name" >>"$work/failed"; return; }
-	[ -f "$tmp" ] || { tail -5 "$work/log"; echo "site-shots: $name made no picture"; echo "$name" >>"$work/failed"; return; }
+		$capture $args >"$work/log" 2>&1) || { tail -5 "$work/log"; echo "site-shots: $name FAILED"; echo "$name" >>"$work/failed"; return; }
+	[ -f "$made" ] || { tail -5 "$work/log"; echo "site-shots: $name made no picture"; echo "$name" >>"$work/failed"; return; }
+	[ "$made" = "$tmp" ] || mv "$made" "$tmp"
 	if [ -n "$crop" ]; then
 		magick "$tmp" -crop "$crop" +repage -filter point -resize "$((scale * 100))%" "$tmp"
 	fi
@@ -148,6 +164,14 @@ ui/version|-|36|right@2,right@2.6,accept@3.5,down@30,accept@31|2560x1440|crop=10
 # (the full frame has real brand boards and a song credit). Local only.
 pack/off|topskatr|3300|@cs|1440x1080|--aspect 4:3 --bezel off --aa 4 crop=600x460+420+500
 pack/on|topskatr|3300|@cs|1440x1080|--aspect 4:3 --bezel off --aa 4 pack=out/topskatr/studio/cel-pack4/pack crop=600x460+420+500
+# Photo mode: the hero's Indy 500 moment as the game shows it (photo mode with
+# nothing changed but the HUD on), then with the camera orbited about the car,
+# depth of field and motion blur, cut to 1.85:1 clear of the course map (a
+# window the game draws with its own camera, which the free camera moves too);
+# and Virtua Fighter 2's fighter seen from 45 degrees round.
+photo/live|indy500|3000|@gas|1920x1080|--aspect fit --hud edges @enh photo=hud=on
+photo/indy|indy500|3000|@gas|1920x1080|--aspect fit @enh photo=dof=1,orbit=-35,blur=16 crop=1480x800+0+280
+photo/vf2|vf2|4000|@coins|1920x1080|--aspect fit @enh photo=dof=1,orbit=45
 # Gallery.
 gallery/bel|bel|4000|@coins|2560x1440|--aspect fit --hud edges @enh
 gallery/desert|desert|4000|@coins|2560x1440|--aspect fit --hud edges @enh

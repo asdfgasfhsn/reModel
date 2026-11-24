@@ -34,14 +34,16 @@ chromium --headless --window-size=1200,630 --screenshot=site/social.png file://$
 sequence; the game's name is `data-game` on `#stage` in `index.html`),
 `shots/looks/<style>.webp` (the picture-style wipe; the style list is the
 `LOOKS` array in `site.js`, and a style whose image is missing is left
-out), `shots/aa/{off,on}.webp`, `shots/link/2p.webp`, `shots/hero.webp` and
+out), `shots/aa/{off,on}.webp`, `shots/link/2p.webp`, `shots/hero.webp`,
+`shots/photo/{live,indy,vf2}.webp` (photo mode, taken by scripted photo
+sessions: the `photo=` token in `tools/site-shots.sh`) and
 `shots/gallery/<set>.webp`. Optional ones hide themselves when missing.
 
 ## Pages
 
 `index.html` is the overview (what reModel is, one frame at three window
 shapes, a card per page, the download). Behind it: `picture.html` (the
-4:3-to-21:9 sequence, picture styles, motion), `link.html` (linked play),
+4:3-to-21:9 sequence, picture styles, motion, photo mode), `link.html` (linked play),
 `games.html` (the games and their versions), `packs.html` (texture packs)
 and `about.html` (how it works, the specifications). The head, the header
 with its navigation and the footer are shared parts, `_head.html`,
