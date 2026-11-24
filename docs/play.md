@@ -931,8 +931,12 @@ genre, its name in the display face, and its facts (board, year, "Links 2 to
   version, with its label, a tag ("Hack", "Prototype") and a line about it.
   Choosing one returns to the main menu with Play focused, and the preview
   switches to that version's own attract mode.
+- **Players** (only for a game with a second player's controls: Virtua Fighter 2,
+  Dead or Alive, the light-gun games, ...): the Players screen for one cabinet,
+  where the controllers take P1 and P2 ("Players", below).
 - **Play together** (only for a title that links, the Link play games below):
-  "On this screen" with 2, 3 or 4 players, "Over the network" with Host a game
+  "On this screen" with 2, 3 or 4 players (each opens the Players screen for that
+  many machines, whose Start plays), "Over the network" with Host a game
   and Join a game (the network panel's flows, "Network link play"), and the
   player name. Greyed out, "Not for this version", when the chosen version has
   link play off (its program has no link play, or its settings record has not
@@ -1207,15 +1211,19 @@ the look setting on, applies to every view. Over a network each host draws
 its own machine with its own settings, so the pack is already each
 player's own there.
 
-**Controls.** Player 1 is the keyboard. Gamepads take the other seats in
-the order their first button press comes (that press is the join, not the
-game's): the first pad plays P2, and so on up to the player count; a pad
-that unplugs frees its seat. Each pad has its own gate (the Start and
+**Controls.** Seat N plays machine N ("Players", below): P1 is the keyboard at
+first, and gamepads take the next free seats in the order of their first button
+press (that press is the join, not the game's: the first pad plays P2, and so on
+up to the player count; the Players screen, opened from Play together before the
+start or from the Esc menu, moves, swaps and frees seats). A pad that unplugs
+frees its seat, and the same pad (by name and UUID) takes its seat again when it
+is back. Each pad has its own gate (the Start and
 Select menu chord, buttons held in the menu), the bindings are the game's
 (the Controls page edits them for everyone: every machine is "player 1" of
 its own cabinet, so coin, start, pedals and wheel are all per player), and
-the menu follows the pad used last. `--link-keyboard off` has the
-keyboard play nothing, so pads take the seats from P1 (four pads for four
+the menu follows the pad used last. `--link-keyboard off` keeps the
+keyboard out of the seats for the run (it is not forgotten), so pads take the
+seats from P1 (four pads for four
 players, where P1 would otherwise be the keyboard). A seat nobody holds has
 neutral controls. Scripted runs: `--input` is every player's script unless
 `--input2` to `--input4` say another for that player.
@@ -1340,6 +1348,70 @@ machine that cannot keep up is paced by the clock as a single game is
 none of the measured runs needed. *Unmeasured:* a slower GPU or CPU; four
 machines at 120 Hz; the pad's menu in link play beyond the checks above.
 
+## Players
+
+Who plays which seat, whatever the game: the seats P1 to P4, each held by a
+device (the keyboard, or a gamepad), kept by the player between runs
+(`seats.txt` in the data folder; code in `crates/play/src/seats.rs`, the screen
+in `crates/play/src/launcher/players.rs`, the one-cabinet routing in
+`cabinet.rs`). A seat is only ever held by one device, and a device by one
+seat.
+
+- The keyboard starts in P1. A gamepad is told apart by its name and gilrs'
+  UUID, and a **known pad returns to the seat it had** when it is connected
+  again (if that is free). A seat that was left stays free: nothing puts a
+  pad or the keyboard back by itself.
+- **Joining.** On the Players screen, and in a link game, the first button press
+  of a pad that holds no seat takes the next free one (the seat it had if it is
+  free); that press is the join, never the game's or the screen's. The
+  keyboard, once it has left, comes back with **J** (to the selected seat if free)
+  or a click on an empty seat. **Leaving** (Y, Delete) frees the selected seat
+  and forgets who held it; **moving** (LB RB, Q E) swaps the selected seat's
+  device with its neighbour's (or moves it to an empty seat). An unplugged pad frees its seat,
+  but it is remembered there.
+- **One cabinet** (a game with a second player's controls: `vf2`, `doa`,
+  `fvipers`, `vstriker`, `schamp`, `lastbrnx`, `dynabb97`, `zerogun`, `pltkids`, `rchase2`,
+  the light-gun games ...): seat N drives the game's player-N controls. The
+  bindings stay the game's, one set (a keyboard layout and a pad layout, as the
+  Controls page shows them, made for player 1): a seat's device reads that
+  layout for its player, so player 2's buttons (named `punch2`, `start2`,
+  `coin2`, `sw1_2` ... in the manifest, `seats::counterpart`) take the keys and
+  pad buttons of player 1's counterparts, and player 1's are let go. A binding
+  the player gave a player-2 button on the Controls page is kept for the seat
+  that plays it. Coin 2 and Start 2 go with the pad's Select and Start in P2
+  like P1's. With the seats as they start (the keyboard in P1, nobody else), the
+  game takes the usual path, unchanged: the keyboard, and the pad last used
+  with it, play P1, and a pad that holds no seat plays P1 too. A game with one
+  player's controls ignores the seats.
+- **Light guns.** The mouse aims the keyboard's seat's gun, and a pad aims its
+  own seat's gun with its sticks (a crosshair per seat), fires with its fire
+  button (the right trigger or A) and reloads with the left trigger or B.
+- **Play together** on one screen: seat N plays machine N (P1 top left, ...);
+  seats past the count are not played, and a seat nobody holds has neutral
+  controls, its machine staying on the grid. `--link-keyboard off` keeps the
+  keyboard out of the seats for that run without forgetting its seat.
+- **Network play**: each host's seats are its own (a network game is one
+  machine here: the seats are not read, as before).
+
+The **Players screen** has a card per seat: the number in the seat's colour (P1
+cyan, P2 red, P3 yellow, P4 green), the side of the cabinet ("Left side",
+"Right side") or the machine ("Car 3 · bottom left"), and the device holding
+it: the keyboard (with the game's keys), or the pad with its name and how it is
+connected ("Wired", "Wireless · 80%"), and a lamp that lights while that device
+is used (press a button to find which pad is whose). An empty seat is dashed
+and says "Press a button on a controller". Under them a line says
+"Ready." (or "1 of 2 seats held. A seat with no controller plays nothing.";
+"3 of 4 seats held. Empty seats' cars stay on the grid."), and the button
+starts the game: **Play**, or **Start, N players** for Play together (always as
+many machines as were chosen); from the Esc menu it is **Done**. The hint bar:
+LB RB (Q E) move my seat, Y (Delete) leave seat, A (Enter) play, B (Esc) back.
+Left and right choose a seat, down the button. It is opened from the game page
+(**Players** for a cabinet; each count under **Play together**) and from the Esc menu while
+a game runs (a **Players** row, to swap who is P1 without leaving), and from System settings → Players → Seats (for the game selected on the launcher).
+
+*Not checked by hand:* pads of several makes at once (the seat model and the
+routing are tested with stand-ins, the screen headless; the lamps, joins and
+unplugs with real pads, and a real window, are not).
 
 ## Network link play (a LAN)
 
@@ -1735,8 +1807,8 @@ is one credit. Button 1 confirms on the menus (team, then starting
 pitcher). At bat, the stick moves the hitting point and the bat lever
 swings: hold Space (or the right trigger) to pull it back and let go to
 swing. It needs the recompiled build (`RECOMP=1`) for full speed, as the
-other 2B games do. Player 2's controls are in the manifest but have no
-default keys.
+other 2B games do. A second controller plays player 2 from the Players screen ("Players", below),
+on the same pad layout.
 
 | Control | Keys | Gamepad |
 |---|---|---|
@@ -1755,7 +1827,7 @@ answered by the board model, so nothing needs setting up. Like the other
 2B games it needs the recompiled build (`RECOMP=1`) for full speed: a
 headless coin-start run manages 2.7x real time recompiled, but only about
 0.8x interpreted (the player then paces it by the clock, see "Display"
-below). Player 2's controls are in the manifest but have no default keys.
+below). A second controller plays player 2 from the Players screen ("Players", below), on the same pad layout.
 
 | Control | Keys | Gamepad |
 |---|---|---|
@@ -1794,7 +1866,7 @@ recompiled build (`RECOMP=1`) for full speed: a
 headless coin-start run manages 2.8x real time recompiled, but only about
 0.8x interpreted (the player then paces it by the clock, see "Display"
 below). Player 2's
-controls are in the manifest but have no default keys.
+controls are the same buttons on a second controller, taken on the Players screen.
 
 | Control | Keys | Gamepad |
 |---|---|---|
@@ -1811,7 +1883,7 @@ buttons are punch, kick and barrier. Like the other 2B games it needs the
 recompiled build (`RECOMP=1`) for full speed: a
 headless coin-start run manages 2.7x real time recompiled, but only about
 0.8x interpreted. Player 2's
-controls are in the manifest but have no default keys.
+controls are the same buttons on a second controller, taken on the Players screen.
 
 | Control | Keys | Gamepad |
 |---|---|---|
@@ -1828,8 +1900,8 @@ runs, and the three buttons are short pass (also the sliding tackle when
 defending), long pass and shoot (held, shoot charges a power bar). Like
 the other 2B games it needs the recompiled build (`RECOMP=1`) for full
 speed: a headless coin-start run manages 1.8x real time
-recompiled, but only about 0.7x interpreted. Player 2's controls are in
-the manifest but have no default keys.
+recompiled, but only about 0.7x interpreted. Player 2 plays with
+the same buttons from a second controller, taken on the Players screen.
 
 | Control | Keys | Gamepad |
 |---|---|---|
@@ -1847,8 +1919,7 @@ second player would join offers "P+K+G start survival mode"). Like the
 other 2B games it needs the
 recompiled build (`RECOMP=1`) for full speed: a headless coin-start run
 manages 2.9x real time recompiled, but only about 0.7x
-interpreted. Player 2's controls are in the manifest but have no default
-keys.
+interpreted. A second controller plays player 2 from the Players screen, on the same pad layout.
 
 | Control | Keys | Gamepad |
 |---|---|---|
@@ -1888,7 +1959,8 @@ the right button reloads (the game reloads when you shoot off the screen;
 moving the pointer off the picture and clicking does the same). With a
 wide window (16:9 and up) the extra area at the sides counts as off the
 screen. A gamepad's sticks move a crosshair drawn over the game: it's player
-2's gun once the mouse has moved over the window, else player 1's.
+2's gun once the mouse has moved over the window, else player 1's. With seats taken on the
+Players screen ("Players", above), each pad aims the gun of its own seat instead.
 
 | Control | Keys | Mouse | Gamepad |
 |---|---|---|---|
@@ -1931,7 +2003,7 @@ Back, Esc Resume).
 
 The first page lists what to do: **Resume**, **Quick save** (F5), **Quick
 load** (F9), **Save slots** (how many are used), **Photo mode** (F8:
-`docs/photo-mode.md`), **Reset game** (select it twice within four seconds:
+`docs/photo-mode.md`), **Players** (for a game with more than one: the Players screen, to swap who is P1; not in a network game), **Reset game** (select it twice within four seconds:
 the game starts again from power-on, keeping its EEPROM) and **Back to
 games**. Under a small "SETTINGS" label come the settings, one level in,
 each showing its value: **Picture** (the style), **Controls**, **Sound**

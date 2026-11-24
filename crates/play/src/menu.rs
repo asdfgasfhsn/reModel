@@ -69,6 +69,8 @@ pub enum Action {
     Reset,
     /// Open photo mode.
     Photo,
+    /// Open the Players screen: who plays which seat.
+    Players,
     /// The game's bindings changed (save them).
     Bindings,
     Quit,
@@ -733,7 +735,7 @@ impl Menu {
             Page::Advanced => self.advanced_page(ctx, settings, view, navs),
             Page::Folders => self.folders_page(ctx, view, navs, &mut actions),
             Page::Controllers => self.controllers_page(ctx, settings, view, navs, &mut actions),
-            Page::Players => self.players_page(ctx, view, navs),
+            Page::Players => self.players_page(ctx, view, navs, &mut actions),
             Page::Controls => {}
         }
         if std::mem::take(&mut self.close_asked) {
@@ -821,6 +823,12 @@ impl Menu {
                         }
                         if view.link.is_none() && focus.menu_row(ui, "Photo mode", "F8") {
                             actions.push(Action::Photo);
+                        }
+                        // Who plays which seat, for a game with more than one (not a network game's).
+                        let seated = view.link.is_some()
+                            || view.game.is_some_and(|g| crate::seats::cabinet_players(&g.controls) > 1);
+                        if seated && !view.running && focus.menu_row(ui, "Players", "›") {
+                            actions.push(Action::Players);
                         }
                         if focus.menu_row(ui, "Reset game", if armed { "again to confirm" } else { "" }) {
                             if armed {
@@ -1726,6 +1734,7 @@ mod tests {
                 Action::SetFolder(..) => "set-folder",
                 Action::Reset => "reset",
                 Action::Photo => "photo",
+                Action::Players => "players",
                 Action::Bindings => "bindings",
                 Action::Quit => "quit",
             })
@@ -1739,6 +1748,21 @@ mod tests {
             r.run(&[&[nav]]);
             assert_eq!(r.names(), ["resume"], "{nav:?}");
         }
+    }
+
+    /// A game with a second player's controls has a Players row after Reset game, which asks
+    /// for the Players screen; a game of one player's has none.
+    #[test]
+    fn the_pause_menu_of_a_cabinet_of_two_offers_the_players_screen() {
+        let mut r = Rig::new("vf2");
+        // Resume, Quick save, Quick load, Save slots, Photo mode, Players.
+        r.press(5, Nav::Down).run(&[&[Nav::Accept], &[]]);
+        assert_eq!(r.names(), ["players"]);
+        let mut r = Rig::new("vf2");
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Players"), "{:?}", r.texts);
+        let r = Rig::new("topskatr");
+        assert!(!r.shows("Players"), "{:?}", r.texts);
     }
 
     #[test]
@@ -2459,7 +2483,7 @@ mod tests {
         run(&mut menu, &[Nav::Accept]);
         let (_, texts) = run(&mut menu, &[]);
         assert_eq!(menu.page, Page::Players);
-        assert!(has(&texts, "P1 keyboard, pads join by pressing a button"), "{texts:?}");
+        assert!(has(&texts, "Who plays P1 and P2"), "{texts:?}");
         run(&mut menu, &[Nav::Back]);
         // B from the index closes it (as Resume does over a game).
         let (acts, _) = run(&mut menu, &[Nav::Back]);

@@ -35,6 +35,8 @@
 //! window (`layout`), so it reads the same at 1080p, ultrawide and 4K.
 
 mod page;
+mod players;
+pub use players::{Goes as PlayersGoes, Outcome as PlayersOutcome, PlayersScreen, PlayersView};
 
 use crate::focus::Focus;
 use crate::library::{self, Continue, Filter, Sort, Start, ViewMode};
@@ -107,6 +109,12 @@ pub enum Action {
     PlayLink {
         set: String,
         players: usize,
+    },
+    /// Open the Players screen for `set`: one cabinet, or (`link`) this many machines on
+    /// this screen, whose Start plays.
+    Players {
+        set: String,
+        link: Option<usize>,
     },
     /// Host a network link session of `set` (the player makes the lobby's socket).
     NetHost {
@@ -286,7 +294,9 @@ pub(crate) enum Click {
     Play,
     /// A version chosen in the page's list.
     SetVersion(&'static romset::Game),
-    /// Start the chosen version with this many machines on this screen.
+    /// Open the Players screen for the chosen version (one cabinet).
+    Players,
+    /// Open it for this many machines on this screen: Start plays.
     Together(usize),
     NetHost,
     NetJoin,
@@ -987,7 +997,8 @@ impl Launcher {
                     }
                 }
             }
-            Click::Together(players) => actions.extend(set.map(|set| Action::PlayLink { set, players })),
+            Click::Players => actions.extend(set.map(|set| Action::Players { set, link: None })),
+            Click::Together(players) => actions.extend(set.map(|set| Action::Players { set, link: Some(players) })),
             Click::NetHost => actions.extend(set.map(|set| Action::NetHost { set })),
             Click::NetJoin => actions.extend(set.map(|set| Action::NetJoin { set })),
             Click::NetJoinHosted => {
@@ -1777,6 +1788,11 @@ impl Launcher {
                 theme::TEXT_DIM,
             );
         }
+    }
+
+    /// The poster of `set` once it is loaded (the Players screen shows it).
+    pub fn poster(&self, set: &str) -> Option<egui::TextureId> {
+        self.posters.get(set).map(|t| t.id())
     }
 
     /// Show the network link play panel (the player made its lobby or its join).
@@ -2746,9 +2762,9 @@ mod tests {
         {
             assert!(r.shows(&text.to_uppercase()) || r.shows(text), "{text}: {:?}", r.texts());
         }
-        // Choosing two players starts them linked.
+        // Choosing two players opens the Players screen for two machines (its Start plays them linked).
         r.press(1, Nav::Accept);
-        assert!(r.actions.iter().any(|a| matches!(a, Action::PlayLink { set, players: 2 } if set == "daytona")));
+        assert!(r.actions.iter().any(|a| matches!(a, Action::Players { set, link: Some(2) } if set == "daytona")));
         r.actions.clear();
         // Host and Join are the network's.
         r.press(3, Nav::Down).press(1, Nav::Accept);
@@ -2812,12 +2828,35 @@ mod tests {
         );
     }
 
+    /// A game with a second player's controls has a Players row on its page, which opens the
+    /// Players screen for one cabinet; a game of one player's has none.
+    #[test]
+    fn the_page_has_a_players_row_for_a_cabinet_of_two() {
+        let mut r = Rig::new(&SET, &[]);
+        go_to(&mut r, "topskatr");
+        r.press(1, Nav::Accept);
+        assert!(!r.shows("Players"), "{:?}", r.texts());
+        r.l.page = None;
+        go_to(&mut r, "vf2");
+        r.press(1, Nav::Accept);
+        assert!(r.shows("Players"), "{:?}", r.texts());
+        assert!(r.actions.is_empty());
+        // Play, then Players.
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        assert!(
+            r.actions.iter().any(|a| matches!(a, Action::Players { set, link: None } if set == "vf2")),
+            "{:?}",
+            r.texts()
+        );
+        assert!(r.played().is_empty(), "opening Players does not play");
+    }
+
     #[test]
     fn game_settings_rows_open_the_menu_pages() {
         let mut r = Rig::new(&SET, &["hotd"]);
         r.press(1, Nav::Accept);
-        // (Play, Saves, Game settings: hotd has no versions and does not link.)
-        r.press(2, Nav::Down).press(1, Nav::Accept);
+        // (Play, Players, Saves, Game settings: hotd has no versions and does not link.)
+        r.press(3, Nav::Down).press(1, Nav::Accept);
         assert_eq!(level(&r), Some(page::Level::Settings));
         for text in ["Picture", "Controls", "Display", "Sound", "Speed and latency"] {
             assert!(r.shows(text), "{text}: {:?}", r.texts());

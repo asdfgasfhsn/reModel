@@ -355,9 +355,8 @@ pub struct LinkSet {
     pub sounds: Vec<Option<crate::sound::Sound>>,
     pub audio: Audio,
     pub seats: Vec<Seat>,
-    /// The keyboard drives seat 0 (pads then take seats 1 up); else the
-    /// pads take seats from 0.
-    pub keyboard: bool,
+    /// The seat the keyboard plays (`sync`), if it holds one.
+    pub keyboard: Option<usize>,
     /// Where the set's own EEPROMs and saves are (never the player's own).
     pub dir: PathBuf,
     /// Per seat from 1, a scripted input (`--input`, `--input2`..).
@@ -383,7 +382,7 @@ impl LinkSet {
             seats: (0..n)
                 .map(|_| Seat { pad: None, gate: pad::Gate::default(), dirs: romset::StickDirs::default() })
                 .collect(),
-            keyboard: true,
+            keyboard: None,
             dir,
             last_step: Default::default(),
             step_total: Default::default(),
@@ -397,26 +396,21 @@ impl LinkSet {
         self.machines.len() + 1
     }
 
-    /// The seat a gamepad plays in, if it has joined.
-    pub fn seat_of(&self, id: gilrs::GamepadId) -> Option<usize> {
-        self.seats.iter().position(|s| s.pad == Some(id))
-    }
-
-    /// A gamepad's first button press: it takes the first free seat the
-    /// keyboard doesn't have (the first, with the keyboard off), if there is
-    /// one.
-    pub fn join(&mut self, id: gilrs::GamepadId) -> Option<usize> {
-        let from = usize::from(self.keyboard);
-        let at = (from..self.seats.len()).find(|&i| self.seats[i].pad.is_none())?;
-        self.seats[at] = Seat { pad: Some(id), gate: pad::Gate::default(), dirs: romset::StickDirs::default() };
-        Some(at)
-    }
-
-    /// A gamepad went away: its seat is free for the next to join.
-    pub fn leave(&mut self, id: gilrs::GamepadId) -> Option<usize> {
-        let at = self.seat_of(id)?;
-        self.seats[at].pad = None;
-        Some(at)
+    /// Seat `i` of the players' seats (`seats::Seats`) plays machine `i`: the
+    /// gamepads and the keyboard follow the seats. A seat that changes pad starts
+    /// with a fresh gate and sticks.
+    pub fn sync(&mut self, held: &crate::seats::Seats<gilrs::GamepadId>) {
+        use crate::seats::Who;
+        for (i, seat) in self.seats.iter_mut().enumerate() {
+            let pad = match held.held(i) {
+                Some(Who::Pad(id)) => Some(id),
+                _ => None,
+            };
+            if seat.pad != pad {
+                *seat = Seat { pad, gate: pad::Gate::default(), dirs: romset::StickDirs::default() };
+            }
+        }
+        self.keyboard = held.keyboard_seat().filter(|&s| s < self.seats.len());
     }
 
     /// Set every sound board's level for the audio mode.
@@ -596,6 +590,44 @@ fn take<'a>(d: &'a [u8], at: &mut usize) -> Option<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seats::Seats;
+
+    /// A link set of `n` seats and no machines (only the seats are looked at).
+    fn set_of(n: usize) -> LinkSet {
+        let play = play_for("daytona").unwrap();
+        let mut s = LinkSet::new(Vec::new(), LinkHub::for_game(2, 1, play), Vec::new(), PathBuf::new());
+        while s.seats.len() < n {
+            s.seats.push(Seat { pad: None, gate: pad::Gate::default(), dirs: romset::StickDirs::default() });
+        }
+        s
+    }
+
+    /// Seat N plays machine N: the keyboard plays the seat it holds (P1 at first, and not at
+    /// all with `--link-keyboard off`), and moving it moves who plays which machine.
+    #[test]
+    fn the_keyboard_plays_the_machine_of_its_seat() {
+        let mut held = Seats::<gilrs::GamepadId>::default();
+        let mut l = set_of(4);
+        l.sync(&held);
+        assert_eq!(l.keyboard, Some(0));
+        assert!(held.move_seat(0, 2, 4));
+        l.sync(&held);
+        assert_eq!(l.keyboard, Some(2), "P3 plays machine 3");
+        held.leave(2);
+        l.sync(&held);
+        assert_eq!(l.keyboard, None);
+        // `--link-keyboard off`: the keyboard takes no seat.
+        held.set_keyboard(false);
+        l.sync(&held);
+        assert_eq!(l.keyboard, None);
+        assert!(l.seats.iter().all(|s| s.pad.is_none()));
+        // Seats past the machines are not played.
+        let mut two = set_of(2);
+        let mut held = Seats::<gilrs::GamepadId>::default();
+        held.move_seat(0, 3, 4);
+        two.sync(&held);
+        assert_eq!(two.keyboard, None, "P4 has no machine in a game of two");
+    }
 
     #[test]
     fn every_split_screen_game_has_link_data_for_two_to_four_machines() {

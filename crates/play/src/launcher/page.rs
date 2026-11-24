@@ -325,6 +325,8 @@ struct Info {
     version_label: String,
     /// How many of the game's save files there are.
     used: usize,
+    /// How many players one cabinet of the game seats (`seats::cabinet_players`).
+    cabinet: usize,
 }
 
 impl Launcher {
@@ -467,6 +469,7 @@ impl Launcher {
             hosted: self.lan_hosts.iter().find(|f| f.game == game.id).map(|f| (f.name.clone(), f.players, f.max)),
             about: about_of(game, versions.len() > 1),
             used: page.used,
+            cabinet: crate::seats::cabinet_players(&game.controls),
             version_label: if versions.len() > 1 { library::version_label(game) } else { String::new() },
             versions,
         };
@@ -716,6 +719,12 @@ impl Launcher {
                 if info.versions.len() > 1 {
                     let spec = Row::new("version", "Version").right(info.version_label.clone()).chevron();
                     go(row(ui, focus, level, &spec, u), Click::Enter(Level::Version), clicks);
+                }
+                if info.cabinet > 1 {
+                    let spec = Row::new("players", "Players")
+                        .sub(format!("Who plays P1 and P2 · {} players on one cabinet", info.cabinet))
+                        .chevron();
+                    go(row(ui, focus, level, &spec, u), Click::Players, clicks);
                 }
                 if info.links {
                     let mut spec = Row::new("together", "Play together").chevron();

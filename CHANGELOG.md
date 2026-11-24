@@ -30,6 +30,20 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   / all games" switch, the Picture page's scope switch and "Use the settings
   for all games" are gone: anything changed during play applies to that game
   alone. Old settings files load as they were (a `scope` line is ignored).
+- Player: seats. A launcher-level model of who plays P1 to P4 (the keyboard, or a
+  gamepad known by its name and UUID, which returns to its seat), kept in
+  `seats.txt`, and a **Players** screen to take, move (LB RB, Q E), swap and leave
+  seats (Y, Delete), opened from the game page (**Players** for a game with a
+  second player's controls, and each count under **Play together**) and from the
+  Esc menu mid-game. One cabinet: seat N now plays the game's player-N controls,
+  with the game's one keyboard and pad layout (player 2's `punch2`, `start2`,
+  `coin2`, ... take player 1's keys and pad buttons), so a second pad plays player
+  2 in `vf2`, `doa`, `dynabb97`, `lastbrnx`, `zerogun` and the other two-player
+  games, and each pad aims its own gun in the light-gun games. Linked split
+  screen: seat N plays machine N, replacing the order of first presses (a first
+  press still takes the next free seat; `--link-keyboard off` keeps working). With
+  the seats as they start the game takes the usual path and nothing changes;
+  state hashes are unchanged.
 
 ## 0.14.0 (2026-11-24): more link games, Zero Gunner, texture pack authoring
 

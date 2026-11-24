@@ -33,6 +33,7 @@
 mod art;
 mod backdrop;
 mod bezel;
+mod cabinet;
 mod controls;
 mod draw;
 mod focus;
@@ -50,6 +51,7 @@ mod perf;
 mod photo;
 mod preview;
 mod saves;
+mod seats;
 mod settings;
 mod sound;
 mod splash;
@@ -96,7 +98,7 @@ usage: remodel-play [options]
   --players N        link play: N machines of the game (2 to 4, where the
                      game can) linked on one screen, one controller each:
                      the keyboard plays P1, gamepads join P2 up as a
-                     button is pressed (docs/play.md, \"Link play\")
+                     button is pressed; seats: docs/play.md, \"Players\"
   --input2 S .. --input4 S
                      link play: scripted inputs for players 2 to 4
                      (--input is player 1's, and everyone's without their own)
@@ -1284,6 +1286,14 @@ struct Play {
     stick: model2::input::StickCursor,
     /// The sticks as 8-way levers (`romset::StickDirs`), with their memory.
     stick_dirs: romset::StickDirs,
+    /// Who plays which seat (`seats`), kept between runs, and what one cabinet's seated
+    /// pads keep between frames (`cabinet`).
+    seats: seats::Seats<gilrs::GamepadId>,
+    cabinet: cabinet::Cabinet,
+    /// The Players screen, while it is open (over the launcher or the menu), and the
+    /// keys it names for the keyboard's line.
+    players: Option<launcher::PlayersScreen>,
+    players_keys: String,
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
     /// Smooth motion: when the newest game frame was first drawn.
@@ -1594,6 +1604,8 @@ impl Play {
         self.leave_photo();
         let Some(mut s) = self.session.take() else { return };
         if s.link.is_some() {
+            // (`--link-keyboard off` was for that run.)
+            self.seats.set_keyboard(true);
             // The renderers of the other machines go, and the frames are drawn into
             // a cleared target again.
             if let Some(g) = &mut self.gpu {
@@ -1844,7 +1856,9 @@ impl Play {
                 let mut set =
                     link::LinkSet::new(machines, model2::link::LinkHub::for_game(players, 1, lp), sounds, link_dir);
                 set.audio = values.link_audio;
-                set.keyboard = self.opts.link_keyboard;
+                // `--link-keyboard off`: the keyboard takes no seat this session.
+                self.seats.set_keyboard(self.opts.link_keyboard);
+                set.sync(&self.seats);
                 for i in 1..players {
                     let spec = self.opts.link_inputs.get(i).cloned().flatten().or_else(|| self.opts.input.clone());
                     if let Some(spec) = spec {
@@ -1859,7 +1873,11 @@ impl Play {
                     "link play     {players} cabinets of {}, one thread each; EEPROMs in {}; keyboard {}",
                     game.title,
                     set.dir.display(),
-                    if set.keyboard { "plays P1, gamepads P2 up" } else { "off, gamepads play P1 up" }
+                    if self.opts.link_keyboard {
+                        "in its seat (P1 at first), gamepads in theirs"
+                    } else {
+                        "off, gamepads play P1 up"
+                    }
                 );
                 s.link = Some(set);
             }
@@ -2699,44 +2717,82 @@ impl Play {
         let now = Instant::now();
         let mut events: Vec<(pad::Event, bool, Option<usize>)> = Vec::new();
         let link = !self.launcher.open && self.session.as_ref().is_some_and(|s| s.link.is_some());
+        // One cabinet with its seats taken (`cabinet`): seated pads play their own seat.
+        let cabinet_n = if self.launcher.open || self.menu.open {
+            0
+        } else {
+            self.session.as_ref().map_or(0, |s| seated_players(s, &self.seats))
+        };
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
                 match ev.event {
-                    gilrs::EventType::Connected => println!("controller    connected: {}", g.gamepad(ev.id).name()),
+                    gilrs::EventType::Connected => {
+                        let p = g.gamepad(ev.id);
+                        println!("controller    connected: {}", p.name());
+                        let key = seats::pad_key(&p);
+                        if let Some(seat) = self.seats.sight(ev.id, key, seats::pad_detail(&p)) {
+                            println!("seats         {} is back in seat P{}", p.name(), seat + 1);
+                        }
+                    }
                     gilrs::EventType::Disconnected => {
                         println!("controller    disconnected: {}", g.gamepad(ev.id).name());
-                        if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
-                            if let Some(seat) = l.leave(ev.id) {
-                                println!("link play     player {} lost their controller", seat + 1);
-                            }
+                        if let Some(seat) = self.seats.unplug(ev.id) {
+                            println!("seats         player {} lost their controller", seat + 1);
                         }
+                    }
+                    _ if !self.seats.knows(ev.id) => {
+                        let p = g.gamepad(ev.id);
+                        self.seats.sight(ev.id, seats::pad_key(&p), seats::pad_detail(&p));
                     }
                     _ => {}
                 }
+                let press = matches!(ev.event, gilrs::EventType::ButtonPressed(..));
+                let moved = press || matches!(ev.event, gilrs::EventType::AxisChanged(..));
+                // The Players screen: a pad that holds no seat takes the next free one with
+                // its first button press (that press is not a move on the screen); the
+                // lamp of a seat lights while its pad is used.
+                if let Some(screen) = &mut self.players {
+                    if press && self.seats.seat_of(seats::Who::Pad(ev.id)).is_none() {
+                        if let Some(seat) = self.seats.join_pad(ev.id, screen.n) {
+                            let name = g.gamepad(ev.id).name().to_string();
+                            println!("seats         {name} took seat P{}", seat + 1);
+                            screen.note(format!("{name} took seat P{}", seat + 1));
+                            self.seats.used(seats::Who::Pad(ev.id));
+                            continue;
+                        }
+                    }
+                    if moved {
+                        self.seats.used(seats::Who::Pad(ev.id));
+                    }
+                }
                 if link {
-                    // Link play: a gamepad's first button press takes a seat (and is
-                    // not the game's); each seat's pad has its own gate; the menu
+                    // Link play: a gamepad's first button press takes the next free seat
+                    // (and is not the game's); each seat's pad has its own gate; the menu
                     // follows the pad used last.
                     let l = self.session.as_mut().and_then(|s| s.link.as_mut()).unwrap();
-                    if matches!(ev.event, gilrs::EventType::ButtonPressed(..))
-                        && l.seat_of(ev.id).is_none()
-                        && !self.menu.open
-                    {
-                        if let Some(seat) = l.join(ev.id) {
+                    let n = l.n();
+                    if press && self.seats.seat_of(seats::Who::Pad(ev.id)).is_none_or(|s| s >= n) && !self.menu.open {
+                        if let Some(seat) = self.seats.join_pad(ev.id, n) {
                             let name = g.gamepad(ev.id).name().to_string();
                             println!("link play     player {} plays on {name}", seat + 1);
                             self.menu.notify(format!("Player {} joined on {name}", seat + 1));
                             self.pad = Some(ev.id);
+                            l.sync(&self.seats);
                             continue;
                         }
                     }
-                    let seat = l.seat_of(ev.id);
-                    if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..)) {
+                    let seat = self.seats.seat_of(seats::Who::Pad(ev.id)).filter(|&s| s < n);
+                    if moved {
                         self.pad = Some(ev.id);
                     }
                     if seat.is_some() || Some(ev.id) == self.pad {
                         events.extend(pad::Event::from_gilrs(&ev.event).map(|e| (e, false, seat)));
                     }
+                    continue;
+                }
+                if let Some(seat) = self.seats.seat_of(seats::Who::Pad(ev.id)).filter(|&s| s < cabinet_n) {
+                    // One cabinet: a seated pad plays its own seat, through its own gate.
+                    events.extend(pad::Event::from_gilrs(&ev.event).map(|e| (e, false, Some(seat))));
                     continue;
                 }
                 if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..))
@@ -2772,19 +2828,31 @@ impl Play {
                     open |= seat.gate.tick(now);
                 }
             }
+            for gate in &mut self.cabinet.gates {
+                open |= gate.tick(now);
+            }
             if open {
                 self.set_menu(true);
                 self.menu.pad_used = true;
             }
         }
+        // (Seats taken or left by a press are kept.)
+        self.seats.save();
     }
 
-    /// Link play: put seat `i`'s gate in `self.gate` and the player's in
-    /// its place (call again to put them back). False without link play.
+    /// Link play, or one cabinet's seats: put seat `i`'s gate in `self.gate` and
+    /// the player's in its place (call again to put them back). False without
+    /// either.
     fn swap_gate(&mut self, i: usize) -> bool {
-        let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) else { return false };
-        std::mem::swap(&mut self.gate, &mut l.seats[i].gate);
-        true
+        if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
+            std::mem::swap(&mut self.gate, &mut l.seats[i].gate);
+            return true;
+        }
+        if i < seats::MAX {
+            std::mem::swap(&mut self.gate, &mut self.cabinet.gates[i]);
+            return true;
+        }
+        false
     }
 
     /// A gamepad event: a press skips the splash (and does nothing else,
@@ -2884,6 +2952,7 @@ impl Play {
             let tuning = self.values.tuning;
             let none = HashSet::new();
             let gilrs = self.gilrs.as_ref();
+            l.sync(&self.seats);
             let machines = std::iter::once(&mut s.machine).chain(l.machines.iter_mut());
             for (i, (m, seat)) in machines.zip(l.seats.iter_mut()).enumerate() {
                 let script = if i == 0 { s.script.as_ref() } else { l.scripts[i - 1].as_ref() };
@@ -2893,7 +2962,7 @@ impl Play {
                 }
                 let pad = gilrs.and_then(|g| seat.pad.map(|id| g.gamepad(id)));
                 let dirs = controls::read_sticks(&mut seat.dirs, pad.as_ref(), tuning);
-                let keys = if i == 0 && l.keyboard { &self.keys } else { &none };
+                let keys = if l.keyboard == Some(i) { &self.keys } else { &none };
                 if self.steer_filters.len() <= i {
                     self.steer_filters.resize(i + 1, steer::SteerFilter::default());
                 }
@@ -2902,6 +2971,31 @@ impl Play {
                 let devices = controls::Devices { keys, pad, gate: &seat.gate, tuning, dirs, steer };
                 model2::input::apply_player(&mut m.bus, &[(&s.bindings, &devices)]);
             }
+            return;
+        }
+        // One cabinet whose seats are taken: each seat's device plays its player.
+        let players = seated_players(s, &self.seats);
+        if players >= 2 {
+            if self.steer_filters.is_empty() {
+                self.steer_filters.push(steer::SteerFilter::default());
+            }
+            let loose_pad =
+                self.pad.filter(|&id| self.seats.seat_of(seats::Who::Pad(id)).is_none_or(|seat| seat >= players));
+            let frame = cabinet::Frame {
+                keys: &self.keys,
+                gilrs: self.gilrs.as_ref(),
+                seats: &self.seats,
+                players,
+                loose_pad,
+                loose_gate: &self.gate,
+                loose_dirs: &mut self.stick_dirs,
+                loose_steer: &mut self.steer_filters[0],
+                loose_stick: &mut self.stick,
+                tuning: self.values.tuning,
+                in_menu: self.menu.open,
+                mouse: cabinet::Mouse { aim: mouse_aim, buttons: self.mouse_buttons, used: self.mouse_used },
+            };
+            self.cabinet.apply(&mut s.machine.bus, &s.bindings, frame);
             return;
         }
         // The menu open over a running game (a network game's): the controls
@@ -3671,6 +3765,9 @@ impl Play {
                 self.session.as_ref().filter(|s| !s.preview).and_then(|s| s.net.as_ref()).map(|n| n.status());
             let navs = launcher::Nav::view_as_back(&std::mem::take(&mut self.navs));
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
+            let (players, held, keys_text, launcher) =
+                (&mut self.players, &mut self.seats, self.players_keys.as_str(), &self.launcher);
+            let mut players_out = None;
             let mut values = self.values.clone();
             let mut fullscreen = self.settings.fullscreen;
             let no_game = self.session.is_none();
@@ -3691,6 +3788,14 @@ impl Play {
                 if let Some(line) = &net_line {
                     net_status(ctx, line);
                 }
+                // The Players screen over the menu takes the input first.
+                let navs = if let Some(screen) = players.as_mut() {
+                    let poster = launcher.poster(romset::variants::title_of(screen.game.id));
+                    players_out = screen.ui(ctx, &navs, held, &launcher::PlayersView { poster, keys: keys_text });
+                    Vec::new()
+                } else {
+                    navs.clone()
+                };
                 let prefs = menu::Prefs { fullscreen: &mut fullscreen };
                 let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut(), &navs);
                 if let Some(f) = fade {
@@ -3704,6 +3809,11 @@ impl Play {
                 actions
             });
             overlay = Some(paint);
+            if players_out.is_some() {
+                // From the menu the seats are the point (Done): Done and Back return to it.
+                self.players = None;
+                self.seats.save();
+            }
             compare = self.menu.wipe_rect().map(|rect| draw::Compare {
                 before: GameSettings::default().quality(self.temporal_supported),
                 rect,
@@ -3766,6 +3876,7 @@ impl Play {
                         settings::save_bindings(s.game, &s.bindings);
                     }
                 }
+                menu::Action::Players => self.open_players_in_game(),
                 menu::Action::Quit => self.quit(el),
                 menu::Action::ResetOwn => {
                     if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
@@ -3920,6 +4031,7 @@ impl Play {
                         self.settings.save();
                     }
                 }
+                launcher::Action::Players { set, link } => self.open_players(&set, link),
                 launcher::Action::NetHost { set } => self.net_lobby(&set, true),
                 launcher::Action::NetJoin { set } => self.net_lobby(&set, false),
                 launcher::Action::NetJoinAt { set, addr } => self.net_lobby_for(&set, None, Some(addr)),
@@ -3964,6 +4076,35 @@ impl Play {
             self.settings.save();
         }
         self.status();
+    }
+
+    /// Open the Players screen for `set` from the launcher: one cabinet (`link` None), or this
+    /// many machines on this screen; its Start plays.
+    fn open_players(&mut self, set: &str, link: Option<usize>) {
+        let Ok(game) = romset::games::find(set) else { return };
+        let goes = match link {
+            Some(n) => launcher::PlayersGoes::Link(set.to_string(), n),
+            None => launcher::PlayersGoes::Play(set.to_string()),
+        };
+        self.show_players(game, link, goes);
+    }
+
+    /// Open it over the menu of the running game (to swap who plays P1, say).
+    fn open_players_in_game(&mut self) {
+        let Some(s) = &self.session else { return };
+        let (game, link) = (s.game, s.link.as_ref().map(|l| l.n()));
+        self.show_players(game, link, launcher::PlayersGoes::Done);
+    }
+
+    fn show_players(&mut self, game: &'static romset::Game, link: Option<usize>, goes: launcher::PlayersGoes) {
+        let n = link.unwrap_or_else(|| seats::cabinet_players(&game.controls).max(2));
+        let bindings = match &self.session {
+            Some(s) if s.game.id == game.id => s.bindings.clone(),
+            _ => settings::load_bindings(game),
+        };
+        self.players_keys = seats::keys_summary(&bindings);
+        let pad_used = self.launcher.pad_used || self.menu.pad_used;
+        self.players = Some(launcher::PlayersScreen::new(game, n, link.is_some(), goes, pad_used));
     }
 
     /// Open the launcher's network panel for `set`: the host's lobby (`host`) or the
@@ -4190,12 +4331,23 @@ impl Play {
         let before = values.clone();
         let mut fullscreen = self.settings.fullscreen;
         let (launcher, menu, splash) = (&mut self.launcher, &mut self.menu, &mut self.splash);
+        let (players, held, keys_text) = (&mut self.players, &mut self.seats, self.players_keys.as_str());
+        let mut players_out = None;
         let bindings = &mut self.launcher_bindings;
         let animating = launcher.animating() || self.session.is_some() || progress.is_some();
         let g = self.gpu.as_mut().unwrap();
         let mut changed = false;
         let (mut reset_keys, mut folders) = (Vec::new(), Vec::new());
-        let actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
+        let mut actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
+            // The Players screen over everything: it takes the input (and draws first, so
+            // it takes the keys before the launcher reads them).
+            let navs = if let Some(screen) = players.as_mut() {
+                let poster = launcher.poster(romset::variants::title_of(screen.game.id));
+                players_out = screen.ui(ctx, &navs, held, &launcher::PlayersView { poster, keys: keys_text });
+                Vec::new()
+            } else {
+                navs.clone()
+            };
             let mut actions = launcher.ui(ctx, navs.clone(), &view);
             let prefs = menu::Prefs { fullscreen: &mut fullscreen };
             for action in
@@ -4209,6 +4361,8 @@ impl Play {
                     menu::Action::ResetKeys(keys) => reset_keys.push(keys),
                     menu::Action::SetFolder(folder, path) => folders.push((folder, path)),
                     menu::Action::Bindings => changed = true,
+                    menu::Action::Players => actions
+                        .extend(selected.map(|g| launcher::Action::Players { set: g.id.to_string(), link: None })),
                     menu::Action::Quit => actions.push(launcher::Action::Quit),
                     // Nothing's running to save, load, reset or photograph.
                     _ => {}
@@ -4240,6 +4394,22 @@ impl Play {
                 self.use_values(set);
             }
             self.edit_values(set, values);
+        }
+        // The Players screen's way out: Start plays the game it was opened for.
+        if let Some(out) = players_out {
+            self.players = None;
+            if let launcher::PlayersOutcome::Go(goes) = out {
+                match goes {
+                    launcher::PlayersGoes::Play(set) => {
+                        actions.push(launcher::Action::Play { set, from: library::Start::New })
+                    }
+                    launcher::PlayersGoes::Link(set, players) => {
+                        actions.push(launcher::Action::PlayLink { set, players })
+                    }
+                    launcher::PlayersGoes::Done => {}
+                }
+            }
+            self.seats.save();
         }
         actions
     }
@@ -4351,6 +4521,7 @@ impl Play {
         if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
             l.seats.iter_mut().for_each(|seat| seat.gate.menu_changed());
         }
+        self.cabinet.gates.iter_mut().for_each(|gate| gate.menu_changed());
         self.pad_nav = pad::PadNav::default();
         self.navs.clear();
         self.menu.pad_used = false;
@@ -4517,6 +4688,31 @@ fn net_status(ctx: &egui::Context, line: &str) {
 /// seat's device, and the game's title.
 type LinkUi = (Vec<link::Cell>, Vec<(model2::video::View, (u32, u32))>, Option<link::Cell>, Vec<String>, &'static str);
 
+/// The seats as kept between runs, with the gamepads that are connected now sighted (a
+/// known one takes the seat it had).
+fn pad_seats(gil: Option<&Gilrs>) -> seats::Seats<gilrs::GamepadId> {
+    let mut s = seats::Seats::load();
+    for (id, p) in gil.into_iter().flat_map(|g| g.gamepads()) {
+        s.sight(id, seats::pad_key(&p), seats::pad_detail(&p));
+    }
+    s
+}
+
+/// How many players' seats a running game reads from `seats`: those of one cabinet (a game
+/// with a second player's controls, not linked, not a network game's, not scripted) when
+/// the seats are anything but the keyboard in P1; else 0 (the player's usual path).
+fn seated_players(s: &Session, held: &seats::Seats<gilrs::GamepadId>) -> usize {
+    if s.link.is_some() || s.net.is_some() || s.preview || s.script.is_some() {
+        return 0;
+    }
+    let n = seats::cabinet_players(&s.game.controls);
+    if cabinet::active(held, n) {
+        n
+    } else {
+        0
+    }
+}
+
 /// Link play's tags for `session` laid out as `lv` (None without link play).
 fn link_ui(session: Option<&Session>, gil: Option<&Gilrs>, lv: Option<&LinkView>) -> Option<LinkUi> {
     let s = session?;
@@ -4527,7 +4723,7 @@ fn link_ui(session: Option<&Session>, gil: Option<&Gilrs>, lv: Option<&LinkView>
         .enumerate()
         .map(|(i, seat)| {
             let pad = seat.pad.and_then(|id| gil.map(|g| g.gamepad(id).name().to_string()));
-            match (i == 0 && l.keyboard, pad) {
+            match (l.keyboard == Some(i), pad) {
                 (true, Some(p)) => format!("Keyboard, {p}"),
                 (true, None) => "Keyboard".to_string(),
                 (false, Some(p)) => p,
@@ -4952,6 +5148,8 @@ impl ApplicationHandler<Wake> for Play {
                 }
                 if pressed && !event.repeat {
                     match code {
+                        // (The Players screen over the menu takes Esc itself, to close.)
+                        KeyCode::Escape if self.players.is_some() => return,
                         KeyCode::Escape => return self.set_menu(!self.menu.open),
                         KeyCode::F5 => return self.save_slot(0),
                         KeyCode::F9 => return self.load_slot(0),
@@ -5029,6 +5227,7 @@ fn main() {
             println!("controller    {} (used once a button or stick moves)", p.name());
         }
     }
+    let seats = pad_seats(gilrs.as_ref());
     let splash = splash::Splash::new(opts.splash);
     let launcher_view = settings.launcher_view;
     let mut play = Play {
@@ -5065,6 +5264,10 @@ fn main() {
         mouse_buttons: [false; 2],
         stick: model2::input::StickCursor::default(),
         stick_dirs: romset::StickDirs::default(),
+        seats,
+        cabinet: cabinet::Cabinet::default(),
+        players: None,
+        players_keys: String::new(),
         epoch: Instant::now(),
         smooth_at: Instant::now(),
         game_fade: None,
