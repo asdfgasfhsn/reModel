@@ -183,6 +183,31 @@ fmt-check: ## Fail if any Rust code is unformatted
 
 check: fmt-check lint lock-test test web-check ## Everything a change must pass before commit
 
+# What differs from CHANGED_BASE (unpushed commits, uncommitted edits, new
+# files) decides what check-changed and bench-changed run: tools/changed.py.
+CHANGED_BASE ?= origin/main
+CHANGED      := env CARGO="$(CARGO)" python3 -I tools/changed.py
+
+changed: ## Say what a change since CHANGED_BASE (default origin/main) can affect: the crates to test (those touched and every crate depending on them), web-check, lock-test and whether the benchmarks can move
+	@$(CHANGED) why $(CHANGED_BASE)
+
+check-changed: fmt-check ## `make check` for what changed since CHANGED_BASE only: clippy and tests on the affected crates (`make changed`), lock-test and web-check when they apply; `make check` stays the full gate (releases, core changes)
+	@$(CHANGED) why $(CHANGED_BASE)
+	@set -e; crates=$$($(CHANGED) crates $(CHANGED_BASE)); \
+	if [ "$$crates" = all ]; then sel=--workspace; else sel="$$crates"; fi; \
+	if [ -z "$$sel" ]; then echo "check-changed: no crate affected, no lint or tests to run"; else \
+		$(LOCK_BUILD) $(CARGO) clippy $$sel --all-targets -- -D warnings; \
+		$(LOCK_TEST) env REMODEL_GPU_TESTS=$(GPU_TESTS) $(CARGO) test $$sel; \
+		if [ "$(GPU_TESTS)" = 0 ]; then echo "*** GPU tests SKIPPED (GPU_TESTS=0): this check is incomplete; run them before pushing ***"; fi; \
+	fi
+	@if [ "$$($(CHANGED) lock $(CHANGED_BASE))" = yes ]; then $(MAKE) --no-print-directory lock-test; fi
+	@if [ "$$($(CHANGED) web $(CHANGED_BASE))" = yes ]; then $(MAKE) --no-print-directory web-check; fi
+
+bench-changed: ## bench-all and bench-variants when a change since CHANGED_BASE can move a state hash (the emulator, the CLI, the renderer, the recompiler or the benchmark files); skipped with a note otherwise (`make changed` says why)
+	@if [ "$$($(CHANGED) bench $(CHANGED_BASE))" = yes ]; then \
+		$(MAKE) --no-print-directory bench-all && $(MAKE) --no-print-directory bench-variants; \
+	else echo "bench-changed: nothing changed that can move a state hash; benchmarks skipped"; fi
+
 web-check: ## Type-check the browser build (remodel-web for wasm32: its wasm-only code, which `lint` and `test` don't compile); skipped with a note where the wasm toolchain isn't installed
 	@if [ -x "$(WASM_RUSTUP)" ] && $(WASM_RUSTUP) target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then \
 		$(LOCK_BUILD) env $(WASM_CARGO) check --quiet --release --target wasm32-unknown-unknown --target-dir target/web -p remodel-web 2>&1 | tee target/web-check.log; \

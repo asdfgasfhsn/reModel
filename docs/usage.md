@@ -9,6 +9,9 @@ Requires a Rust toolchain (stable) and `make`.
 ```sh
 make                  # list every target
 make check            # format check, clippy, unit tests, the browser build type-checked (no ROMs needed); `make ci` is the same
+make changed          # what a change since origin/main (CHANGED_BASE=...) can affect: crates to test, web-check, lock-test, benchmarks (tools/changed.py)
+make check-changed    # make check on the affected crates only (those touched and every crate depending on them); make check stays the full gate
+make bench-changed    # bench-all and bench-variants, only when the change can move a state hash (emulator, CLI, renderer, recompiler, benchmark files)
 make build            # debug build of the whole workspace
 make release          # optimised build of the remodel CLI (RECOMP=1: with the recompiled code)
 make lock-status      # who holds the build, test, render and emulate locks and who waits (tools/lock status; docs/usage.md, "Shared machine")
