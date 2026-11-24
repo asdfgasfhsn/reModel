@@ -37,3 +37,7 @@ debug = true
 # Our own crates stay unoptimised, with debug assertions and overflow checks.
 [profile.test.package."*"]
 opt-level = 2
+# The save-state writer: model2's idle test saves and compares the whole
+# machine after every slice (864 saves), 401 s unoptimised, 28 s optimised.
+[profile.test.package.remodel-state]
+opt-level = 2
