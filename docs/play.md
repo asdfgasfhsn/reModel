@@ -940,11 +940,11 @@ genre, its name in the display face, and its facts (board, year, "Links 2 to
 - **Saves**: the game's states (where you left off, the quick save, slots 1 to
   4, each with its thumbnail when it has one); choosing one starts the game
   from it. The main menu's row says how many there are.
-- **Game settings**: Picture, Controls, Sound, Speed and latency, Free play
-  (for the games that have it) and "Use the settings for all games" for a game
-  with its own. The first four open the Esc menu's own pages over the game page
-  (the code and settings are the menu's, "The menu"); B or Esc there return to
-  the game page.
+- **Game settings**: Picture, Controls, Display, Sound, Speed and latency and
+  Free play (for the games that have it). They open the Esc menu's own pages
+  over the game page (the code and settings are the menu's, "The menu"); B or
+  Esc there return to the game page. What a page shows is this game's own
+  settings against the system's ("Game settings and the system's", below).
 - **About this version** (only if there is something to say): what kind of
   release the version is (the variant's `kind`, and whether it is confirmed),
   whether link play works for it, and whether a texture pack made for the
@@ -1042,24 +1042,55 @@ that can't start (chips missing from the ROM folder) keeps its poster and
 says why. The preview never takes input, never saves its EEPROM, and is
 emulated like the game would be (it costs what the game costs).
 
-**Settings** (the menu button, Tab, on the home screen) open the Esc menu's side panel (below,
-"The menu") over the launcher, for the selected game: Picture, Controls
-(remap its keys and pad), Sound, Speed and latency, "Use the settings for all
-games" for a game that has its own, and Quit reModel. The game page's Game
-settings rows open the same pages directly (going back from one returns to the
-page rather than showing this menu). It is the same panel,
-code and settings as in a game (the picture styles, and the rows that apply
-as set); changes are kept for all games or this game by its scope switch,
-and what is saved from either place is identical. B, Start or Esc close it.
-The preview doesn't show the picture settings (it draws flat, without
-anti-aliasing and the rest); they show in the game.
+**Settings** (the menu button, Tab, on the home screen) open **System
+settings**, in the same side panel as the Esc menu (below, "The menu"): an
+index of **Folders**, **Picture**, **Display**, **Motion**, **Sound**,
+**More**, **Controllers** and **Players**, and Quit reModel. They belong to no
+game: Picture, Display, Motion, Sound and More are the same pages a game has
+(the picture styles, and the rows that apply as set), but what they change is
+the defaults every game starts from (the all-games layer, `play-settings.txt`).
+The footer of each says which games keep their own values for it ("Every game
+uses these." or "Top Skater keeps its own values for this page."), so a
+default that doesn't seem to apply has an explanation.
+
+- **Folders**: the ROM folder (`--rom`, remembered; the only place to change
+  it once games are found), the **texture packs** folder and the **photos**
+  folder. A, or a click, opens a text field with the path (`~/` is your home
+  folder): Enter saves it, B or Esc cancels; an empty packs or photos folder
+  is the default again. With a packs folder set, a game's pack is
+  `<folder>/<set>/texpack/` (and a clone's falls back to its parent's, as
+  before); with a photos folder, photo mode saves to `<folder>/<set>/`
+  (`--texture-pack` and `--photo-dir` still win for a run). Without them
+  nothing has moved: `<data dir>/<set>/texpack/` and the pictures folder's
+  `reModel/<set>/`. A folder is saved as `packs_root` and `photos_root` in
+  `play-settings.txt`. Changing a folder doesn't move what is in it. Folders
+  are system-only; they are never a game's setting.
+- **Controllers**: the pad-wide tuning, a row each: for Steering, Stick and
+  Pedal the dead zone, sensitivity and curve, and Steering smoothing
+  ("Controllers", below). These are the same keys a game's Controls page
+  tunes for that game alone (`steer_dead`, `stick_sens`, ...), so a game that
+  has tuned its own keeps them; button layouts are each game's own.
+- **Players**: where who plays is chosen (a placeholder row, "Seats: P1
+  keyboard, pads join by pressing a button", until seats exist).
+
+B, Start or Esc close it. The game page's Game settings rows open a game's
+pages directly (going back from one returns to the page rather than showing
+this menu). The preview doesn't show the picture settings (it draws flat,
+without anti-aliasing and the rest); they show in the game.
 
 Settings come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
 `--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--bloom`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
-(that change is then kept as any other). A layer keeps only what it sets.
+(that change is then kept as any other). A layer keeps only what it sets. **System settings write the all-games layer,
+and a game's settings pages (its page's Game settings, the Esc menu in play)
+write that game's own layer, only where its value differs from the system's.**
+There is no scope switch anywhere: anything changed during play applies to
+that game alone, and to change a default, open System settings from the
+launcher. Files from before (a `scope = game` line, a game file holding a
+value equal to the system's) still load; the first is ignored, the second
+shows as the system's value (a value equal to the system's is not "its own").
 
 With the HUD at the edges, 3D parts of the HUD move with it: a game's manifest lists the
 3D windows that hold HUD (`hud_windows`: each polygon moves by its third of the
@@ -1905,11 +1936,8 @@ the game starts again from power-on, keeping its EEPROM) and **Back to
 games**. Under a small "SETTINGS" label come the settings, one level in,
 each showing its value: **Picture** (the style), **Controls**, **Sound**
 (the music level) and **Speed and latency** (run-ahead, or exact speed or
-smooth). With no game running (the menu from the launcher's Settings, for the
-game selected there) there is no game to resume or save, **Controls** is that
-game's, a game with settings of its own has **Use the settings for all games**,
-and there is a **Quit reModel** row at the foot. The version is at the foot of
-the list.
+smooth). The launcher's Settings aren't this page: they are System settings
+(above). The version is at the foot of the list.
 
 From a gamepad: the d-pad or left stick moves between the buttons and rows
 as they're laid out (repeating while held, as in the launcher), A presses
@@ -1946,8 +1974,16 @@ events only, not yet with a real pad.
   pointer, does. A row that does nothing as things are set is left out, not
   greyed (anti-aliasing while temporal is on, temporal with the chip
   geometrizer or on a GPU that can't, the shading options with flat
-  shading). Every tab ends with **Applies to: this game / all games**,
-  where the changes are kept (the same from the launcher's Settings).
+  shading). For a game, every row says where its value comes from: the
+  system's is dim with a **System** tag, the game's own is bright with its
+  name beside it, a cyan dot at the row's left and "System: <value>" on the
+  label's line. Changing a row makes it the game's own (and back to the
+  system's value drops it again). **X** on the pad, or **Delete**, on an own
+  row gives it back to the system ("Reset" in the foot's hints); the foot says
+  "3 of Top Skater's settings differ from the system" (a picture style and
+  what it sets count as one) and **Reset all to system** drops them all.
+  Under System settings the same rows are the defaults, and the foot says
+  which games keep their own.
   - **Display**: the aspect (fit the window, the default, drawing the game
     wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), where
     the HUD goes on wide windows (shown for fit the window), the bezel
@@ -1968,11 +2004,12 @@ events only, not yet with a real pad.
   six cards, each a name, a small tag and one plain sentence: *Arcade
   original*, *Sharp*, *Smooth modern* (recommended), *CRT*, *Comic* and
   *Custom*.
-  Choosing one applies it at once to the paused game beside the panel. A
-  switch at the top, "<Game> only | All games", is the settings' scope (the
-  same layers as the launcher's), and the last line says where it
-  is saved and what other games keep ("Saved for Top Skater. Other games
-  keep Sharp."). *Compare* shows the paused picture twice, as the arcade
+  Choosing one applies it at once to the paused game beside the panel. The
+  last line says where it is saved and what the system has ("Saved for Top
+  Skater. The system uses Sharp."; in System settings "Saved as the default for
+  every game", and which games keep their own style). A game's page has a
+  **Use the system's picture** button above that line, to drop the game's own
+  style and picture rows. *Compare* shows the paused picture twice, as the arcade
   original left of a vertical divider and as chosen right of it, with
   "Before" and "After" labels at the picture's top corners: drag the
   divider with the mouse, or move it with the pad's left and right (also
@@ -2216,8 +2253,9 @@ Linear; Pedals none, 100%, Linear. Fine is `0.5u + 0.5u^3` on the travel
 past the dead zone: half way along the travel it gives 0.31, where
 Linear gives 0.5 and Gentle (`u^2`) 0.25. A stick used as d-pad directions
 (`StickDirs`) still takes the dead zone as a threshold. Tuning follows the
-**This game only / All games** switch, as the Picture page's settings do, and
-is kept with the settings as `steer_dead`, `steer_sens`, `steer_curve`,
+per-game keys, as the Picture page's settings are (for the game on its
+Controls page, "From the system" or "<Game>'s own" at the card's top right;
+for every game in System settings, Controllers), and is kept with the settings as `steer_dead`, `steer_sens`, `steer_curve`,
 `steer_smooth`, `stick_dead`, `stick_sens`, `stick_curve` and `pedal_dead`, `pedal_sens`,
 `pedal_curve`; a settings file without the `steer_` keys gets the steering
 defaults. In a window too narrow for it the card leaves out the raw and tuned
@@ -2225,7 +2263,7 @@ bars (and the sentence of help). **Steering smoothing.** A pad stick wanders by 
 still, and a game that points its wheels at the wheel's position every frame
 (`daytona`) turns that into car twitch. The Steering block's fourth row,
 **Smoothing** (Off, Light, Medium, Strong; Light by default; `steer_smooth`,
-per game or for all games like the rest), runs a One Euro filter (Casiez,
+per game, with the system's as its default, like the rest), runs a One Euro filter (Casiez,
 Roussel and Vogel, CHI 2012) on each steering stick past the tuning above: an
 adaptive low-pass whose cutoff is `min_cutoff + beta * speed`, so a still stick
 is smoothed hard and a fast move hardly at all. It runs once per emulated
@@ -2268,7 +2306,7 @@ doesn't need smoothing; 1% or more is shaky. Nothing is written while the menu
 is open or for keys, and frames are counted from the game's start.
 
 Bindings are always the game's own: a
-different game has other actions, so there is nothing for "all games" to
+different game has other actions, so there is nothing for the system to
 share.
 
 Changes apply at once and are kept per game in
@@ -2310,10 +2348,11 @@ platform's data folder: `$XDG_DATA_HOME/remodel` (normally
 on macOS, `%APPDATA%\remodel` on Windows:
 
 - `play-settings.txt`: the settings, as `key = value` lines: the ROM
-  folder, the games played (most recent first), fullscreen, where the
-  settings panels save, the version chosen of each title
-  (`version.<title> = <set>`), `show_hacks`, and the game settings set for
-  all games.
+  folder, the texture packs and photos folders (`packs_root`, `photos_root`,
+  when chosen in System settings), the games played (most recent first),
+  fullscreen, the version chosen of each title
+  (`version.<title> = <set>`), `show_hacks`, and the system's game settings
+  (the defaults for all games). An old `scope` line is ignored.
 - `<set>/settings.txt`: the game's own settings, only where they differ
   from those for all games.
 

@@ -18,8 +18,7 @@
 //! games switch like the Picture page's settings.
 
 use super::figure::{self, Art, GunPart, Part, Placed, Shape, Spot, Tag, WheelPart};
-use super::picture::scope_toggle;
-use super::{pill, regions, side_panel, Menu, Page, PanelSpec, Prefs, Regions, View};
+use super::{pill, regions, side_panel, Menu, Page, PanelSpec, Regions, View};
 use crate::controls::{is_stick, Curve, PadLive, PadStyle, Response};
 use crate::focus::Focus;
 use crate::launcher::Nav;
@@ -404,7 +403,16 @@ impl Tuned {
         self != Tuned::Pedal
     }
 
-    fn help(self) -> &'static str {
+    /// The settings keys the kind's tuning is kept in.
+    pub(super) fn keys(self) -> &'static [&'static str] {
+        match self {
+            Tuned::Stick => &["stick_dead", "stick_sens", "stick_curve"],
+            Tuned::Steer => &["steer_dead", "steer_sens", "steer_curve", "steer_smooth"],
+            Tuned::Pedal => &["pedal_dead", "pedal_sens", "pedal_curve"],
+        }
+    }
+
+    pub(super) fn help(self) -> &'static str {
         match self {
             Tuned::Stick => "Nothing is read inside the dead zone; past it the reading rises smoothly.",
             Tuned::Steer => {
@@ -460,7 +468,7 @@ pub(super) fn blocks(b: &Bindings) -> Vec<Block> {
     out
 }
 
-fn response(s: &GameSettings, kind: Tuned) -> Response {
+pub(super) fn response(s: &GameSettings, kind: Tuned) -> Response {
     match kind {
         Tuned::Stick => s.tuning.stick,
         Tuned::Steer => s.tuning.steer,
@@ -468,7 +476,7 @@ fn response(s: &GameSettings, kind: Tuned) -> Response {
     }
 }
 
-fn response_mut(s: &mut GameSettings, kind: Tuned) -> &mut Response {
+pub(super) fn response_mut(s: &mut GameSettings, kind: Tuned) -> &mut Response {
     match kind {
         Tuned::Stick => &mut s.tuning.stick,
         Tuned::Steer => &mut s.tuning.steer,
@@ -526,7 +534,6 @@ impl Menu {
         &mut self,
         ctx: &egui::Context,
         settings: &mut GameSettings,
-        prefs: Prefs,
         view: &View,
         b: &mut Bindings,
         navs: &[Nav],
@@ -726,7 +733,7 @@ impl Menu {
         let (list, _) = rows(b, device, style, self.show_unbound);
         let focused_slot =
             self.ctl.focus.focused().and_then(|f| list.iter().find(|r| row_id(b, r.slot) == f)).map(|r| r.slot);
-        self.controls_left(ctx, settings, prefs, view, b, &reg, device, cabinet, style, &list, focused_slot);
+        self.controls_left(ctx, settings, view, b, &reg, device, cabinet, style, &list, focused_slot);
         self.ctl.focus.end();
         if back {
             self.back_to_pause();
@@ -766,7 +773,6 @@ impl Menu {
         &mut self,
         ctx: &egui::Context,
         settings: &mut GameSettings,
-        prefs: Prefs,
         view: &View,
         b: &Bindings,
         reg: &Regions,
@@ -799,10 +805,7 @@ impl Menu {
         let tex = art.and_then(|a| self.ctl.textures.get(&a)).map(|t| t.id());
         let blocks = blocks(b);
         self.ctl.block = self.ctl.block.min(blocks.len().saturating_sub(1));
-        let for_all = *prefs.for_all;
-        let name = view.playing.unwrap_or_else(|| view.game.map_or("This game", |g| g.title));
-        let short = if name.chars().count() > 16 { "This game" } else { name };
-        let (mut scope, mut layout_click, mut block_pick) = (None, false, None);
+        let (mut layout_click, mut block_pick) = (false, None);
         let mut tweaks: Vec<(Tuned, Tweak, usize)> = Vec::new();
         let ctl = &mut self.ctl;
         let focus = &mut ctl.focus;
@@ -928,7 +931,19 @@ impl Menu {
                     let inner = card_rect.shrink2(vec2(16.0 * s, 10.0 * s));
                     // The title, and where it's kept.
                     let title_row = Rect::from_min_size(inner.min, vec2(inner.width(), 48.0 * s));
-                    let switch_w = 360.0 * s;
+                    // Where it's from: the system's, or the game's own.
+                    let (own, game_name) = match view.inherit {
+                        Some(i) => {
+                            (blk.kind.keys().iter().any(|k| i.is_own(k)), view.playing.or(view.game.map(|g| g.title)))
+                        }
+                        None => (false, None),
+                    };
+                    let from = match (view.inherit.is_some(), own) {
+                        (false, _) => String::new(),
+                        (true, true) => format!("{}'s own", game_name.unwrap_or("This game")),
+                        (true, false) => "From the system".to_string(),
+                    };
+                    let switch_w = 260.0 * s;
                     let switch = Rect::from_min_size(
                         pos2(title_row.right() - switch_w, title_row.top() + 2.0 * s),
                         vec2(switch_w, 44.0 * s),
@@ -943,10 +958,21 @@ impl Menu {
                         font,
                         theme::TEXT,
                     );
-                    let labels = [format!("{short} only"), "All games".to_string()];
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(switch), |ui| {
-                        scope = scope_toggle(ui, focus, &labels, for_all as usize);
-                    });
+                    let tag = fit(p, &from, &plain(s, 15.0), switch_w);
+                    let colour = if own { theme::CYAN_LIGHT } else { theme::TEXT_DIM };
+                    if own {
+                        p.circle_filled(
+                            pos2(
+                                switch.right()
+                                    - p.layout_no_wrap(tag.clone(), plain(s, 15.0), colour).size().x
+                                    - 12.0 * s,
+                                switch.center().y,
+                            ),
+                            3.0 * s,
+                            theme::CYAN,
+                        );
+                    }
+                    p.text(pos2(switch.right(), switch.center().y), Align2::RIGHT_CENTER, tag, plain(s, 15.0), colour);
                     let mut y = title_row.bottom();
                     if blocks.len() > 1 {
                         let bar =
@@ -1046,9 +1072,6 @@ impl Menu {
                 }
             },
         );
-        if let Some(i) = scope {
-            *prefs.for_all = i == 1;
-        }
         if let Some(i) = block_pick {
             self.ctl.block = i.min(blocks.len().saturating_sub(1));
         }

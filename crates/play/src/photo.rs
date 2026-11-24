@@ -490,9 +490,13 @@ fn describe_sampling(w: u32, h: u32, k: u32, msaa: u32) -> String {
 /// Where photos go: `reModel/<set>/` in the user's pictures folder (the
 /// XDG pictures directory on Linux, Pictures on macOS and Windows), or
 /// `--photo-dir`. Without a pictures folder, `<data dir>/<set>/photos/`.
+/// With a photos folder chosen in System settings, `<folder>/<set>/`.
 pub fn dir(set: &str, over: Option<&Path>) -> PathBuf {
     if let Some(d) = over {
         return d.to_path_buf();
+    }
+    if let Some(root) = crate::settings::photos_root() {
+        return root.join(set);
     }
     match dirs::picture_dir() {
         Some(p) => p.join("reModel").join(set),

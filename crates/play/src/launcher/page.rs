@@ -801,6 +801,12 @@ impl Launcher {
                         String::new(),
                         Click::SettingsAt(menu::Page::Controls, menu::Tab::Display),
                     ),
+                    (
+                        "display",
+                        "Display",
+                        st.display.clone(),
+                        Click::SettingsAt(menu::Page::Settings, menu::Tab::Display),
+                    ),
                     ("sound", "Sound", st.sound.clone(), Click::SettingsAt(menu::Page::Settings, menu::Tab::Sound)),
                     (
                         "speed",
@@ -819,10 +825,6 @@ impl Launcher {
                         Click::SettingsAt(menu::Page::Settings, menu::Tab::More),
                         clicks,
                     );
-                }
-                if st.has_own {
-                    let spec = Row::new("reset", "Use the settings for all games");
-                    go(row(ui, focus, level, &spec, u), Click::ResetOwn, clicks);
                 }
             }
             Level::About => {

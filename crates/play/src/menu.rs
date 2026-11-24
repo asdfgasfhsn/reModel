@@ -9,8 +9,15 @@
 //! other settings come in tabs (Display, Motion, Sound, More), each row
 //! "label ◂ value ▸": left and right change it, and one help line at the
 //! bottom says what the focused (or pointed-at) row does. Options that do
-//! nothing as things are set are left out, not greyed. Every settings tab
-//! ends with where the changes are kept (this game or all games).
+//! nothing as things are set are left out, not greyed.
+//!
+//! The same pages serve two scopes. Opened for a game (its page, or Esc in
+//! play) they show every row as the system's (dim, tagged "System") or the
+//! game's own (cyan dot, tagged with the game, "System: X" beside it);
+//! changing a row makes it the game's own and X (Delete) on it gives it
+//! back to the system. Opened from the launcher's Settings (`Menu::system`)
+//! they are the system's: the defaults every game starts from, with the
+//! Folders, Controllers and Players pages that belong to no game (`system`).
 //!
 //! Its Controls page (also the launcher's) remaps the game's keys and
 //! gamepad bindings (`romset::bindings`): click a binding, then press what
@@ -26,17 +33,20 @@ use crate::focus::Focus;
 use crate::hints::{run_ahead_help, run_ahead_max, run_ahead_shown, RUN_AHEAD};
 use crate::launcher::{Nav, DIM};
 use crate::saves::{self, SlotInfo};
-use crate::settings::{GameSettings, Preset};
+use crate::settings::{GameSettings, Preset, KEYS};
 
 mod controls;
 pub use controls::conflict_text;
 mod figure;
 mod picture;
+mod players;
+mod system;
 use crate::theme::{self, Chip, Level, Toasts};
 use egui::{pos2, vec2, Align2, Color32, FontFamily, FontId, Rect, Sense, Shape, Stroke};
 use romset::bindings::{Bindings, Slot};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
+pub use system::{page_keys, Folder, SystemView};
 
 /// Save slots shown in the menu; slot 0 is the quick slot (F5 / F9).
 pub const SLOTS: u8 = 5;
@@ -49,9 +59,12 @@ pub enum Action {
     Load(u8),
     /// Leave the game for the launcher.
     Games,
-    /// From the launcher: drop the selected game's own settings, so it
-    /// takes the ones for all games.
+    /// Drop all the game's own settings, so it takes the system's.
     ResetOwn,
+    /// Drop these keys from the game's own settings (a row's reset).
+    ResetKeys(Vec<&'static str>),
+    /// System settings: a folder was chosen (None: the default again).
+    SetFolder(Folder, Option<String>),
     /// Start the game again from power-on.
     Reset,
     /// Open photo mode.
@@ -74,6 +87,12 @@ pub enum Page {
     Advanced,
     /// The game's controls: bindings, the device's picture, the tuning.
     Controls,
+    /// System settings: the ROM, texture pack and photo folders.
+    Folders,
+    /// System settings: the tuning every controller has.
+    Controllers,
+    /// System settings: who plays (`players`).
+    Players,
 }
 
 /// The settings tabs.
@@ -123,6 +142,12 @@ pub struct Menu {
     /// Which screen the menu is on (besides Controls) and which settings tab.
     pub page: Page,
     pub tab: Tab,
+    /// The menu is the launcher's System settings, not one game's.
+    pub system: bool,
+    /// System settings' own state (the pages' focus, a folder being typed).
+    sys: system::State,
+    /// The focused row was the game's own last frame (its hints offer reset).
+    own_focused: bool,
     /// Waiting for a key, button or stick to bind into a slot: in place of
     /// its nth binding, or added (None).
     pub capture: Option<(Slot, Option<usize>)>,
@@ -169,8 +194,30 @@ struct Thumb {
 /// Player-wide settings the menu changes besides the game's.
 pub struct Prefs<'a> {
     pub fullscreen: &'a mut bool,
-    /// Changes are kept for all games (else for the one playing).
-    pub for_all: &'a mut bool,
+}
+
+/// What a game's pages say about the system's settings (a game's scope):
+/// what the system has, and which of the game's settings are its own.
+#[derive(Clone, Debug)]
+pub struct Inherit {
+    /// The settings the game would play with if it had none of its own.
+    pub system: GameSettings,
+    /// Each setting (`KEYS` order) the game has its own value for.
+    pub own: [bool; KEYS.len()],
+    /// How many of the game's settings differ from the system's.
+    pub differ: usize,
+}
+
+impl Inherit {
+    /// The game has its own value for setting `key`.
+    pub fn is_own(&self, key: &str) -> bool {
+        KEYS.iter().position(|k| *k == key).is_some_and(|i| self.own[i])
+    }
+
+    /// The game's own picture (a style or any row it sets) differs.
+    pub fn own_picture(&self) -> bool {
+        self.is_own("preset") || crate::settings::PICTURE_KEYS.iter().any(|k| self.is_own(k))
+    }
 }
 
 /// What the menu shows besides the settings.
@@ -189,8 +236,11 @@ pub struct View<'a> {
     pub temporal_supported: bool,
     /// The game has bezel art.
     pub has_bezel: bool,
-    /// The game has settings of its own (the launcher offers to drop them).
-    pub has_own: bool,
+    /// A game's scope: the system's settings and the game's own (None in
+    /// System settings, or with no game).
+    pub inherit: Option<&'a Inherit>,
+    /// System settings' scope: what its pages say besides the settings.
+    pub system: Option<&'a SystemView>,
     /// Run-ahead was switched off because the machine could not keep up.
     pub run_ahead_dropped: bool,
     /// The frames of run-ahead this computer has time for, once measured
@@ -235,13 +285,11 @@ pub fn summary(settings: &GameSettings) -> (&'static str, String, String) {
 }
 
 /// What the picture pages tell a player about where a change is kept
-/// (`Settings::all_games_preset`, `Settings::has_own_picture`).
+/// (`Settings::all_games_preset`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Keeps {
     /// The style games with no settings of their own play with.
     pub all_games: Preset,
-    /// The game has picture settings of its own.
-    pub own_picture: bool,
 }
 
 /// Smooth shading's crease angles besides the game's own, in degrees.
@@ -285,13 +333,75 @@ struct Rows<'a> {
     nav_mode: bool,
     focused: Option<String>,
     hovered: Option<String>,
+    /// A game's scope: the system's settings and the game's own, and the
+    /// game's name for the tag.
+    inherit: Option<&'a Inherit>,
+    game: &'a str,
+    /// What the system's value of each row (by label) reads.
+    system_text: HashMap<String, String>,
+    /// Draw nothing: just note each row's value in `noted` (for `system_text`).
+    dry: bool,
+    noted: HashMap<String, String>,
+    /// X or Delete was pressed: the focused row, if it is the game's own,
+    /// adds its keys to `reset`.
+    reset_pressed: bool,
+    reset: Vec<&'static str>,
+    /// The focused row is the game's own.
+    own_focused: bool,
 }
 
-impl Rows<'_> {
+/// The settings each row of the settings pages is (by its label), for what
+/// is the game's own and what resetting it drops.
+fn row_keys(label: &str) -> &'static [&'static str] {
+    match label {
+        "Aspect" => &["wide"],
+        "HUD position" => &["hud_edges"],
+        "Bezel" => &["bezel"],
+        "Link play layout" => &["link_layout"],
+        "Exact arcade speed" => &["exact"],
+        "Smooth motion" => &["smooth"],
+        "Run-ahead" => &["run_ahead"],
+        "Effects" => &["sfx_db"],
+        "Music" => &["music_db"],
+        "Link play sound" => &["link_audio"],
+        "Free play" => &["free_play"],
+        "Input delay (hosting)" => &["net_delay"],
+        "Geometrizer" => &["geo"],
+        "Catalogue" => &["catalogue"],
+        "Texture filtering" => &["tex_filter"],
+        _ => &[],
+    }
+}
+
+impl<'a> Rows<'a> {
+    fn new(focus: &'a mut Focus, nav_mode: bool) -> Rows<'a> {
+        Rows {
+            focus,
+            nav_mode,
+            focused: None,
+            hovered: None,
+            inherit: None,
+            game: "",
+            system_text: HashMap::new(),
+            dry: false,
+            noted: HashMap::new(),
+            reset_pressed: false,
+            reset: Vec::new(),
+            own_focused: false,
+        }
+    }
+
     /// One "label ◂ value ▸" row, the label over the value; `can`: whether
     /// there is a choice before and after.
     fn row(&mut self, ui: &mut egui::Ui, label: &str, value: &str, can: (bool, bool), help: &str) -> Step {
+        if self.dry {
+            self.noted.insert(label.to_string(), value.to_string());
+            return Step::None;
+        }
         let s = theme::scale(ui.ctx());
+        let keys = row_keys(label);
+        let own = self.inherit.is_some_and(|i| keys.iter().any(|k| i.is_own(k)));
+        let inherited = self.inherit.is_some() && !keys.is_empty() && !own;
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0 * s), Sense::hover());
         let r = ui.interact(rect, ui.make_persistent_id(("row", label)), Sense::CLICK);
         let (pad, accepted) = self.focus.stepper(ui, &r);
@@ -306,20 +416,49 @@ impl Rows<'_> {
             p.rect_filled(rect, theme::ROW_RADIUS * s, Color32::from_white_alpha(14));
         }
         let x = rect.left() + 14.0 * s;
-        p.text(
-            pos2(x, rect.top() + 6.0 * s),
-            Align2::LEFT_TOP,
-            label,
-            FontId::new(14.0 * s, FontFamily::Proportional),
-            theme::TEXT_DIM,
-        );
-        p.text(
+        let label_font = FontId::new(14.0 * s, FontFamily::Proportional);
+        let label_at = p.text(pos2(x, rect.top() + 6.0 * s), Align2::LEFT_TOP, label, label_font, theme::TEXT_DIM);
+        let value_colour = if inherited { theme::TEXT_DIM } else { theme::TEXT };
+        let value_at = p.text(
             pos2(x, rect.top() + 24.0 * s),
             Align2::LEFT_TOP,
             value,
             FontId::new(17.0 * s, theme::semibold()),
-            theme::TEXT,
+            value_colour,
         );
+        let tag_font = FontId::new(12.0 * s, theme::semibold());
+        if own {
+            // The game's own: a cyan dot, its name beside the value, and
+            // what the system has.
+            p.circle_filled(pos2(rect.left() + 6.0 * s, label_at.center().y), 3.0 * s, theme::CYAN);
+            let room = (left.left() - 10.0 * s - value_at.right() - 10.0 * s).max(0.0);
+            p.text(
+                pos2(value_at.right() + 10.0 * s, value_at.center().y + 1.0 * s),
+                Align2::LEFT_CENTER,
+                fit_text(p, self.game, &tag_font, room),
+                tag_font.clone(),
+                theme::CYAN_LIGHT,
+            );
+            if let Some(sys) = self.system_text.get(label) {
+                let font = FontId::new(13.0 * s, FontFamily::Proportional);
+                let room = (left.left() - 10.0 * s - label_at.right() - 12.0 * s).max(0.0);
+                p.text(
+                    pos2(left.left() - 10.0 * s, label_at.center().y),
+                    Align2::RIGHT_CENTER,
+                    fit_text(p, &format!("System: {sys}"), &font, room),
+                    font,
+                    theme::TEXT_DIM,
+                );
+            }
+        } else if inherited {
+            p.text(
+                pos2(value_at.right() + 10.0 * s, value_at.center().y + 1.0 * s),
+                Align2::LEFT_CENTER,
+                "System",
+                tag_font,
+                theme::TEXT_DIM.gamma_multiply(0.8),
+            );
+        }
         for (rect, dir, on) in [(left, -1.0, can.0), (right, 1.0, can.1)] {
             let c = rect.center() + vec2(0.0, 4.0 * s);
             let color = if on { theme::CYAN } else { DIM.gamma_multiply(0.35) };
@@ -333,6 +472,10 @@ impl Rows<'_> {
         }
         if self.focus.focused() == Some(r.id) {
             self.focused = Some(help.to_string());
+            self.own_focused = own;
+            if own && self.reset_pressed {
+                self.reset.extend_from_slice(keys);
+            }
         }
         if r.hovered() {
             self.hovered = Some(help.to_string());
@@ -402,6 +545,23 @@ impl Rows<'_> {
     }
 }
 
+/// `text` cut short with "…" to fit `w`.
+fn fit_text(p: &egui::Painter, text: &str, font: &FontId, w: f32) -> String {
+    let wide = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), theme::TEXT).size().x;
+    if wide(text) <= w {
+        return text.to_string();
+    }
+    let mut t = text.to_string();
+    while !t.is_empty() && wide(&format!("{t}…")) > w {
+        t.pop();
+    }
+    if t.is_empty() {
+        String::new()
+    } else {
+        format!("{}…", t.trim_end())
+    }
+}
+
 /// "Paused", a pill at the game's top left while the menu is up.
 fn paused_pill(ctx: &egui::Context) {
     let s = theme::scale(ctx);
@@ -428,6 +588,8 @@ fn menu_keys(ctx: &egui::Context) -> Vec<Nav> {
         (Modifiers::NONE, Key::Enter, Nav::Accept),
         (Modifiers::NONE, Key::Space, Nav::Accept),
         (Modifiers::NONE, Key::Backspace, Nav::Back),
+        // Delete is the pad's X: a settings row back to the system's.
+        (Modifiers::NONE, Key::Delete, Nav::Saves),
         (Modifiers::NONE, Key::Tab, Nav::NextGroup),
         (Modifiers::NONE, Key::E, Nav::NextGroup),
         (Modifiers::NONE, Key::Q, Nav::PrevGroup),
@@ -525,10 +687,12 @@ impl Menu {
             self.settings_focus = Focus::default();
             self.ctl = controls::State::default();
             self.picture = picture::State::default();
+            self.sys = system::State::default();
             self.thumbs.clear();
             self.reset_armed = None;
             self.direct = false;
             self.close_asked = false;
+            self.own_focused = false;
             return actions;
         }
         self.picture.wipe_rect = None;
@@ -536,7 +700,7 @@ impl Menu {
         {
             paused_pill(ctx);
         }
-        let keys = if self.capture.is_none() { menu_keys(ctx) } else { Vec::new() };
+        let keys = if self.capture.is_none() && !self.editing() { menu_keys(ctx) } else { Vec::new() };
         self.note_input(ctx, navs, &keys);
         let all: Vec<Nav> = navs.iter().chain(&keys).copied().collect();
         let navs = &all[..];
@@ -548,7 +712,7 @@ impl Menu {
         if self.page == Page::Controls {
             match bindings {
                 Some(b) => {
-                    if self.controls_page(ctx, settings, prefs, view, b, navs) {
+                    if self.controls_page(ctx, settings, view, b, navs) {
                         actions.push(Action::Bindings);
                     }
                     if std::mem::take(&mut self.close_asked) {
@@ -561,11 +725,15 @@ impl Menu {
             }
         }
         match self.page {
+            Page::Pause if self.system => self.system_page(ctx, settings, view, navs, &mut actions),
             Page::Pause => self.pause_page(ctx, settings, view, navs, &mut actions),
             Page::SaveLoad => self.save_page(ctx, view, navs, &mut actions),
-            Page::Settings => self.settings_page(ctx, settings, prefs, view, navs),
-            Page::Picture => self.picture_page(ctx, settings, prefs, view, navs),
-            Page::Advanced => self.advanced_page(ctx, settings, prefs, view, navs),
+            Page::Settings => self.settings_page(ctx, settings, prefs, view, navs, &mut actions),
+            Page::Picture => self.picture_page(ctx, settings, view, navs, &mut actions),
+            Page::Advanced => self.advanced_page(ctx, settings, view, navs),
+            Page::Folders => self.folders_page(ctx, view, navs, &mut actions),
+            Page::Controllers => self.controllers_page(ctx, settings, view, navs, &mut actions),
+            Page::Players => self.players_page(ctx, view, navs),
             Page::Controls => {}
         }
         if std::mem::take(&mut self.close_asked) {
@@ -688,9 +856,6 @@ impl Menu {
                     if focus.menu_row(ui, "Speed and latency", &format!("{speed} ›")) {
                         go = Some((Page::Settings, Tab::Motion));
                     }
-                    if !playing && view.has_own && focus.menu_row(ui, "Use the settings for all games", "") {
-                        actions.push(Action::ResetOwn);
-                    }
                     if !playing && focus.menu_row(ui, "Quit reModel", "") {
                         actions.push(Action::Quit);
                     }
@@ -713,16 +878,31 @@ impl Menu {
             self.warn("Select Reset game again to confirm");
         }
         if let Some((page, tab)) = go {
-            self.reset_armed = None;
-            self.page = page;
-            if page == Page::Settings {
-                self.tab = tab;
-            }
-            self.slots_focus = Focus::default();
-            self.settings_focus = Focus::default();
-            self.picture = picture::State::default();
-            self.ctl = controls::State::default();
+            self.go_to(page, tab);
         }
+    }
+
+    /// Go to `page` (and `tab`, for Settings) with its state fresh.
+    fn go_to(&mut self, page: Page, tab: Tab) {
+        self.reset_armed = None;
+        self.page = page;
+        if page == Page::Settings {
+            self.tab = tab;
+        }
+        self.slots_focus = Focus::default();
+        self.settings_focus = Focus::default();
+        self.picture = picture::State::default();
+        self.ctl = controls::State::default();
+        self.sys.fresh();
+    }
+
+    /// What the pages call the scope they're for: the game (the one
+    /// playing, or the one the launcher has selected), or the system.
+    fn who<'a>(&self, view: &View<'a>) -> &'a str {
+        if self.system {
+            return "System";
+        }
+        view.playing.or(view.game.map(|g| g.title)).unwrap_or("reModel")
     }
 
     /// Bring the slots' thumbnails up to date: a picture just taken, or
@@ -835,7 +1015,9 @@ impl Menu {
         }
     }
 
-    /// The settings: tabs of rows.
+    /// The settings: tabs of rows. For a game, each row is the system's or
+    /// the game's own, with a reset for it and for all of them; in System
+    /// settings they are the defaults, with what games keep their own.
     fn settings_page(
         &mut self,
         ctx: &egui::Context,
@@ -843,9 +1025,11 @@ impl Menu {
         mut prefs: Prefs,
         view: &View,
         navs: &[Nav],
+        actions: &mut Vec<Action>,
     ) {
         let rest = self.settings_focus.begin(navs);
         let mut back = rest.contains(&Nav::Back);
+        let reset_pressed = rest.contains(&Nav::Saves);
         let tab_step = rest.iter().filter(|n| **n == Nav::NextGroup).count() as i32
             - rest.iter().filter(|n| **n == Nav::PrevGroup).count() as i32;
         if tab_step != 0 {
@@ -855,48 +1039,73 @@ impl Menu {
         let nav_mode = self.pad_used || self.keys_used;
         let mut tab = self.tab;
         let s = theme::scale(ctx);
+        let who = self.who(view);
+        let (pad_used, own_before) = (self.pad_used, self.own_focused);
         let focus = &mut self.settings_focus;
         focus.show = nav_mode;
-        let mut rows = Rows { focus, nav_mode, focused: None, hovered: None };
-        let hints = [(Chip::LeftRight, "Change"), (Chip::Key("LB RB"), "Tabs"), (Chip::B, "Back")];
-        let spec =
-            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: tab.heading(), back: true, extra_h: 120.0 };
+        let mut rows = Rows::new(focus, nav_mode);
+        rows.inherit = view.inherit;
+        rows.game = who;
+        rows.reset_pressed = reset_pressed;
+        let mut hints = vec![(Chip::LeftRight, "Change"), (Chip::Key("LB RB"), "Tabs")];
+        hints.push(match (view.inherit.is_some() && own_before, pad_used) {
+            (true, true) => (Chip::X, "Reset"),
+            (true, false) => (Chip::Key("Del"), "Reset"),
+            _ => (Chip::B, "Back"),
+        });
+        let extra_h = if view.inherit.is_some() { 170.0 } else { 130.0 };
+        let spec = PanelSpec { game: who, heading: tab.heading(), back: true, extra_h };
+        let note = view.system.map(|sv| sv.keepers_note(tab)).unwrap_or_default();
+        let mut reset_all = false;
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(16.0 * s, 0.0))), |ui| {
                 tabs(ui, &mut tab);
+                // What the system has for these rows, read as they'd read.
+                if let Some(inh) = rows.inherit {
+                    let mut idle = Focus::default();
+                    let mut dry = Rows::new(&mut idle, false);
+                    dry.dry = true;
+                    let (mut sys, mut full) = (inh.system.clone(), *prefs.fullscreen);
+                    tab_rows(ui, &mut dry, tab, &mut sys, &mut Prefs { fullscreen: &mut full }, view);
+                    rows.system_text = dry.noted;
+                }
                 rows.focus.scroll_area("settings").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0 * s;
-                    match tab {
-                        Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
-                        Tab::Motion => motion_rows(ui, &mut rows, settings, view),
-                        Tab::Sound => sound_rows(ui, &mut rows, settings, view),
-                        Tab::More => more_rows(ui, &mut rows, settings, view),
-                    }
+                    tab_rows(ui, &mut rows, tab, settings, &mut prefs, view);
                 });
             });
             ui.painter().hline(reg.extra.x_range(), reg.extra.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.extra.shrink2(vec2(16.0 * s, 6.0 * s))), |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0 * s;
-                rows.choose(
-                    ui,
-                    "Applies to",
-                    &mut *prefs.for_all,
-                    &[(false, "This game"), (true, "All games")],
-                    "Where changes on these screens are kept: for this game only, or as the settings of every \
-                     game that has none of its own.",
-                );
-                let help = rows.help();
-                ui.add(
+                ui.spacing_mut().item_spacing.y = 6.0 * s;
+                let dim = |text: String| {
                     egui::Label::new(
-                        egui::RichText::new(help)
+                        egui::RichText::new(text)
                             .font(FontId::new(14.0 * s, FontFamily::Proportional))
                             .color(theme::TEXT_DIM),
                     )
-                    .wrap(),
-                );
+                    .wrap()
+                };
+                if let Some(inh) = view.inherit {
+                    ui.add(dim(differ_text(who, inh.differ)));
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0 * s), Sense::hover());
+                    if pill(ui, rows.focus, r, "Reset all to system", Some(theme::RAISED), inh.differ > 0) {
+                        reset_all = true;
+                    }
+                } else if !note.is_empty() {
+                    ui.add(dim(note));
+                }
+                ui.add(dim(rows.help()));
             });
             false
         });
+        let Rows { reset, own_focused, .. } = rows;
+        self.own_focused = own_focused;
+        if !reset.is_empty() {
+            actions.push(Action::ResetKeys(reset));
+        }
+        if reset_all {
+            actions.push(Action::ResetOwn);
+        }
         self.settings_focus.end();
         if tab != self.tab {
             self.tab = tab;
@@ -1159,6 +1368,25 @@ pub(crate) fn slot_card(
     focus.register(ui, &r)
 }
 
+/// "3 of Daytona USA's settings differ from the system." (the footer).
+fn differ_text(game: &str, n: usize) -> String {
+    match n {
+        0 => format!("{game} uses the system settings."),
+        1 => format!("1 of {game}'s settings differs from the system."),
+        n => format!("{n} of {game}'s settings differ from the system."),
+    }
+}
+
+/// The rows of a settings tab.
+fn tab_rows(ui: &mut egui::Ui, rows: &mut Rows, tab: Tab, s: &mut GameSettings, prefs: &mut Prefs, view: &View) {
+    match tab {
+        Tab::Display => display_rows(ui, rows, s, prefs, view),
+        Tab::Motion => motion_rows(ui, rows, s, view),
+        Tab::Sound => sound_rows(ui, rows, s, view),
+        Tab::More => more_rows(ui, rows, s, view),
+    }
+}
+
 fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs: &mut Prefs, view: &View) {
     rows.choose(
         ui,
@@ -1177,7 +1405,7 @@ fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs:
             "Where the score, speed and other displays go on a wide screen: out at the edges, or together in the \
              middle as in the original.",
         );
-    } else if view.has_bezel {
+    } else if view.has_bezel || view.system.is_some() {
         rows.toggle(ui, "Bezel", &mut s.bezel, "The cabinet's artwork beside a 4:3 picture in a wider window.");
     }
     rows.toggle(ui, "Fullscreen", &mut *prefs.fullscreen, "Fills the screen (F11 does the same, any time).");
@@ -1327,11 +1555,38 @@ mod tests {
         game: &'static romset::Game,
         actions: Vec<Action>,
         fullscreen: bool,
-        for_all: bool,
+        /// A game's scope (rows tagged System or the game's own), or None.
+        inherit: Option<Inherit>,
         dropped: bool,
         size: egui::Vec2,
         /// The text drawn in the last frame.
         texts: Vec<String>,
+    }
+
+    impl Rig {
+        /// A `View` of the game (for a test that draws the menu itself).
+        fn view_for_test(&self) -> View<'static> {
+            View {
+                playing: Some(self.game.title),
+                game: Some(self.game),
+                saves: &[],
+                max_anisotropy: 16,
+                temporal_supported: true,
+                has_bezel: true,
+                inherit: None,
+                system: None,
+                run_ahead_dropped: false,
+                run_ahead_room: None,
+                pack: None,
+                materials: None,
+                look: None,
+                pad: Default::default(),
+                link: None,
+                running: false,
+                picture: None,
+                keeps: Keeps { all_games: Preset::Sharp },
+            }
+        }
     }
 
     impl Rig {
@@ -1345,7 +1600,7 @@ mod tests {
                 game,
                 actions: Vec::new(),
                 fullscreen: false,
-                for_all: false,
+                inherit: None,
                 dropped: false,
                 size: egui::vec2(1920.0, 1080.0),
                 texts: Vec::new(),
@@ -1365,7 +1620,8 @@ mod tests {
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: true,
-                has_own: false,
+                inherit: self.inherit.as_ref(),
+                system: None,
                 run_ahead_dropped: self.dropped,
                 run_ahead_room: None,
                 pack: None,
@@ -1375,16 +1631,16 @@ mod tests {
                 link: None,
                 running: false,
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
-                keeps: Keeps { all_games: Preset::Sharp, own_picture: false },
+                keeps: Keeps { all_games: Preset::Sharp },
             };
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
                 events,
                 ..Default::default()
             };
-            let Rig { menu, s, b, actions, fullscreen, for_all, .. } = self;
+            let Rig { menu, s, b, actions, fullscreen, .. } = self;
             let mut out = self.ctx.run_ui(input, |ui| {
-                let prefs = Prefs { fullscreen, for_all };
+                let prefs = Prefs { fullscreen };
                 actions.extend(menu.ui(ui.ctx(), s, prefs, &view, Some(&mut *b), navs));
             });
             out.textures_delta.clear();
@@ -1427,7 +1683,7 @@ mod tests {
             self
         }
 
-        /// Into the Picture page, onto its first widget (the scope switch).
+        /// Into the Picture page, onto its first widget (the first style).
         fn open_picture(&mut self) -> &mut Rig {
             self.press(7, Nav::Down).run(&[&[Nav::Accept], &[]]);
             assert_eq!(self.menu.page, Page::Picture);
@@ -1436,8 +1692,8 @@ mod tests {
 
         /// Into the Advanced page, onto its first row.
         fn open_advanced(&mut self) -> &mut Rig {
-            // The scope switch, five styles, Compare, Advanced.
-            self.open_picture().press(8, Nav::Down).run(&[&[Nav::Accept], &[], &[]]);
+            // Six styles, Compare, Advanced.
+            self.open_picture().press(7, Nav::Down).run(&[&[Nav::Accept], &[], &[]]);
             assert_eq!(self.menu.page, Page::Advanced);
             self
         }
@@ -1466,6 +1722,8 @@ mod tests {
                 Action::Load(_) => "load",
                 Action::Games => "games",
                 Action::ResetOwn => "reset-own",
+                Action::ResetKeys(_) => "reset-keys",
+                Action::SetFolder(..) => "set-folder",
                 Action::Reset => "reset",
                 Action::Photo => "photo",
                 Action::Bindings => "bindings",
@@ -1666,16 +1924,64 @@ mod tests {
         assert_eq!((r.s.sfx_db, r.s.music_db), (sfx + 2.0, music - 1.0));
     }
 
+    /// A game's scope: its rows are the system's (dim, tagged "System") or
+    /// its own; changing one makes it the game's, X gives it back, and the
+    /// footer counts them and resets them all. No switch of scope anywhere.
     #[test]
-    fn applies_to_is_at_the_foot_of_each_tab() {
+    fn a_games_rows_are_the_systems_or_its_own() {
+        let inherit = |own: &[&str]| {
+            let mut i = Inherit { system: GameSettings::default(), own: [false; KEYS.len()], differ: own.len() };
+            for k in own {
+                i.own[KEYS.iter().position(|x| x == k).unwrap()] = true;
+            }
+            i
+        };
         for t in Tab::ALL {
             let mut r = Rig::new("topskatr");
+            r.inherit = Some(inherit(&[]));
             r.open_tab(t);
-            assert!(!r.for_all);
-            // However many rows the tab has, the last is "Applies to".
-            r.press(40, Nav::Down).run(&[&[Nav::Right]]);
-            assert!(r.for_all, "{t:?}");
+            assert!(r.shows("Top Skater uses the system settings."), "{t:?}: {:?}", r.texts);
+            assert!(r.shows("Reset all to system") && !r.shows("Applies to") && !r.shows("All games"));
         }
+        // Display: Aspect is the game's own (the system has 4:3 in this
+        // test: "System: 4:3" beside it), the HUD and the rest inherited.
+        let mut r = Rig::new("topskatr");
+        let mut i = inherit(&["wide"]);
+        i.system.wide = false;
+        r.inherit = Some(i);
+        r.s.wide = true;
+        r.open_tab(Tab::Display);
+        assert!(r.shows("System: 4:3"), "{:?}", r.texts);
+        assert!(r.shows("Top Skater"), "the game's tag: {:?}", r.texts);
+        assert!(r.shows("System"), "the inherited rows' tag");
+        assert!(r.shows("1 of Top Skater's settings differs from the system."), "{:?}", r.texts);
+        // X on the focused (own) row hands it back; on another it does nothing.
+        r.run(&[&[Nav::Saves]]);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::ResetKeys(k) if k == &["wide"])), "{:?}", r.names());
+        let mut r2 = Rig::new("topskatr");
+        r2.inherit = Some(inherit(&["wide"]));
+        r2.open_tab(Tab::Display).press(1, Nav::Down).run(&[&[Nav::Saves]]);
+        assert!(r2.names().is_empty(), "{:?}", r2.names());
+        // Reset all to system, from the footer.
+        let mut r3 = Rig::new("topskatr");
+        r3.inherit = Some(inherit(&["wide"]));
+        r3.open_tab(Tab::Display).press(60, Nav::Down).run(&[&[Nav::Accept]]);
+        assert_eq!(r3.names(), ["reset-own"]);
+        // Keyboard: Delete is X.
+        let mut r4 = Rig::new("topskatr");
+        r4.inherit = Some(inherit(&["wide"]));
+        r4.open_tab(Tab::Display);
+        r4.frame(
+            &[],
+            vec![egui::Event::Key {
+                key: egui::Key::Delete,
+                physical_key: Some(egui::Key::Delete),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(r4.names(), ["reset-keys"]);
     }
 
     #[test]
@@ -1719,13 +2025,13 @@ mod tests {
         assert_eq!(s.settled(romset::games::playable("stcc")).preset, Preset::Custom);
     }
 
-    /// The styles, from the pad: the scope switch, then a card each (Arcade
-    /// original, Sharp, Smooth modern, CRT, Custom), Compare, Advanced.
+    /// The styles, from the pad: a card each (Arcade original, Sharp, Smooth
+    /// modern, CRT, Comic, Custom), Compare, Advanced.
     #[test]
     fn choosing_a_style_sets_its_rows() {
         let mut r = Rig::new("topskatr");
         assert_eq!(r.s.preset, Preset::Original);
-        r.open_picture().press(2, Nav::Down).press(1, Nav::Accept);
+        r.open_picture().press(1, Nav::Down).press(1, Nav::Accept);
         assert_eq!((r.s.preset, r.s.aa, r.s.tex_filter), (Preset::Sharp, 4, model2::enhance::TexFilter::Mip));
         assert_eq!((r.s.temporal, r.s.depth, r.s.shading), (0, false, gpu::Shading::Flat));
         assert_eq!((r.s.smooth, r.s.crt), (false, 0));
@@ -1757,28 +2063,72 @@ mod tests {
         let mut r = Rig::new("topskatr");
         r.s.preset = Preset::Custom;
         (r.s.aa, r.s.bloom, r.s.crt) = (8, 50, 30);
-        r.open_picture().press(2, Nav::Down).press(1, Nav::Accept);
+        r.open_picture().press(1, Nav::Down).press(1, Nav::Accept);
         assert_eq!((r.s.preset, r.s.aa, r.s.bloom, r.s.crt), (Preset::Sharp, 4, 0, 0));
         r.press(4, Nav::Down).press(1, Nav::Accept);
         assert_eq!((r.s.preset, r.s.aa, r.s.bloom, r.s.crt), (Preset::Custom, 8, 50, 30));
     }
 
-    /// Where it's saved: the switch is the settings' scope, and the footer
-    /// says what the other games keep.
+    /// Where it's saved: a line says so, naming what the system uses; no
+    /// switch. A game's page can hand its picture back; System settings
+    /// say which games keep their own.
     #[test]
-    fn the_switch_says_where_it_is_saved() {
+    fn the_picture_page_says_where_it_is_saved() {
         let mut r = Rig::new("topskatr");
+        r.inherit = Some(Inherit { system: GameSettings::default(), own: [false; KEYS.len()], differ: 0 });
         r.open_picture();
-        assert!(!r.for_all);
-        assert!(r.shows("Saved for Top Skater. Other games keep Sharp."), "{:?}", r.texts);
-        r.press(1, Nav::Right).press(1, Nav::Up);
-        assert!(r.for_all);
-        assert!(r.shows("Saved for all games (Top Skater has no style of its own)."), "{:?}", r.texts);
-        r.press(1, Nav::Left);
-        assert!(!r.for_all);
-        // A is the switch too.
-        r.press(1, Nav::Accept);
-        assert!(r.for_all);
+        assert!(r.shows("Saved for Top Skater. The system uses Sharp."), "{:?}", r.texts);
+        assert!(!r.shows("All games") && !r.shows("only"), "{:?}", r.texts);
+        // Nothing of its own to hand back: the button is there, not
+        // focusable.
+        assert!(r.shows("Use the system's picture"));
+        r.press(60, Nav::Down).run(&[&[Nav::Accept]]);
+        assert_eq!(r.menu.page, Page::Advanced, "A on the last widget (Advanced), not the reset");
+        // With its own picture the button hands it back.
+        let mut r = Rig::new("topskatr");
+        let mut i = Inherit { system: GameSettings::default(), own: [false; KEYS.len()], differ: 1 };
+        i.own[0] = true;
+        r.inherit = Some(i);
+        r.open_picture().press(60, Nav::Down).run(&[&[Nav::Accept]]);
+        assert_eq!(r.names(), ["reset-keys"]);
+        // System settings: the default for every game.
+        let mut r = Rig::new("topskatr");
+        r.menu.system = true;
+        let sv = SystemView {
+            keepers: std::array::from_fn(|i| if i == 0 { vec!["Top Skater".into()] } else { vec![] }),
+            ..Default::default()
+        };
+        let (ctx, mut menu, mut s) = (
+            egui::Context::default(),
+            Menu { open: true, system: true, page: Page::Picture, ..Default::default() },
+            GameSettings::default(),
+        );
+        let view = View { game: None, system: Some(&sv), inherit: None, ..r.view_for_test() };
+        let mut fullscreen = false;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                menu.ui(ui.ctx(), &mut s, Prefs { fullscreen: &mut fullscreen }, &view, None, &[]);
+            });
+            out.textures_delta.clear();
+            r.texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(
+            r.shows("Saved as the default for every game. Top Skater keeps its own values for this page."),
+            "{:?}",
+            r.texts
+        );
+        assert!(r.shows("SYSTEM"), "{:?}", r.texts);
     }
 
     /// Compare: A switches it, then left and right move the divider (from
@@ -1789,8 +2139,8 @@ mod tests {
         let mut r = Rig::new("topskatr");
         r.open_picture();
         assert_eq!(r.menu.wipe_rect(), None, "off");
-        // The scope switch, five styles, then Compare.
-        r.press(7, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        // Six styles, then Compare.
+        r.press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
         assert!(r.menu.picture.compare);
         // The picture is the window (1920x1080: 1.5x), the panel 570 wide.
         let visible = 1920.0 - 570.0;
@@ -1816,7 +2166,7 @@ mod tests {
     #[test]
     fn compare_drags_with_the_pointer() {
         let mut r = Rig::new("topskatr");
-        r.open_picture().press(7, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        r.open_picture().press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
         let at = egui::pos2(300.0, 200.0);
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -1844,7 +2194,7 @@ mod tests {
         assert!(r.shows("Blends frames to remove shimmer"));
         assert!(!r.shows("Softens jagged edges"));
         // The style line.
-        assert!(r.shows("Arcade original") && r.shows(" · Top Skater only"), "{:?}", r.texts);
+        assert!(r.shows("Arcade original") && r.shows(" · Top Skater's own"), "{:?}", r.texts);
     }
 
     /// A row changed under a style makes it Custom, from that style; the
@@ -1852,7 +2202,7 @@ mod tests {
     #[test]
     fn changing_a_row_in_advanced_makes_the_style_custom() {
         let mut r = Rig::new("topskatr");
-        r.open_picture().press(3, Nav::Down).press(1, Nav::Accept);
+        r.open_picture().press(2, Nav::Down).press(1, Nav::Accept);
         assert_eq!(r.s.preset, Preset::Enhanced);
         // Advanced: with temporal on the rows are Resolution, Temporal
         // smoothing, Lighting, Glow, ...: right on Glow (the fourth).
@@ -1901,10 +2251,10 @@ mod tests {
     #[test]
     fn motion_rows_and_the_run_ahead_cap() {
         // topskatr has no lag to hide: exact speed, smooth motion, nothing
-        // else; the last row is "Applies to".
+        // else.
         let mut r = Rig::new("topskatr");
         r.open_tab(Tab::Motion).press(1, Nav::Down).press(1, Nav::Down).press(1, Nav::Right);
-        assert!(r.for_all && r.s.run_ahead == 0);
+        assert!(r.s.run_ahead == 0);
         // stcc lags a frame: run-ahead is the third row, off or 1.
         let mut r = Rig::new("stcc");
         r.open_tab(Tab::Motion).press(2, Nav::Down).press(5, Nav::Right);
@@ -1952,7 +2302,8 @@ mod tests {
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: false,
-                has_own: false,
+                inherit: None,
+                system: None,
                 run_ahead_dropped: false,
                 run_ahead_room: None,
                 pack: None,
@@ -1969,9 +2320,9 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let Rig { menu, s, fullscreen, for_all, .. } = r;
+            let Rig { menu, s, fullscreen, .. } = r;
             let mut out = r.ctx.run_ui(input, |ui| {
-                menu.ui(ui.ctx(), s, Prefs { fullscreen, for_all }, &view, None, navs);
+                menu.ui(ui.ctx(), s, Prefs { fullscreen }, &view, None, navs);
             });
             out.textures_delta.clear();
             assert!(r.ctx.cumulative_frame_nr() > before);
@@ -2015,16 +2366,18 @@ mod tests {
         assert_eq!(glow(&mut r, &[], vec![click]), 0, "the mouse turns it off");
     }
 
-    /// The menu over the launcher: no game running, one selected.
+    /// The menu over the launcher is System settings: an index of pages, no
+    /// game rows.
     #[test]
-    fn from_the_launcher_the_menu_has_no_game_rows() {
+    fn from_the_launcher_the_menu_is_the_systems() {
         let game = romset::games::find("topskatr").unwrap();
-        let mut menu = Menu { open: true, ..Default::default() };
+        let mut menu = Menu { open: true, system: true, ..Default::default() };
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let mut s = GameSettings::default();
-        let (mut fullscreen, mut for_all) = (false, false);
-        let mut run = |menu: &mut Menu, has_own: bool, navs: &[Nav]| {
+        let mut fullscreen = false;
+        let sv = SystemView { rom: "rom".into(), games: 3, ..Default::default() };
+        let mut run = |menu: &mut Menu, navs: &[Nav]| {
             let view = View {
                 playing: None,
                 game: Some(game),
@@ -2032,7 +2385,8 @@ mod tests {
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: false,
-                has_own,
+                inherit: None,
+                system: Some(&sv),
                 run_ahead_dropped: false,
                 run_ahead_room: None,
                 pack: None,
@@ -2050,7 +2404,7 @@ mod tests {
             };
             let mut actions = Vec::new();
             let mut out = ctx.run_ui(input, |ui| {
-                let prefs = Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                let prefs = Prefs { fullscreen: &mut fullscreen };
                 actions = menu.ui(ui.ctx(), &mut s, prefs, &view, None, navs);
             });
             out.textures_delta.clear();
@@ -2064,18 +2418,51 @@ mod tests {
                 .collect();
             (names(&actions), texts)
         };
-        run(&mut menu, false, &[]);
-        let (_, texts) = run(&mut menu, false, &[]);
+        run(&mut menu, &[]);
+        let (_, texts) = run(&mut menu, &[]);
         let has = |t: &[String], n: &str| t.iter().any(|x| x.contains(n));
-        assert!(has(&texts, "Picture") && has(&texts, "Controls") && has(&texts, "Quit reModel"), "{texts:?}");
-        assert!(!has(&texts, "Back to games") && !has(&texts, "Resume"), "{texts:?}");
-        assert!(!has(&texts, "Use the settings for all games"));
-        assert!(has(&texts, "TOP SKATER"), "the selected game's name heads it: {texts:?}");
-        // A game with settings of its own can drop them.
-        let (_, texts) = run(&mut menu, true, &[]);
-        assert!(has(&texts, "Use the settings for all games"), "{texts:?}");
-        // B closes it (as Resume does over a game).
-        let (acts, _) = run(&mut menu, false, &[Nav::Back]);
+        for page in ["Folders", "Picture", "Display", "Motion", "Sound", "Controllers", "Players", "Quit reModel"] {
+            assert!(has(&texts, page), "{page}: {texts:?}");
+        }
+        assert!(
+            !has(&texts, "Back to games") && !has(&texts, "Resume") && !has(&texts, "Use the settings"),
+            "{texts:?}"
+        );
+        assert!(has(&texts, "SYSTEM SETTINGS"), "{texts:?}");
+        // Into Folders (the first row): the three folders, the ROM one's path.
+        run(&mut menu, &[Nav::Accept]);
+        let (_, texts) = run(&mut menu, &[]);
+        assert_eq!(menu.page, Page::Folders);
+        for f in ["ROM folder", "Texture packs", "Photos"] {
+            assert!(has(&texts, f), "{f}: {texts:?}");
+        }
+        // A changes the ROM folder: the field opens with the path; Enter
+        // saves it as an action.
+        run(&mut menu, &[Nav::Accept]);
+        run(&mut menu, &[]);
+        assert!(menu.editing());
+        // B cancels the typing first, then leaves the page.
+        run(&mut menu, &[Nav::Back]);
+        assert!(!menu.editing() && menu.page == Page::Folders);
+        run(&mut menu, &[Nav::Back]);
+        assert_eq!(menu.page, Page::Pause);
+        // Controllers and Players: their pages.
+        for _ in 0..6 {
+            run(&mut menu, &[Nav::Down]);
+        }
+        run(&mut menu, &[Nav::Accept]);
+        let (_, texts) = run(&mut menu, &[]);
+        assert_eq!(menu.page, Page::Controllers);
+        assert!(has(&texts, "Steering dead zone") && has(&texts, "Steering smoothing"), "{texts:?}");
+        run(&mut menu, &[Nav::Back]);
+        run(&mut menu, &[Nav::Down]);
+        run(&mut menu, &[Nav::Accept]);
+        let (_, texts) = run(&mut menu, &[]);
+        assert_eq!(menu.page, Page::Players);
+        assert!(has(&texts, "P1 keyboard, pads join by pressing a button"), "{texts:?}");
+        run(&mut menu, &[Nav::Back]);
+        // B from the index closes it (as Resume does over a game).
+        let (acts, _) = run(&mut menu, &[Nav::Back]);
         assert_eq!(acts, ["resume"]);
     }
 

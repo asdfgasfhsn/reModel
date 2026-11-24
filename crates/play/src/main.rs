@@ -1497,14 +1497,76 @@ impl Play {
                 .filter(|k| v.get(k) != self.values.get(k))
                 .map(|k| format!("{k} {} -> {}", self.values.get(k), v.get(k)))
                 .collect();
-            println!(
-                "settings      {set}: {} (saved for {})",
-                changed.join(", "),
-                if self.settings.for_all { "all games" } else { "this game" }
-            );
+            println!("settings      {set}: {} (saved for this game)", changed.join(", "));
             self.settings.edit(set, &v);
         }
         self.use_values(set);
+    }
+
+    /// What a game's settings pages say about the system's: the system's
+    /// settings as the game has them, and which of the game's are its own
+    /// (from `use_values`, so for the game the values are for).
+    fn inherit_for(&mut self, set: &str) -> menu::Inherit {
+        let system = self.settings.system_for(set);
+        let own = std::array::from_fn(|i| {
+            self.sources[i] == settings::Source::Game && self.values.get(KEYS[i]) != system.get(KEYS[i])
+        });
+        let differ = self.settings.differing(set);
+        menu::Inherit { system, own, differ }
+    }
+
+    /// What System settings' pages say besides the settings: the folders,
+    /// and the games that keep their own values.
+    fn system_view(&mut self) -> menu::SystemView {
+        let ids: Vec<&'static str> = self.games.iter().map(|g| g.id).collect();
+        let mut titles: Vec<&str> = self.games.iter().map(|g| g.title).collect();
+        titles.sort_unstable();
+        titles.dedup();
+        let keepers = std::array::from_fn(|page| {
+            let kept = self.settings.games_keeping(&ids, &menu::page_keys(page));
+            let mut named: Vec<String> =
+                kept.iter().filter_map(|id| romset::games::find(id).ok()).map(|g| g.title.to_string()).collect();
+            named.sort();
+            named.dedup();
+            named
+        });
+        let packs_found = match &self.settings.packs_root {
+            Some(root) => ids.iter().filter(|id| root.join(id).join("texpack").is_dir()).count(),
+            None => 0,
+        };
+        let shown = |p: &Option<PathBuf>| p.as_ref().map(|p| p.display().to_string());
+        menu::SystemView {
+            rom: self.settings.rom.display().to_string(),
+            games: titles.len(),
+            packs: shown(&self.settings.packs_root),
+            packs_default: format!("{}", settings::data_dir().join("<game>").join("texpack").display()),
+            packs_found,
+            photos: shown(&self.settings.photos_root),
+            photos_default: match dirs::picture_dir() {
+                Some(p) => p.join("reModel").join("<game>").display().to_string(),
+                None => settings::data_dir().join("<game>").join("photos").display().to_string(),
+            },
+            keepers,
+        }
+    }
+
+    /// A folder System settings chose (None: the default again).
+    fn set_folder(&mut self, folder: menu::Folder, path: Option<String>) {
+        let path = path.map(PathBuf::from);
+        match folder {
+            menu::Folder::Roms => {
+                if let Some(p) = path {
+                    self.settings.rom = p;
+                    self.settings.save();
+                    self.scan();
+                }
+                return;
+            }
+            menu::Folder::Packs => self.settings.packs_root = path,
+            menu::Folder::Photos => self.settings.photos_root = path,
+        }
+        self.settings.use_folders();
+        self.settings.save();
     }
 
     /// Open the launcher, leaving the game (if any) where it was.
@@ -2265,6 +2327,7 @@ impl Play {
             let look_now = self.look_current();
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
+            let inherit = self.session.as_ref().map(|s| s.game.id).map(|id| self.inherit_for(id));
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             let core = g.drawer.core();
             let mut quality = self.values.quality(self.temporal_supported);
@@ -2309,11 +2372,8 @@ impl Play {
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
             let mut values = self.values.clone();
-            let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
-            let keeps = menu::Keeps {
-                all_games: self.settings.all_games_preset(s.game.id),
-                own_picture: self.settings.has_own_picture(s.game.id),
-            };
+            let mut fullscreen = self.settings.fullscreen;
+            let keeps = menu::Keeps { all_games: self.settings.all_games_preset(s.game.id) };
             let menu_view = menu::View {
                 playing: Some(s.game.title),
                 saves: &slots,
@@ -2321,7 +2381,8 @@ impl Play {
                 picture: Some([origin.0 as f32, origin.1 as f32, view.width as f32, view.height as f32]),
                 keeps,
                 has_bezel,
-                has_own: false,
+                inherit: inherit.as_ref(),
+                system: None,
                 run_ahead_dropped: s.run_ahead_dropped,
                 run_ahead_room: room,
                 max_anisotropy: self.max_anisotropy,
@@ -2343,7 +2404,7 @@ impl Play {
                 }
                 // The menu as it is (drawing it changes nothing).
                 if menu.open {
-                    let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                    let prefs = menu::Prefs { fullscreen: &mut fullscreen };
                     menu.ui(ctx, &mut values, prefs, &menu_view, Some(&mut s.bindings), &[]);
                 }
             });
@@ -3575,12 +3636,10 @@ impl Play {
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let keeps = match self.session.as_ref().map(|s| s.game.id) {
-                Some(id) => menu::Keeps {
-                    all_games: self.settings.all_games_preset(id),
-                    own_picture: self.settings.has_own_picture(id),
-                },
+                Some(id) => menu::Keeps { all_games: self.settings.all_games_preset(id) },
                 None => menu::Keeps::default(),
             };
+            let inherit = self.session.as_ref().map(|s| s.game.id).map(|id| self.inherit_for(id));
             let g = self.gpu.as_mut().unwrap();
             let picture = self
                 .session
@@ -3594,7 +3653,8 @@ impl Play {
                 picture,
                 keeps,
                 has_bezel,
-                has_own: false,
+                inherit: inherit.as_ref(),
+                system: None,
                 run_ahead_dropped: self.session.as_ref().is_some_and(|s| s.run_ahead_dropped),
                 run_ahead_room: room,
                 max_anisotropy: self.max_anisotropy,
@@ -3612,7 +3672,7 @@ impl Play {
             let navs = launcher::Nav::view_as_back(&std::mem::take(&mut self.navs));
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
             let mut values = self.values.clone();
-            let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
+            let mut fullscreen = self.settings.fullscreen;
             let no_game = self.session.is_none();
             let mut bindings = self.session.as_mut().map(|s| &mut s.bindings);
             let scale = g.window.scale_factor() as f32;
@@ -3631,7 +3691,7 @@ impl Play {
                 if let Some(line) = &net_line {
                     net_status(ctx, line);
                 }
-                let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                let prefs = menu::Prefs { fullscreen: &mut fullscreen };
                 let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut(), &navs);
                 if let Some(f) = fade {
                     let painter =
@@ -3649,7 +3709,7 @@ impl Play {
                 rect,
                 size: (size[0], size[1]),
             });
-            self.set_prefs(fullscreen, for_all);
+            self.set_prefs(fullscreen);
             if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
                 self.edit_values(set, values);
             }
@@ -3707,8 +3767,20 @@ impl Play {
                     }
                 }
                 menu::Action::Quit => self.quit(el),
-                // The launcher's.
-                menu::Action::ResetOwn => {}
+                menu::Action::ResetOwn => {
+                    if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
+                        self.settings.reset_game(set);
+                        self.use_values(set);
+                    }
+                }
+                menu::Action::ResetKeys(keys) => {
+                    if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
+                        self.settings.reset_keys(set, &keys);
+                        self.use_values(set);
+                    }
+                }
+                // System settings are the launcher's.
+                menu::Action::SetFolder(..) => {}
             }
         }
         self.status();
@@ -3731,16 +3803,14 @@ impl Play {
     }
 
     /// The player-wide settings, as the launcher or menu left them.
-    fn set_prefs(&mut self, fullscreen: bool, for_all: bool) {
-        if (fullscreen, for_all) == (self.settings.fullscreen, self.settings.for_all) {
+    fn set_prefs(&mut self, fullscreen: bool) {
+        if fullscreen == self.settings.fullscreen {
             return;
         }
-        if fullscreen != self.settings.fullscreen {
-            if let Some(g) = &self.gpu {
-                g.window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
-            }
+        if let Some(g) = &self.gpu {
+            g.window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
         }
-        (self.settings.fullscreen, self.settings.for_all) = (fullscreen, for_all);
+        self.settings.fullscreen = fullscreen;
         self.settings.save();
     }
 
@@ -3871,6 +3941,7 @@ impl Play {
                 }
                 launcher::Action::Settings => {
                     self.set_menu(true);
+                    self.menu.system = true;
                     self.menu.pad_used = self.launcher.pad_used;
                 }
                 launcher::Action::SettingsAt(page, tab) => {
@@ -3879,11 +3950,7 @@ impl Play {
                     self.menu.open_at(page, tab);
                 }
                 launcher::Action::CloseSettings => self.set_menu(false),
-                launcher::Action::Rescan(rom) => {
-                    self.settings.rom = rom.into();
-                    self.settings.save();
-                    self.scan();
-                }
+                launcher::Action::Rescan(rom) => self.set_folder(menu::Folder::Roms, Some(rom)),
                 launcher::Action::ResetGame(set) => {
                     self.settings.reset_game(&set);
                     self.use_values(&set);
@@ -4053,7 +4120,6 @@ impl Play {
         let resume = selected.and_then(|g| std::fs::metadata(resume_path(g.id)).and_then(|m| m.modified()).ok());
         let progress = selected.and_then(|g| self.previews.progress(g.id));
         let failed = selected.and_then(|g| self.preview.failed.get(g.id)).cloned();
-        let has_own = selected.is_some_and(|g| self.settings.has_own(g.id));
         let cont = library::quick_resume(&self.games, &self.settings.recent, |set| library::saved_in(&saves::dir(set)));
         let view = launcher::View {
             preview: preview_view,
@@ -4063,10 +4129,11 @@ impl Play {
             unsupported: self.unsupported,
             cont,
             menu_open: self.menu.open,
-            capturing: self.menu.capture.is_some(),
+            capturing: self.menu.capture.is_some() || self.menu.editing(),
             settings: {
                 let (picture, sound, speed) = menu::summary(&self.values);
                 launcher::SettingsLine {
+                    display: if self.values.wide { "Fit the window" } else { "4:3" }.to_string(),
                     picture: picture.to_string(),
                     sound,
                     speed,
@@ -4074,7 +4141,6 @@ impl Play {
                         .and_then(|g| link::play_for(g.id))
                         .filter(|p| p.free_play.is_some())
                         .map(|_| self.values.free_play.label().to_string()),
-                    has_own,
                 }
             },
         };
@@ -4086,25 +4152,29 @@ impl Play {
         if !(self.menu.open && self.menu.on_controls()) {
             self.launcher_bindings = None;
         }
+        // The launcher's Settings are the system's; a game's own come from
+        // its page (`SettingsAt`).
+        let system_mode = self.menu.system;
         let keeps = match selected {
-            Some(g) => menu::Keeps {
-                all_games: self.settings.all_games_preset(g.id),
-                own_picture: self.settings.has_own_picture(g.id),
-            },
+            Some(g) => menu::Keeps { all_games: self.settings.all_games_preset(g.id) },
             None => menu::Keeps::default(),
         };
+        let inherit = selected.filter(|_| !system_mode && self.menu.open).map(|g| self.inherit_for(g.id));
+        let system_view = (system_mode && self.menu.open).then(|| self.system_view());
         let pad_live = self.pad_live();
+        let game = selected.filter(|_| !system_mode);
         let menu_view = menu::View {
             playing: None,
-            game: selected,
+            game,
             saves: &[],
             max_anisotropy: self.max_anisotropy,
             temporal_supported: self.temporal_supported,
-            has_bezel: selected.is_some_and(|g| bezel::art_set(g).is_some()),
-            has_own,
-            run_ahead_dropped: selected
+            has_bezel: game.is_some_and(|g| bezel::art_set(g).is_some()),
+            inherit: inherit.as_ref(),
+            system: system_view.as_ref(),
+            run_ahead_dropped: game
                 .is_some_and(|g| self.session.as_ref().is_some_and(|s| s.game.id == g.id && s.run_ahead_dropped)),
-            run_ahead_room: selected.and_then(|g| self.run_ahead_room(g.id)),
+            run_ahead_room: game.and_then(|g| self.run_ahead_room(g.id)),
             picture: None,
             keeps,
             pack: None,
@@ -4115,16 +4185,19 @@ impl Play {
             running: false,
         };
         let navs = std::mem::take(&mut self.navs);
-        let mut values = self.values.clone();
-        let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
+        // System settings edit the system's values, a game's page the game's.
+        let mut values = if system_mode { self.settings.system_for("") } else { self.values.clone() };
+        let before = values.clone();
+        let mut fullscreen = self.settings.fullscreen;
         let (launcher, menu, splash) = (&mut self.launcher, &mut self.menu, &mut self.splash);
         let bindings = &mut self.launcher_bindings;
         let animating = launcher.animating() || self.session.is_some() || progress.is_some();
         let g = self.gpu.as_mut().unwrap();
         let mut changed = false;
+        let (mut reset_keys, mut folders) = (Vec::new(), Vec::new());
         let actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
             let mut actions = launcher.ui(ctx, navs.clone(), &view);
-            let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+            let prefs = menu::Prefs { fullscreen: &mut fullscreen };
             for action in
                 menu.ui(ctx, &mut values, prefs, &menu_view, bindings.as_mut(), &launcher::Nav::view_as_back(&navs))
             {
@@ -4133,6 +4206,8 @@ impl Play {
                     menu::Action::ResetOwn => {
                         actions.extend(selected.map(|g| launcher::Action::ResetGame(g.id.to_string())))
                     }
+                    menu::Action::ResetKeys(keys) => reset_keys.push(keys),
+                    menu::Action::SetFolder(folder, path) => folders.push((folder, path)),
                     menu::Action::Bindings => changed = true,
                     menu::Action::Quit => actions.push(launcher::Action::Quit),
                     // Nothing's running to save, load, reset or photograph.
@@ -4150,8 +4225,20 @@ impl Play {
                 settings::save_bindings(game, b);
             }
         }
-        self.set_prefs(fullscreen, for_all);
-        if let Some(set) = selected.map(|g| g.id) {
+        self.set_prefs(fullscreen);
+        for (folder, path) in folders {
+            self.set_folder(folder, path);
+        }
+        if system_mode {
+            if values != before {
+                println!("settings      system: changed (saved for all games)");
+                self.settings.edit_system(&values);
+            }
+        } else if let Some(set) = selected.map(|g| g.id) {
+            for keys in reset_keys {
+                self.settings.reset_keys(set, &keys);
+                self.use_values(set);
+            }
             self.edit_values(set, values);
         }
         actions
@@ -4251,6 +4338,10 @@ impl Play {
     /// Open or close the menu; the game pauses while it's open.
     fn set_menu(&mut self, open: bool) {
         self.menu.open = open;
+        if !open {
+            // (System settings are the launcher's.)
+            self.menu.system = false;
+        }
         self.slot_cache = None;
         // Keys held when the menu opened would stay pressed otherwise; the
         // pad's Start and Select are kept from the game until released.
@@ -4843,7 +4934,7 @@ impl ApplicationHandler<Wake> for Play {
                 let pressed = event.state == ElementState::Pressed;
                 if pressed && !event.repeat && code == KeyCode::F11 {
                     let fullscreen = !self.settings.fullscreen;
-                    return self.set_prefs(fullscreen, self.settings.for_all);
+                    return self.set_prefs(fullscreen);
                 }
                 // The launcher reads its keys from egui.
                 if self.launcher.open {

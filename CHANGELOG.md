@@ -15,6 +15,22 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Player: **System settings** and per-game overrides. The launcher's
+  Settings (menu button, Tab) now open System settings: Folders (the ROM
+  folder, moved here, plus new texture packs and photos folders,
+  `packs_root` and `photos_root`, with today's locations as the defaults),
+  Picture, Display, Motion, Sound, More, Controllers (the stick, steering and
+  pedal tuning and steering smoothing) and a Players placeholder; they edit
+  the defaults every game starts from, and each page's footer names the games
+  that keep their own values. A game's settings (its page's Game settings,
+  the Esc menu) show each row as the system's (dim, "System") or its own
+  (cyan dot, the game's name, "System: X" beside it); changing a row writes
+  the game's layer only, X or Delete on a row gives it back to the system,
+  and the foot counts what differs and resets all. The "Applies to: this game
+  / all games" switch, the Picture page's scope switch and "Use the settings
+  for all games" are gone: anything changed during play applies to that game
+  alone. Old settings files load as they were (a `scope` line is ignored).
+
 ## 0.14.0 (2026-11-24): more link games, Zero Gunner, texture pack authoring
 
 - `--record-tour`: a shifter's virtual buttons (neutral, gear up, gear

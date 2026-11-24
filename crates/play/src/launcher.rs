@@ -139,8 +139,7 @@ pub enum Action {
     SettingsAt(menu::Page, menu::Tab),
     /// Close it (Esc, Start).
     CloseSettings,
-    /// Drop the game's own settings (the menu's "Use the settings for all
-    /// games").
+    /// Drop the game's own settings (the menu's "Reset all to system").
     ResetGame(String),
     /// Look for games in this ROM folder.
     Rescan(String),
@@ -228,8 +227,8 @@ pub struct SettingsLine {
     pub speed: String,
     /// The Free play setting's label, for a game that has one.
     pub free_play: Option<String>,
-    /// The game has settings of its own (they can be dropped).
-    pub has_own: bool,
+    /// How the game is shown: its aspect.
+    pub display: String,
 }
 
 /// The preview as a texture, and where the game's picture is in it.
@@ -297,8 +296,6 @@ pub(crate) enum Click {
     Load(Start),
     /// Open the menu on a page of the game's settings.
     SettingsAt(menu::Page, menu::Tab),
-    /// Drop the game's own settings.
-    ResetOwn,
 }
 
 pub struct Launcher {
@@ -1001,7 +998,6 @@ impl Launcher {
             }
             Click::Load(from) => actions.extend(set.map(|set| Action::Play { set, from })),
             Click::SettingsAt(page, tab) => actions.push(Action::SettingsAt(page, tab)),
-            Click::ResetOwn => actions.extend(set.map(Action::ResetGame)),
         }
     }
 
@@ -2823,13 +2819,17 @@ mod tests {
         // (Play, Saves, Game settings: hotd has no versions and does not link.)
         r.press(2, Nav::Down).press(1, Nav::Accept);
         assert_eq!(level(&r), Some(page::Level::Settings));
-        for text in ["Picture", "Controls", "Sound", "Speed and latency"] {
+        for text in ["Picture", "Controls", "Display", "Sound", "Speed and latency"] {
             assert!(r.shows(text), "{text}: {:?}", r.texts());
         }
+        assert!(!r.shows("Use the settings for all games"), "{:?}", r.texts());
         r.press(1, Nav::Accept);
         assert!(r.actions.iter().any(|a| matches!(a, Action::SettingsAt(menu::Page::Picture, _))));
         r.actions.clear();
         r.press(2, Nav::Down).press(1, Nav::Accept);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::SettingsAt(menu::Page::Settings, menu::Tab::Display))));
+        r.actions.clear();
+        r.press(1, Nav::Down).press(1, Nav::Accept);
         assert!(r.actions.iter().any(|a| matches!(a, Action::SettingsAt(menu::Page::Settings, menu::Tab::Sound))));
     }
 

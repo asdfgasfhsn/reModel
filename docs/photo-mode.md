@@ -26,7 +26,8 @@ written on another thread to
 Linux the XDG pictures directory, `~/Pictures` unless `user-dirs.dirs`
 says otherwise; `~/Pictures` on macOS; the Pictures known folder on
 Windows, wherever it was moved; without one, `<data dir>/<set>/photos/`;
-`--photo-dir DIR` puts them elsewhere). The notice at the
+`--photo-dir DIR` puts them elsewhere; a photos folder chosen in System
+settings, Folders, makes it `<folder>/<set>/`). The notice at the
 top says when it is written. Esc, F8, the pad's B, Start or Guide leaves
 photo mode and the game goes on.
 

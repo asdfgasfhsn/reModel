@@ -649,9 +649,12 @@ pub struct Settings {
     pub fullscreen: bool,
     /// The launcher's view (carousel or grid), kept for next time.
     pub launcher_view: crate::library::ViewMode,
-    /// The launcher's settings panel saves for all games (else for the
-    /// game shown).
-    pub for_all: bool,
+    /// Where texture packs are kept, as `<root>/<set>/texpack/` (else
+    /// `<data dir>/<set>/texpack/`): System settings, Folders.
+    pub packs_root: Option<PathBuf>,
+    /// Where photos go, as `<root>/<set>/` (else the pictures folder's
+    /// `reModel/<set>/`).
+    pub photos_root: Option<PathBuf>,
     /// The name shown to other players in network link play (docs/play.md).
     pub player_name: String,
     /// The version of each title the launcher shows (title to set id), kept
@@ -673,7 +676,8 @@ impl Default for Settings {
             recent: Vec::new(),
             fullscreen: false,
             launcher_view: Default::default(),
-            for_all: true,
+            packs_root: None,
+            photos_root: None,
             player_name: linknet::default_name(),
             versions: BTreeMap::new(),
             defaults: Layer::new(),
@@ -708,6 +712,22 @@ pub fn data_dir() -> PathBuf {
 
 fn path() -> PathBuf {
     data_dir().join("play-settings.txt")
+}
+
+/// The texture packs' and photos' folders the player chose (`None`: where
+/// they have always been).
+static ROOTS: std::sync::Mutex<(Option<PathBuf>, Option<PathBuf>)> = std::sync::Mutex::new((None, None));
+
+/// The folder holding each game's texture pack folder, if one was chosen:
+/// a game's is `<root>/<set>/texpack/`.
+pub fn packs_root() -> Option<PathBuf> {
+    ROOTS.lock().unwrap_or_else(|e| e.into_inner()).0.clone()
+}
+
+/// The folder holding each game's photos, if one was chosen: a game's are
+/// in `<root>/<set>/`.
+pub fn photos_root() -> Option<PathBuf> {
+    ROOTS.lock().unwrap_or_else(|e| e.into_inner()).1.clone()
 }
 
 /// For the log: the settings `set` plays with that aren't the built-in
@@ -789,7 +809,15 @@ fn write(path: &Path, text: &str) {
 impl Settings {
     /// Saved settings, or the defaults.
     pub fn load() -> Settings {
-        Settings::parse(&std::fs::read_to_string(path()).unwrap_or_default())
+        let s = Settings::parse(&std::fs::read_to_string(path()).unwrap_or_default());
+        s.use_folders();
+        s
+    }
+
+    /// Make the folders chosen here (`packs_root`, `photos_root`) the ones
+    /// [`packs_root`] and [`photos_root`] give.
+    pub fn use_folders(&self) {
+        *ROOTS.lock().unwrap_or_else(|e| e.into_inner()) = (self.packs_root.clone(), self.photos_root.clone());
     }
 
     fn parse(text: &str) -> Settings {
@@ -803,7 +831,10 @@ impl Settings {
                 }
                 "fullscreen" => s.fullscreen = v == "true",
                 "view" => s.launcher_view = crate::library::ViewMode::parse(v).unwrap_or_default(),
-                "scope" => s.for_all = v != "game",
+                // (An old setting: the menus no longer have a scope switch.)
+                "scope" => {}
+                "packs_root" if !v.is_empty() => s.packs_root = Some(PathBuf::from(v)),
+                "photos_root" if !v.is_empty() => s.photos_root = Some(PathBuf::from(v)),
                 "player_name" => s.player_name = linknet::name_or_default(v),
                 // (An old setting: every version is listed now.)
                 "show_hacks" => {}
@@ -821,15 +852,19 @@ impl Settings {
 
     fn text(&self) -> String {
         let mut text = format!(
-            "# remodel-play settings\nrom = {}\ngame = {}\nrecent = {}\nfullscreen = {}\nview = {}\nscope = {}\nplayer_name = {}\n",
+            "# remodel-play settings\nrom = {}\ngame = {}\nrecent = {}\nfullscreen = {}\nview = {}\nplayer_name = {}\n",
             self.rom.display(),
             self.game,
             self.recent.join(","),
             self.fullscreen,
             self.launcher_view.name(),
-            if self.for_all { "all" } else { "game" },
             self.player_name,
         );
+        for (k, v) in [("packs_root", &self.packs_root), ("photos_root", &self.photos_root)] {
+            if let Some(v) = v {
+                text += &format!("{k} = {}\n", v.display());
+            }
+        }
         for (title, set) in &self.versions {
             text += &format!("version.{title} = {set}\n");
         }
@@ -861,18 +896,6 @@ impl Settings {
             let p = game_read_path(set);
             layer(&p, lines(&std::fs::read_to_string(&p).unwrap_or_default()))
         })
-    }
-
-    /// Whether `set` has settings of its own.
-    pub fn has_own(&mut self, set: &str) -> bool {
-        !self.game_layer(set).is_empty()
-    }
-
-    /// Whether `set`'s own settings include any of the picture's (a style,
-    /// or rows a style sets): the picture menu says so when it saves for
-    /// all games.
-    pub fn has_own_picture(&mut self, set: &str) -> bool {
-        self.game_layer(set).keys().any(|k| k == "preset" || PRESET_KEYS.contains(&k.as_str()))
     }
 
     /// The picture style the games without their own settings play with
@@ -917,12 +940,12 @@ impl Settings {
         (v.settled(game), source)
     }
 
-    /// Keep what changed from what `set` resolves to in `new`: for all
-    /// games (removing the game's own copy) or for `set` only, as
-    /// `for_all` says. A changed setting the command line gave is the
+    /// Keep what changed from what `set` resolves to in `new`, as `set`'s
+    /// own settings: only where it differs from the system's (the defaults
+    /// for all games). A changed setting the command line gave is the
     /// player's from then on. Saves what changed.
     pub fn edit(&mut self, set: &str, new: &GameSettings) {
-        let (all, game) = self.apply_edit(set, new);
+        let (all, game) = self.apply_edit(set, new, false);
         if all {
             self.save();
         }
@@ -931,27 +954,38 @@ impl Settings {
         }
     }
 
+    /// The system settings (the defaults for all games) with `new`'s
+    /// changes: System settings edits these, and no game's own change.
+    pub fn edit_system(&mut self, new: &GameSettings) {
+        if self.apply_edit("", new, true).0 {
+            self.save();
+        }
+    }
+
+    /// The system's settings alone: what a game with none of its own plays
+    /// with (as `set` has them: a preset like Smooth modern is per game).
+    pub fn system_for(&self, set: &str) -> GameSettings {
+        Self::stack(&[(&self.defaults, Source::AllGames)], set).0
+    }
+
     /// [`Settings::edit`] without saving: whether the defaults for all
-    /// games and the game's own changed.
+    /// games and the game's own changed. `for_all`: the change is the
+    /// system's (`set` empty); else `set`'s own.
     ///
     /// A preset other than Custom is kept as itself: the rows it sets are
     /// stored only where they differ from what it sets (smooth motion and
     /// run-ahead changed after choosing it). Custom keeps its rows, each
     /// where it differs from the layers below.
-    fn apply_edit(&mut self, set: &str, new: &GameSettings) -> (bool, bool) {
+    fn apply_edit(&mut self, set: &str, new: &GameSettings, for_all: bool) -> (bool, bool) {
         let game = romset::games::find(set).ok();
         let new = new.clone().settled(game);
-        let (old, _) = self.resolve(set);
-        let under = if self.for_all {
-            GameSettings::default()
-        } else {
-            let all = self.defaults.clone();
-            Self::stack(&[(&all, Source::AllGames)], set).0
-        };
+        let old = if set.is_empty() { self.system_for(set) } else { self.resolve(set).0 };
+        let under = if for_all { GameSettings::default() } else { self.system_for(set) };
         let mut derived = GameSettings::default();
         derived.apply_preset(new.preset, game);
         let changed_preset = new.preset != old.preset;
-        let (all_before, own_before) = (self.defaults.clone(), self.game_layer(set).clone());
+        let all_before = self.defaults.clone();
+        let own_before = if set.is_empty() { Layer::new() } else { self.game_layer(set).clone() };
         for k in KEYS {
             // A new preset sets its rows again, whatever they were.
             let forced = changed_preset && (k == "preset" || PRESET_KEYS.contains(&k));
@@ -962,13 +996,15 @@ impl Settings {
             self.cli.remove(k);
             let baseline =
                 if new.preset != Preset::Custom && PRESET_KEYS.contains(&k) { derived.get(k) } else { under.get(k) };
-            if self.for_all {
+            if for_all {
                 if v == baseline {
                     self.defaults.remove(k);
                 } else {
                     self.defaults.insert(k.to_string(), v);
                 }
-                self.game_layer(set).remove(k);
+                if !set.is_empty() {
+                    self.game_layer(set).remove(k);
+                }
             } else {
                 let own = self.game_layer(set);
                 if v == baseline {
@@ -978,7 +1014,44 @@ impl Settings {
                 }
             }
         }
-        (self.defaults != all_before, *self.game_layer(set) != own_before)
+        let own_now = if set.is_empty() { Layer::new() } else { self.game_layer(set).clone() };
+        (self.defaults != all_before, own_now != own_before)
+    }
+
+    /// Drop `keys` from `set`'s own settings (a row's "reset to system").
+    /// Saves.
+    pub fn reset_keys(&mut self, set: &str, keys: &[&str]) {
+        let own = self.game_layer(set);
+        for k in keys {
+            own.remove(*k);
+        }
+        self.save_game(set);
+    }
+
+    /// How many of `set`'s settings differ from the system's, as the
+    /// footer says: the picture's rows (a style and what it sets) count
+    /// as one.
+    pub fn differing(&mut self, set: &str) -> usize {
+        let mine = self.resolve(set).0;
+        let system = self.system_for(set);
+        let own = self.game_layer(set).clone();
+        let picture = |k: &str| k == "preset" || PICTURE_KEYS.contains(&k);
+        let differs = |k: &str| mine.get(k) != system.get(k);
+        let others = KEYS.iter().filter(|k| !picture(k) && own.contains_key(**k) && differs(k)).count();
+        let styled = KEYS.iter().any(|k| picture(k) && differs(k));
+        others + styled as usize
+    }
+
+    /// The games among `sets` whose own settings include any of `keys`
+    /// (what a System settings page says other games keep).
+    pub fn games_keeping(&mut self, sets: &[&str], keys: &[&str]) -> Vec<String> {
+        sets.iter()
+            .filter(|set| {
+                let own = self.game_layer(set);
+                keys.iter().any(|k| own.contains_key(*k))
+            })
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Drop `set`'s own settings: it plays with the defaults for all games.
@@ -1090,13 +1163,11 @@ mod tests {
         let mut v = s.resolve("daytona").0;
         v.tuning.steer.dead = 3;
         s.games.insert("daytona".into(), Layer::new());
-        s.for_all = false;
-        let _ = s.apply_edit("daytona", &v);
+        let _ = s.apply_edit("daytona", &v, false);
         assert_eq!(s.games["daytona"].get("steer_dead").map(String::as_str), Some("3"));
         assert!(!s.defaults.contains_key("steer_dead"));
         s.games.insert("daytona".into(), Layer::new());
-        s.for_all = true;
-        let _ = s.apply_edit("daytona", &v);
+        let _ = s.apply_edit("daytona", &v, true);
         assert_eq!(s.defaults.get("steer_dead").map(String::as_str), Some("3"));
         assert!(!s.games["daytona"].contains_key("steer_dead"));
     }
@@ -1115,13 +1186,11 @@ mod tests {
         let mut v = s.resolve("daytona").0;
         v.tuning.smooth = Smoothing::Off;
         s.games.insert("daytona".into(), Layer::new());
-        s.for_all = false;
-        let _ = s.apply_edit("daytona", &v);
+        let _ = s.apply_edit("daytona", &v, false);
         assert_eq!(s.games["daytona"].get("steer_smooth").map(String::as_str), Some("off"));
         assert!(!s.defaults.contains_key("steer_smooth"));
         s.games.insert("daytona".into(), Layer::new());
-        s.for_all = true;
-        let _ = s.apply_edit("daytona", &v);
+        let _ = s.apply_edit("daytona", &v, true);
         assert_eq!(s.defaults.get("steer_smooth").map(String::as_str), Some("off"));
         assert!(!s.games["daytona"].contains_key("steer_smooth"));
     }
@@ -1143,13 +1212,11 @@ mod tests {
         let mut v = s.resolve("hotd").0;
         v.tuning.stick.dead = 30;
         s.games.insert("hotd".into(), Layer::new());
-        s.for_all = false;
-        let _ = s.apply_edit("hotd", &v);
+        let _ = s.apply_edit("hotd", &v, false);
         assert_eq!(s.games["hotd"].get("stick_dead").map(String::as_str), Some("30"));
         assert!(!s.defaults.contains_key("stick_dead"));
         s.games.insert("hotd".into(), Layer::new());
-        s.for_all = true;
-        let _ = s.apply_edit("hotd", &v);
+        let _ = s.apply_edit("hotd", &v, true);
         assert_eq!(s.defaults.get("stick_dead").map(String::as_str), Some("30"));
         assert!(!s.games["hotd"].contains_key("stick_dead"));
         // And as text.
@@ -1170,7 +1237,7 @@ mod tests {
             "# remodel-play settings\nrom = rom\ngame = hotd\nsfx_db = 4\nwide = false\nfullscreen = true\n",
         );
         assert_eq!(s.game, "hotd");
-        assert!(s.fullscreen && s.for_all);
+        assert!(s.fullscreen);
         assert_eq!(s.defaults.get("sfx_db").map(String::as_str), Some("4"));
         assert_eq!(s.defaults.get("wide").map(String::as_str), Some("false"));
         assert!(!s.defaults.contains_key("rom") && !s.defaults.contains_key("fullscreen"));
@@ -1205,17 +1272,15 @@ mod tests {
         s.cli.insert("bezel".into(), "false".into());
         let (mut v, _) = s.resolve("hotd");
         v.smooth = true;
-        s.for_all = false;
-        edit_quietly(&mut s, "hotd", &v);
+        edit_quietly(&mut s, "hotd", &v, false);
         assert_eq!(s.games["hotd"].get("smooth").map(String::as_str), Some("true"));
         assert!(!s.defaults.contains_key("smooth"));
         // For all games: the game's own copy goes, and back to the built-in
         // value means not stored at all.
-        s.for_all = true;
         let (mut v, _) = s.resolve("hotd");
         v.exact = true;
         v.sfx_db = model2::audio::DEFAULT_MIX.0;
-        edit_quietly(&mut s, "hotd", &v);
+        edit_quietly(&mut s, "hotd", &v, true);
         assert_eq!(s.defaults.get("exact").map(String::as_str), Some("true"));
         assert!(!s.games["hotd"].contains_key("exact"));
         assert!(!s.defaults.contains_key("sfx_db"));
@@ -1224,13 +1289,13 @@ mod tests {
         let (mut v, _) = s.resolve("stcc");
         assert!(!v.bezel);
         v.bezel = true;
-        edit_quietly(&mut s, "stcc", &v);
+        edit_quietly(&mut s, "stcc", &v, true);
         assert!(!s.cli.contains_key("bezel"));
         assert!(s.resolve("stcc").0.bezel);
         // Unchanged settings stay where they were (the command line's too).
         s.cli.insert("exact".into(), "true".into());
         let (v, _) = s.resolve("stcc");
-        edit_quietly(&mut s, "stcc", &v);
+        edit_quietly(&mut s, "stcc", &v, true);
         assert!(s.cli.contains_key("exact"));
     }
 
@@ -1380,7 +1445,7 @@ mod tests {
         let mut s = with_game(Settings::parse("shading = vertex\ncrease = 25\n"), "x", &[]);
         let (mut v, _) = s.resolve("x");
         (v.shading, v.crease) = (gpu::Shading::Flat, gpu::CREASE_AUTO);
-        edit_quietly(&mut s, "x", &v);
+        edit_quietly(&mut s, "x", &v, true);
         assert!(!s.defaults.contains_key("shading") && !s.defaults.contains_key("crease"));
         // Finer levels: off by default, a flag, into the quality.
         let mut v = GameSettings::default();
@@ -1435,7 +1500,7 @@ mod tests {
         let mut s = with_game(s, "x", &[]);
         let (mut v, _) = s.resolve("x");
         (v.materials, v.materials_relief) = (false, gpu::Relief::default());
-        edit_quietly(&mut s, "x", &v);
+        edit_quietly(&mut s, "x", &v, true);
         assert!(!s.defaults.contains_key("materials") && !s.defaults.contains_key("materials_relief"));
     }
 
@@ -1481,10 +1546,9 @@ mod tests {
     #[test]
     fn editing_a_preset_keeps_the_preset_not_its_rows() {
         let mut s = with_game(Settings::default(), "topskatr", &[]);
-        s.for_all = false;
         let (mut v, _) = s.resolve("topskatr");
         v.apply_preset(Preset::Enhanced, romset::games::find("topskatr").ok());
-        edit_quietly(&mut s, "topskatr", &v);
+        edit_quietly(&mut s, "topskatr", &v, false);
         assert_eq!(s.games["topskatr"].get("preset").map(String::as_str), Some("enhanced"));
         assert_eq!(s.games["topskatr"].len(), 1, "{:?}", s.games["topskatr"]);
         assert!(s.defaults.is_empty());
@@ -1492,31 +1556,30 @@ mod tests {
         // Smooth motion off after it: kept, as the one row that differs.
         let (mut w, _) = s.resolve("topskatr");
         w.smooth = false;
-        edit_quietly(&mut s, "topskatr", &w);
+        edit_quietly(&mut s, "topskatr", &w, false);
         assert_eq!(s.games["topskatr"].get("smooth").map(String::as_str), Some("false"));
         let (back, _) = s.resolve("topskatr");
         assert_eq!((back.preset, back.smooth, back.depth), (Preset::Enhanced, false, true));
         // Back to Original: nothing stored at all.
         let mut o = back.clone();
         o.apply_preset(Preset::Original, romset::games::find("topskatr").ok());
-        edit_quietly(&mut s, "topskatr", &o);
+        edit_quietly(&mut s, "topskatr", &o, false);
         assert!(s.games["topskatr"].is_empty(), "{:?}", s.games["topskatr"]);
         assert_eq!(s.resolve("topskatr").0, GameSettings::default());
         // Custom keeps its rows, each where it differs from the layers below.
         let mut c = GameSettings::default();
         c.apply_preset(Preset::Custom, None);
         (c.aa, c.depth) = (8, true);
-        edit_quietly(&mut s, "topskatr", &c);
+        edit_quietly(&mut s, "topskatr", &c, false);
         let (got, _) = s.resolve("topskatr");
         assert_eq!((got.preset, got.aa, got.depth, got.temporal), (Preset::Custom, 8, true, 0));
         assert_eq!(s.games["topskatr"].get("preset").map(String::as_str), Some("custom"));
         // For all games: another game follows, with its own Enhanced.
         let mut s = with_game(Settings::default(), "vstriker", &[]);
         s.games.insert("topskatr".into(), Layer::new());
-        s.for_all = true;
         let (mut v, _) = s.resolve("topskatr");
         v.apply_preset(Preset::Enhanced, romset::games::find("topskatr").ok());
-        edit_quietly(&mut s, "topskatr", &v);
+        edit_quietly(&mut s, "topskatr", &v, true);
         assert_eq!(s.defaults.len(), 1, "{:?}", s.defaults);
         let (other, _) = s.resolve("vstriker");
         assert_eq!((other.preset, other.temporal, other.aa, other.depth), (Preset::Enhanced, 0, 4, false));
@@ -1524,14 +1587,14 @@ mod tests {
         // Custom with that row.
         let (mut v, _) = s.resolve("topskatr");
         v.aa = 8;
-        edit_quietly(&mut s, "topskatr", &v);
+        edit_quietly(&mut s, "topskatr", &v, true);
         let (v, _) = s.resolve("topskatr");
         assert_eq!((v.preset, v.aa, v.temporal, v.depth), (Preset::Custom, 8, 100, true));
     }
 
     /// `edit` without saving (the layers it would touch are given).
-    fn edit_quietly(s: &mut Settings, set: &str, v: &GameSettings) {
-        s.apply_edit(set, v);
+    fn edit_quietly(s: &mut Settings, set: &str, v: &GameSettings, for_all: bool) {
+        s.apply_edit(set, v, for_all);
     }
 
     /// The CRT style and the `crt` row save and load like the others, the
@@ -1557,12 +1620,10 @@ mod tests {
         // A style is kept as itself, for one game only.
         let (mut v, _) = s.resolve("topskatr");
         v.apply_preset(Preset::Original, topskatr);
-        s.for_all = false;
-        s.apply_edit("topskatr", &v);
+        s.apply_edit("topskatr", &v, false);
         assert_eq!(s.resolve("topskatr").0.crt, 0);
         // What the picture menu says about the other games.
         assert_eq!(s.all_games_preset("stcc"), Preset::Crt);
-        assert!(s.has_own_picture("topskatr") && !s.has_own_picture("stcc"));
         assert_eq!(Preset::parse("enhanced").map(Preset::label), Some("Smooth modern"));
     }
 
@@ -1629,5 +1690,62 @@ mod tests {
         }
         assert_eq!(s.recent, ["c", "a", "b"]);
         assert_eq!(Settings::parse(&s.text()).recent, s.recent);
+    }
+
+    /// System settings edit the defaults and no game's own; a game's edit
+    /// leaves the defaults; resets and the count.
+    #[test]
+    fn system_and_game_layers_are_edited_apart() {
+        let mut s = with_game(Settings::default(), "hotd", &[("exact", "false")]);
+        s.games.insert("stcc".into(), Layer::new());
+        // The system: a new default; hotd's own copy of another key stays.
+        let mut v = s.system_for("");
+        v.sfx_db = 3.0;
+        v.exact = true;
+        s.apply_edit("", &v, true);
+        assert_eq!(s.defaults.get("sfx_db").map(String::as_str), Some("3"));
+        assert_eq!(s.games["hotd"].get("exact").map(String::as_str), Some("false"), "a game keeps its own");
+        assert_eq!(s.resolve("stcc").0.sfx_db, 3.0);
+        assert!(!s.resolve("hotd").0.exact);
+        // A game's: only its own layer, only where it differs from the system.
+        let mut g = s.resolve("stcc").0;
+        g.sfx_db = 5.0;
+        s.apply_edit("stcc", &g, false);
+        assert_eq!(s.games["stcc"].get("sfx_db").map(String::as_str), Some("5"));
+        assert_eq!(s.games["stcc"].len(), 1);
+        assert_eq!(s.defaults.get("sfx_db").map(String::as_str), Some("3"));
+        // Back to the system's value drops the key by itself.
+        g.sfx_db = 3.0;
+        s.apply_edit("stcc", &g, false);
+        assert!(s.games["stcc"].is_empty());
+        // How many differ: hotd's exact = false against the system's true.
+        assert_eq!(s.differing("hotd"), 1);
+        assert_eq!(s.differing("stcc"), 0);
+        // A reset drops the key.
+        s.reset_keys("hotd", &["exact"]);
+        assert!(s.games["hotd"].is_empty());
+        assert!(s.resolve("hotd").0.exact);
+        assert_eq!(s.differing("hotd"), 0);
+        // Which games keep their own values for a page.
+        let mut s = with_game(Settings::default(), "hotd", &[("sfx_db", "6")]);
+        s.games.insert("stcc".into(), Layer::new());
+        assert_eq!(s.games_keeping(&["hotd", "stcc"], &["sfx_db", "music_db"]), ["hotd"]);
+        assert!(s.games_keeping(&["hotd", "stcc"], &["wide"]).is_empty());
+    }
+
+    /// A style and what it sets are one difference; the folders are kept
+    /// and read back, and the old scope key is ignored.
+    #[test]
+    fn styles_count_once_and_folders_round_trip() {
+        let mut s = with_game(Settings::default(), "topskatr", &[("preset", "crt")]);
+        assert_eq!(s.differing("topskatr"), 1);
+        let text =
+            Settings::parse("scope = game\npacks_root = /data/packs\nphotos_root = /data/photos\nwide = false\n");
+        assert_eq!(text.packs_root.as_deref(), Some(Path::new("/data/packs")));
+        assert_eq!(text.photos_root.as_deref(), Some(Path::new("/data/photos")));
+        assert!(!text.defaults.contains_key("scope") && !text.defaults.contains_key("packs_root"));
+        let again = Settings::parse(&text.text());
+        assert_eq!((again.packs_root, again.photos_root), (text.packs_root, text.photos_root));
+        assert!(!Settings::parse("").text().contains("packs_root"));
     }
 }

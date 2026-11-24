@@ -615,8 +615,9 @@ were replaced in the last frame.
 
 **Native player** (`docs/play.md`). The setting `pack` (default off; flag
 `--pack on|off`) looks in `<data dir>/<set>/texpack/` (`out/<set>/texpack`
-in a checkout), and for a clone without one in its parent's, since keys are
-the textures' content. `--texture-pack DIR` uses DIR for every game that run
+in a checkout; `<folder>/<set>/texpack/` with a texture packs folder chosen in
+System settings, Folders), and for a clone without one in its parent's, since
+keys are the textures' content. `--texture-pack DIR` uses DIR for every game that run
 (and turns `pack` on). The directory is listed when the pack is switched on;
 PNGs are decoded on two background threads the first time their texture is
 drawn, and the original shows until the image is ready. The launcher's

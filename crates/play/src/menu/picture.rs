@@ -3,9 +3,10 @@
 //! Picture lists the styles, each a card with a name, a tag and one plain
 //! sentence: Arcade original, Sharp, Smooth modern, CRT and Custom
 //! (`Preset`; Smooth modern is the `enhanced` preset in the files). Choosing
-//! one applies it at once to the paused game beside the panel. A switch
-//! says where the change is kept (this game, or all games, as the settings'
-//! layers have it), and Compare shows the game's picture as the arcade
+//! one applies it at once to the paused game beside the panel. A line says
+//! where the change is kept (the game's own, with the system's style named,
+//! or in System settings the default for every game), a game's page can
+//! hand its picture back to the system, and Compare shows the game's picture as the arcade
 //! original left of a divider and as chosen right of it: the divider
 //! follows the pointer (drag) or the pad's left and right. Advanced has a
 //! row for each picture setting; changing one makes the style Custom (the
@@ -13,7 +14,7 @@
 //! it and for "Back to the style's values"), and only the focused row says
 //! what it does.
 
-use super::{custom_relief, pill, regions, shading_hint, side_panel, Menu, Page, PanelSpec, Prefs, Step, View};
+use super::{custom_relief, pill, regions, shading_hint, side_panel, Menu, Page, PanelSpec, Step, View};
 use super::{CREASES, RELIEF};
 use crate::focus::Focus;
 use crate::hints::{style_line, style_tag, BLOOM, BLOOM_HELP, CRT, CRT_HELP};
@@ -51,8 +52,9 @@ impl State {
 }
 
 /// The picture page's footer: Compare, Advanced and where it's saved, in
-/// design points.
-const FOOT_H: f32 = 124.0;
+/// design points; a game's has a button more, to use the system's picture.
+const FOOT_H: f32 = 140.0;
+const GAME_FOOT_H: f32 = 176.0;
 /// The Advanced page's footer: its one button.
 const ADV_FOOT_H: f32 = 64.0;
 /// How far the d-pad's moves put a pinned widget past (or before) a
@@ -110,9 +112,9 @@ impl Menu {
         &mut self,
         ctx: &egui::Context,
         settings: &mut GameSettings,
-        prefs: Prefs,
         view: &View,
         navs: &[Nav],
+        actions: &mut Vec<super::Action>,
     ) {
         let s = theme::scale(ctx);
         let nav_mode = self.pad_used || self.keys_used;
@@ -124,28 +126,25 @@ impl Menu {
         if self.picture.compare && loose != 0 {
             self.picture.wipe = (self.picture.wipe + WIPE_STEP * loose as f32).clamp(0.0, 1.0);
         }
-        let reg = regions(ctx.content_rect(), s, FOOT_H);
+        let foot_h = if view.inherit.is_some() { GAME_FOOT_H } else { FOOT_H };
+        let reg = regions(ctx.content_rect(), s, foot_h);
         if self.picture.compare {
             self.wipe_overlay(ctx, settings.preset, view, reg.panel.left());
         }
-        let name = view.playing.unwrap_or("This game");
-        let short = if name.chars().count() > 16 { "This game" } else { name };
-        let for_all = *prefs.for_all;
-        let note = scope_note(name, for_all, view);
+        let name = self.who(view);
+        let note = scope_note(name, view);
+        let use_system = view.inherit.is_some_and(|i| i.own_picture());
+        let game_scope = view.inherit.is_some();
         let mut hints = vec![(Chip::A, "Select"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
         if self.picture.compare {
             hints.insert(1, (Chip::LeftRight, "Divider"));
         }
-        let spec = PanelSpec { game: name, heading: "Picture", back: true, extra_h: FOOT_H };
-        let (mut chosen, mut to_advanced, mut scope, mut toggled) = (None, false, None, false);
+        let spec = PanelSpec { game: name, heading: "Picture", back: true, extra_h: foot_h };
+        let (mut chosen, mut to_advanced, mut toggled, mut reset) = (None, false, false, false);
         let (focus, compare, current) = (&mut self.picture.focus, self.picture.compare, settings.preset);
         let mut steps = 0;
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(16.0 * s, 0.0))), |ui| {
-                ui.add_space(4.0 * s);
-                let labels = [format!("{short} only"), "All games".to_string()];
-                scope = scope_toggle(ui, focus, &labels, for_all as usize);
-                focus.shift_last(1, -SHIFT);
                 ui.add_space(8.0 * s);
                 focus.scroll_area("styles").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0 * s;
@@ -167,10 +166,18 @@ impl Menu {
             if pill(ui, focus, at(50.0), "Advanced ›", Some(theme::RAISED), true) {
                 to_advanced = true;
             }
-            focus.shift_last(2, SHIFT);
+            let mut pinned = 2;
+            let mut note_at = 94.0;
+            if game_scope {
+                if pill(ui, focus, at(92.0), "Use the system's picture", Some(theme::RAISED), use_system) {
+                    reset = true;
+                }
+                (pinned, note_at) = (3, 138.0);
+            }
+            focus.shift_last(pinned, SHIFT);
             let p = ui.painter();
             let galley = p.layout(note, FontId::new(14.0 * s, FontFamily::Proportional), theme::TEXT_DIM, w);
-            p.galley(pos2(x, foot.top() + 94.0 * s), galley, theme::TEXT_DIM);
+            p.galley(pos2(x, foot.top() + note_at * s), galley, theme::TEXT_DIM);
             false
         });
         self.picture.focus.end();
@@ -180,8 +187,8 @@ impl Menu {
         if self.picture.compare {
             self.set_wipe_rect(ctx, view, reg.panel.left());
         }
-        if let Some(i) = scope {
-            *prefs.for_all = i == 1;
+        if reset {
+            actions.push(super::Action::ResetKeys(["preset"].into_iter().chain(PICTURE_KEYS).collect()));
         }
         if toggled {
             self.picture.compare = !self.picture.compare;
@@ -288,7 +295,6 @@ impl Menu {
         &mut self,
         ctx: &egui::Context,
         settings: &mut GameSettings,
-        prefs: Prefs,
         view: &View,
         navs: &[Nav],
     ) {
@@ -306,17 +312,13 @@ impl Menu {
         } else {
             settings.preset.label().to_string()
         };
-        let scope = if *prefs.for_all {
-            "All games".to_string()
-        } else {
-            format!("{} only", view.playing.unwrap_or("This game"))
-        };
+        let who = self.who(view);
+        let scope = if self.system { "The default for every game".to_string() } else { format!("{who}'s own") };
         let differs = settings.preset == Preset::Custom || PRESET_KEYS.iter().any(|k| settings.get(k) != base.get(k));
         let focus = &mut self.picture.adv_focus;
         let mut adv = Adv { focus, nav_mode, base: &base };
         let hints = [(Chip::LeftRight, "Change"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
-        let spec =
-            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: "Advanced", back: true, extra_h: ADV_FOOT_H };
+        let spec = PanelSpec { game: who, heading: "Advanced", back: true, extra_h: ADV_FOOT_H };
         let mut reset = false;
         let mut back = back;
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
@@ -377,68 +379,14 @@ fn nearest_style(s: &GameSettings, game: Option<&romset::Game>) -> Preset {
     all.into_iter().max_by_key(|p| (score(*p), std::cmp::Reverse(all.iter().position(|q| q == p)))).unwrap_or_default()
 }
 
-/// Where the choice is kept, and what the other games have: the Picture
-/// page's last line.
-fn scope_note(game: &str, for_all: bool, view: &View) -> String {
-    if !for_all {
-        return format!("Saved for {game}. Other games keep {}.", view.keeps.all_games.label());
+/// Where the choice is kept, and what the system has: the Picture page's
+/// last line.
+fn scope_note(game: &str, view: &View) -> String {
+    match (view.system, view.inherit) {
+        (Some(sv), _) => format!("Saved as the default for every game. {}", sv.picture_note()),
+        (None, Some(_)) => format!("Saved for {game}. The system uses {}.", view.keeps.all_games.label()),
+        (None, None) => format!("Saved for {game}."),
     }
-    if view.keeps.own_picture {
-        format!("Saved for all games. {game}'s own picture settings are replaced.")
-    } else {
-        format!("Saved for all games ({game} has no style of its own).")
-    }
-}
-
-/// The scope switch ("<Game> only", "All games"): the pad moves it as one
-/// row (left and right choose, A switches). Returns the new choice.
-pub(super) fn scope_toggle(
-    ui: &mut egui::Ui,
-    focus: &mut Focus,
-    labels: &[String; 2],
-    selected: usize,
-) -> Option<usize> {
-    let s = theme::scale(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0 * s), Sense::hover());
-    let id = ui.make_persistent_id("picture-scope");
-    let r = ui.interact(rect, id, Sense::click());
-    let (pad, accepted) = focus.stepper(ui, &r);
-    let p = ui.painter().clone();
-    let radius = theme::ROW_RADIUS * s;
-    p.rect_filled(rect, radius, Color32::from_white_alpha(18));
-    let half = (rect.width() - 8.0 * s) / 2.0;
-    for (i, label) in labels.iter().enumerate() {
-        let seg = Rect::from_min_size(
-            pos2(rect.left() + 4.0 * s + i as f32 * half, rect.top() + 4.0 * s),
-            vec2(half, rect.height() - 8.0 * s),
-        );
-        let on = i == selected;
-        if on {
-            p.rect_filled(seg, radius - 3.0 * s, theme::TEXT);
-        }
-        let font = FontId::new(15.0 * s, theme::semibold());
-        let colour = if on { theme::INK } else { theme::TEXT };
-        let mut text = label.clone();
-        // A name too long for its half is cut short.
-        while p.layout_no_wrap(text.clone(), font.clone(), colour).size().x > half - 12.0 * s && text.len() > 4 {
-            text.pop();
-        }
-        p.text(seg.center(), Align2::CENTER_CENTER, text, font, colour);
-    }
-    if focus.is_on(id) {
-        theme::focus_ring(&p, rect, s, theme::ROW_RADIUS);
-    }
-    let mut to = None;
-    if r.clicked() {
-        to = r.interact_pointer_pos().map(|at| (at.x >= rect.center().x) as usize);
-    }
-    if pad != 0 {
-        to = Some((pad > 0) as usize);
-    }
-    if accepted {
-        to = Some(1 - selected);
-    }
-    to.filter(|t| *t != selected)
 }
 
 /// A style's card: name, tag and sentence; the chosen one has a cyan border
