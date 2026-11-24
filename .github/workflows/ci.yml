@@ -65,7 +65,16 @@ jobs:
           EOF
       - run: make fmt-check
       - run: make lint
+      # Building and running apart, with the disk and memory shown between,
+      # so a runner that dies says at which (runs since 2026-11-25 lost
+      # theirs with no log).
+      - name: Disk and memory before the test build
+        run: df -h / && free -m && du -sh target 2>/dev/null || true
+      - name: Build the tests
+        run: cargo test --workspace --no-run
+        timeout-minutes: 25
+      - name: Disk and memory after the test build
+        run: df -h / && free -m && du -sh target 2>/dev/null || true
       - run: make test
-        # A step's own limit keeps its log, where the job's limit loses it.
-        timeout-minutes: 30
+        timeout-minutes: 25
       - run: make web-check WASM_RUSTUP=$(command -v rustup)
