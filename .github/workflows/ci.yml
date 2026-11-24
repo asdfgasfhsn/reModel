@@ -43,6 +43,10 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
+          # A fresh cache for the builds without debug info: restoring the
+          # old one (with it) and building beside it ran the runner out of
+          # room, losing every run and its log (2026-11-25).
+          prefix-key: v1-nodebug
           workspaces: |
             . -> target
           cache-directories: target/web
