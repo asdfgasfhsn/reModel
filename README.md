@@ -1,5 +1,12 @@
 <p align="center"><img src="assets/reModel-logo.png" alt="reModel" width="640"></p>
 
+<p align="center">
+  <a href="https://github.com/asdfgasfhsn/reModel/releases/latest"><img src="https://img.shields.io/github/v/release/asdfgasfhsn/reModel?label=release" alt="Latest release"></a>
+  <a href="https://github.com/asdfgasfhsn/reModel/actions/workflows/ci.yml"><img src="https://github.com/asdfgasfhsn/reModel/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <a href="https://asdfgasfhsn.github.io/reModel/"><img src="https://img.shields.io/badge/website-reModel-22e5ff" alt="Website"></a>
+</p>
+
 # reModel
 
 **A static-recompilation and emulation toolkit for Sega Model 2 arcade games.**
