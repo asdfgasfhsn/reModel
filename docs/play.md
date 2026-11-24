@@ -1046,10 +1046,13 @@ that can't start (chips missing from the ROM folder) keeps its poster and
 says why. The preview never takes input, never saves its EEPROM, and is
 emulated like the game would be (it costs what the game costs).
 
-**Settings** (the menu button, Tab, on the home screen) open **System
-settings**, in the same side panel as the Esc menu (below, "The menu"): an
-index of **Folders**, **Picture**, **Display**, **Motion**, **Sound**,
-**More**, **Controllers** and **Players**, and Quit reModel. They belong to no
+**Settings** (the menu button, Tab, on the home screen, or the hint bar's
+**System settings**) open **System settings**, in the same side panel as the
+Esc menu (below, "The menu"): an index of **Folders**, **Picture**,
+**Display**, **Motion**, **Sound**, **More**, **Controllers** and **Players**,
+and **Quit reModel**. Esc (B on a pad, or the hint bar's **Quit**) on the
+home screen opens it with Quit reModel chosen: Enter quits, Esc again backs
+out. They belong to no
 game: Picture, Display, Motion, Sound and More are the same pages a game has
 (the picture styles, and the rows that apply as set), but what they change is
 the defaults every game starts from (the all-games layer, `play-settings.txt`).

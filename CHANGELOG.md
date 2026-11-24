@@ -15,6 +15,10 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Launcher: the home screen's hint bar names **System settings** (Tab, the
+  menu button) and **Quit** (Esc, B), both clickable; until now neither had
+  anything on screen. Quit opens System settings with Quit reModel chosen, so
+  Enter quits and Esc backs out.
 - Player: **System settings** and per-game overrides. The launcher's
   Settings (menu button, Tab) now open System settings: Folders (the ROM
   folder, moved here, plus new texture packs and photos folders,

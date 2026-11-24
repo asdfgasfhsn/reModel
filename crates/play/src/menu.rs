@@ -744,6 +744,13 @@ impl Menu {
         actions
     }
 
+    /// System settings opened to quit (Esc on the launcher): Quit reModel is
+    /// chosen, with its focus showing.
+    pub fn ask_quit(&mut self) {
+        self.sys.to_quit = true;
+        self.keys_used = !self.pad_used;
+    }
+
     /// Open the menu (already `open`) straight onto `page` (and `tab`, for
     /// Settings): a way back from it closes the menu.
     pub fn open_at(&mut self, page: Page, tab: Tab) {
@@ -2488,6 +2495,13 @@ mod tests {
         // B from the index closes it (as Resume does over a game).
         let (acts, _) = run(&mut menu, &[Nav::Back]);
         assert_eq!(acts, ["resume"]);
+        // Opened to quit (Esc on the launcher): Quit reModel is chosen, so
+        // Enter quits.
+        menu.ask_quit();
+        run(&mut menu, &[]);
+        run(&mut menu, &[]);
+        let (acts, _) = run(&mut menu, &[Nav::Accept]);
+        assert_eq!(acts, ["quit"]);
     }
 
     impl Rig {

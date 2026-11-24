@@ -4056,6 +4056,12 @@ impl Play {
                     self.menu.system = true;
                     self.menu.pad_used = self.launcher.pad_used;
                 }
+                launcher::Action::AskQuit => {
+                    self.set_menu(true);
+                    self.menu.system = true;
+                    self.menu.pad_used = self.launcher.pad_used;
+                    self.menu.ask_quit();
+                }
                 launcher::Action::SettingsAt(page, tab) => {
                     self.set_menu(true);
                     self.menu.pad_used = self.launcher.pad_used;

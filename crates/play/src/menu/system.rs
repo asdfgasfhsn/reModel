@@ -146,6 +146,8 @@ pub(super) struct State {
     /// A folder's path being typed, and the text field wants the focus.
     edit: Option<(Folder, String)>,
     edit_new: bool,
+    /// Opened to quit (Esc on the launcher): the focus goes to Quit reModel.
+    pub(super) to_quit: bool,
 }
 
 impl State {
@@ -223,6 +225,11 @@ impl Menu {
                     ui.add_space(10.0 * s);
                     if focus.menu_row(ui, "Quit reModel", "") {
                         actions.push(Action::Quit);
+                    }
+                    if self.sys.to_quit {
+                        let quit = ui.make_persistent_id(("menu-row", "Quit reModel"));
+                        focus.focus_to(quit);
+                        self.sys.to_quit = focus.focused() != Some(quit);
                     }
                     ui.add_space(6.0 * s);
                     ui.horizontal(|ui| {

@@ -142,6 +142,9 @@ pub enum Action {
     },
     /// Open the menu over the launcher (its settings).
     Settings,
+    /// Open it with Quit reModel chosen (Esc or B on the home screen): Enter
+    /// quits, Esc backs out.
+    AskQuit,
     /// Open it on one of the selected game's pages (the game page's
     /// Game settings rows); going back closes it.
     SettingsAt(menu::Page, menu::Tab),
@@ -277,6 +280,8 @@ pub(crate) enum Click {
     Continue,
     /// The player's settings (the menu's pause page).
     Settings,
+    /// Ask to quit (System settings, at Quit reModel).
+    Quit,
     /// Open the selected game's page (at its main menu).
     OpenPage,
     /// Open it at a level (the S, L and V keys, the pad's X and View).
@@ -859,6 +864,7 @@ impl Launcher {
             for nav in self.focus.begin(&page_navs) {
                 match nav {
                     Nav::Start | Nav::Settings => clicks.push(Click::Settings),
+                    Nav::Back => clicks.push(Click::Quit),
                     Nav::Saves => clicks.push(Click::OpenAt(page::Level::Saves)),
                     Nav::Continue => clicks.push(Click::Continue),
                     Nav::PrevGroup | Nav::NextGroup => clicks.push(Click::View(self.mode.other())),
@@ -952,6 +958,7 @@ impl Launcher {
                 }
             }
             Click::Settings => actions.push(Action::Settings),
+            Click::Quit => actions.push(Action::AskQuit),
             Click::OpenPage => self.open_page(page::Level::Main, false),
             Click::OpenAt(level) => self.open_page(level, false),
             Click::Game(g, mouse) => {
@@ -1706,7 +1713,8 @@ impl Launcher {
     }
 
     /// The home screen's hints: Choose, Open, Continue, View (the grid adds
-    /// the filter), the pad's buttons or the keys by what was used last.
+    /// the filter), System settings and Quit, the pad's buttons or the keys by what
+    /// was used last.
     fn home_hints(&self) -> Vec<Hint> {
         let grid = self.mode == ViewMode::Grid;
         let choose = self.choose.unwrap_or("D-pad");
@@ -1721,6 +1729,8 @@ impl Launcher {
             if grid {
                 h.push(hint(Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
             }
+            h.push(hint(Chip::Menu, "System settings", Some(Click::Settings)));
+            h.push(hint(Chip::B, "Quit", Some(Click::Quit)));
             h
         } else {
             let mut h = vec![
@@ -1732,6 +1742,8 @@ impl Launcher {
             if grid {
                 h.push(hint(Chip::Key("[ ]"), "Filter", Some(Click::NextFilter)));
             }
+            h.push(hint(Chip::Key("Tab"), "System settings", Some(Click::Settings)));
+            h.push(hint(Chip::Key("Esc"), "Quit", Some(Click::Quit)));
             h
         }
     }
@@ -2278,6 +2290,14 @@ mod tests {
         r.menu_open = false;
         r.key(egui::Key::Tab);
         assert!(r.actions.iter().any(|a| matches!(a, Action::Settings)));
+        // And the hint bar says so.
+        r.actions.clear();
+        r.frame(&[], Vec::new());
+        assert!(r.shows("System settings"), "{:?}", r.texts());
+        // Esc on the home screen asks to quit (System settings, at Quit reModel).
+        assert!(r.shows("Quit"), "{:?}", r.texts());
+        r.key(egui::Key::Escape);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::AskQuit)), "{:?}", r.actions.len());
     }
 
     #[test]
