@@ -41,3 +41,9 @@ opt-level = 2
 # machine after every slice (864 saves), 401 s unoptimised, 28 s optimised.
 [profile.test.package.remodel-state]
 opt-level = 2
+# The GPU tests compare frames with the software renderer (model2's) and
+# compare pixels: 159 s with both unoptimised, 45 s optimised.
+[profile.test.package.remodel-model2]
+opt-level = 2
+[profile.test.package.remodel-gpu]
+opt-level = 2
