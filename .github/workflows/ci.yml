@@ -79,6 +79,23 @@ jobs:
         timeout-minutes: 25
       - name: Disk and memory after the test build
         run: df -h / && free -m && du -sh target 2>/dev/null || true
+      # One step per heavy crate for now: a runner that dies keeps the
+      # steps before it, so this names the one that kills it (2026-11-25).
+      - name: Test jit
+        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-jit
+        timeout-minutes: 15
+      - name: Test model2
+        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-model2
+        timeout-minutes: 15
+      - name: Test gpu
+        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-gpu
+        timeout-minutes: 10
+      - name: Test play
+        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-play
+        timeout-minutes: 10
+      - name: Test linknet and the CLI
+        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-linknet -p remodel
+        timeout-minutes: 10
       - run: make test
         timeout-minutes: 25
       - run: make web-check WASM_RUSTUP=$(command -v rustup)
