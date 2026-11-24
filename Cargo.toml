@@ -30,3 +30,10 @@ remodel-linknet = { path = "crates/linknet" }
 
 [profile.release]
 debug = true
+
+# Tests drive third-party code hard (the JIT's checks compile thousands of
+# random programs with Cranelift): built unoptimised, the jit tests took 544 s
+# of the gate; with the dependencies optimised (built once, then cached), 33 s.
+# Our own crates stay unoptimised, with debug assertions and overflow checks.
+[profile.test.package."*"]
+opt-level = 2
