@@ -230,7 +230,11 @@ impl Index {
         let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
         paths.sort();
         for p in paths {
-            let hidden = p.file_name().and_then(|n| n.to_str()).is_none_or(|n| n.starts_with('.'));
+            // (Hidden files, and the m2emu emulator download: never read, whatever its size.)
+            let hidden = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_none_or(|n| n.starts_with('.') || n.to_ascii_lowercase().starts_with("m2emu"));
             let Ok(m) = fs::metadata(&p) else { continue };
             if hidden {
                 continue;
