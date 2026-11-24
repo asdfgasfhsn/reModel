@@ -93,8 +93,14 @@ jobs:
       - name: Test play
         run: REMODEL_GPU_TESTS=1 cargo test -p remodel-play
         timeout-minutes: 10
-      - name: Test linknet and the CLI
-        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-linknet -p remodel
+      # These two lost the runner (2026-11-25): one test at a time, so the
+      # log names the test as it starts, and capped (memory, time) so the
+      # test dies before the runner does.
+      - name: Test linknet
+        run: timeout -k 10 480 bash -c 'ulimit -v 12000000; REMODEL_GPU_TESTS=1 cargo test -p remodel-linknet -- --test-threads=1'
+        timeout-minutes: 10
+      - name: Test the CLI
+        run: timeout -k 10 480 bash -c 'ulimit -v 12000000; REMODEL_GPU_TESTS=1 cargo test -p remodel -- --test-threads=1'
         timeout-minutes: 10
       - run: make test
         timeout-minutes: 25
