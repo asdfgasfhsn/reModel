@@ -331,6 +331,86 @@ data. Frame numbers are of a `coin-start` run. No ROM data is reproduced here.
   warp magazine, Coca-Cola, a stunttrackers sign); only the Pennywise logo is
   the band's.
 
+## Hidden content (2026-11-26)
+
+Found by reading the program ROM's skater-select and course-select code
+(the code that polls the two select buttons) and then running every claim in
+reModel from power-on. No pokes are needed: they are input codes. The tours
+that do them are `hidden-alex`, `hidden-pnut` and `big-skater`
+(`out/topskatr/tours/hidden.txt`; frame numbers are from power-on with a
+blank EEPROM, as `tour run` starts).
+
+- *Confirmed:* skater select has two hidden skaters, **Alex** (id 6) and
+  **P-Nut** (id 7); the select cursor still stops at six (it clamps at the
+  ends; right at Jill or left at Ash does nothing). Each is chosen by a
+  secret button code made on skater select; the portrait row stays six, and
+  the picture changes to the new skater's card and 3D model (Alex, a
+  surfer on a surfboard, age 22; P-Nut, a female lifeguard on a rescue
+  board, age 18, 5'3"), and the race uses their model and board with water
+  spray on the grass. Race frames at 3300: Alex and P-Nut ride the Novice
+  course under their own boards.
+  - How the matcher works (from the code, then confirmed): the direction
+    buttons' events are emitted when a direction is released (a tap), and
+    each tap that is the next expected direction counts; the opposite
+    direction resets the code; anything else is ignored.
+  - **Alex** (skater select): tap select-left 3 times, select-right 3
+    times, select-left 13 times. Taps of 2 frames every 6 frames from
+    frame 1140 (tour `hidden-alex`) set the character id (`character`,
+    0x582f00) to 6 at about frame 1300. Then start picks him.
+  - **P-Nut** (skater select): select-right 6, left 6, right 3, left 3,
+    right 4, and then release start in the same screen. The start button has
+    to be held from the course select (start at frame 1002 held until
+    after the last tap) because a fresh press of start leaves the screen at
+    once; the release after the taps sets the id to 7 (tour
+    `hidden-pnut`: pressing start 10 frames after the taps instead leaves
+    id 5 and picks Cookie, tested).
+  - The code is spelt as left/right taps in the program ROM's tables
+    (counts 1,1,3,3,13,1 / 6,6,3,3,4,0 and a third row, 9,9,4,4,5,1, used on
+    course select); the third row is a different code, below.
+- *Confirmed:* the course select has a secret too, but it is not a course:
+  select-left 9, right 9, left 4, right 4, left 5 (taps) and then select-left,
+  select-right and jump front together three times (each a rising edge:
+  press and release all three at once, 10 frames apart) sets 0x5ce960 to 1
+  (`secret-flag`) and the skater is drawn very large, close to the
+  camera, on skater select and in the race (frames 1500 and 3300 of tour
+  `big-skater`, against the same run without the code; the course and
+  everything else are unchanged). Unconfirmed: whether it also changes
+  other things (the flag is read in a few places, 0x50ccc, 0x50f7c, 0x53710,
+  0x6f5c8).
+- *Partly found, not confirmed:* the program ROM holds a secret event. A
+  string "WELCOME TO SECRET EVENT!!" is shown by the routine at ROM 0x39110
+  (which also sets the course-select value 0x5830c8 to 8, resets the
+  score and total time). A per-frame check at 0x392d0 calls it when the
+  skater is within 20 units of the world point (115.8, -367.4, -2696.6) with
+  its facing opposed to the vector (-1, 0, 0.006) (heading roughly +x). The
+  check is installed only when the race starts with Expert chosen
+  and jump front held while it loads (the course variable `course` then
+  reads 0, not 1; tour `expert-jump-held`), and the skater placed at the
+  point with a poke is in a stadium hall on the Expert course; the game
+  overwrote the heading so the check did not fire. Not reached by play or
+  a poke. The other routine at 0x39410 installed for the other branch is
+  unread. So whether the hidden "course" is this event, and the route to
+  it, remains unconfirmed.
+- *Unconfirmed:* the third course-kind value, 0x5830a4 = 2, has its own
+  routines (installed at 0x3ba58) but no input reaches it: the course
+  select highlight only takes the values 5 and 0.
+- *Not found:* the game does not use the EEPROM for any of this: the codes
+  are in the select code and unlock nothing that is stored, so a finish
+  with any score unlocks nothing here. The Novice run's results screen
+  (frame 12500, S class, "1st", total 332,141 with this EEPROM) and staff roll
+  (screen 170) follow with nothing new offered (checked in pictures at 12450,
+  12600, 13000, 14500, 16000, 16300). The EEPROM before and after a
+  finish was not compared (unconfirmed).
+- Pokes: `skater-id-6` and `skater-id-7` (partial; they give Ash's body
+  with the hidden board's spray), and `character` / `code-pos-*` /
+  `secret-flag` in the value table. Holding the cursor value (0x5dcdfc) at
+  6 or 7 does nothing: the game falls back to Ash (the code clamps it).
+- Method note: the select function at ROM 0xae1e0 keeps the cursor in
+  0x5dcdfc, the character id in 0x582f00 (mapped by an eight-entry table at
+  ROM 0xad900), the matchers' progress in 0x5dce18 and 0x5dce1c and the
+  counts in 0x5dce20; the id then indexes 14 entries of the portrait and
+  model data at 0x509de0.
+
 ## Enhanced preset
 
 What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the

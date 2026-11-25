@@ -3,3 +3,5 @@
 # the game with `remodel ram search`; held by a tour (`poke=NAME@from-to`),
 # never applied otherwise. Addresses are for the game's one program ROM set.
 hold-clock|0x5830b0:0x0e10:w|The course's remaining time, in frames (60 a second), held at 60 s so TIME UP never comes. Found by search: it read 20 s left (0x4b3) at frame 5000 of a coin start that picks the first skater, 15 s at 5300 and 0x30f at 5420; the only word that fell by exactly 300 then 120.
+skater-id-6|0x582f00:6:l|The character id forced to 6 (Alex, the first hidden skater) from skater select on. Partial: the race shows Ash's body with the surf board's water spray, not Alex (the model is chosen when the code sets the id, so poking the id late leaves the rest of the selection unset); for the real skater use the tour hidden-alex, which needs no poke. Found by reading the select code (docs/games/topskatr.md, Hidden content) and testing.
+skater-id-7|0x582f00:7:l|As skater-id-6 for id 7 (P-Nut): Ash's body with a board's spray. Use the tour hidden-pnut instead.
