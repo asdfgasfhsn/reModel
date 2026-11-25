@@ -80,9 +80,24 @@ jobs:
       - name: Disk and memory after the test build
         run: df -h / && free -m && du -sh target 2>/dev/null || true
       # First while it's the one that loses the runner (2026-11-25).
-      - name: Test the CLI
-        run: REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 480 cargo test -p remodel -- --test-threads=1
-        timeout-minutes: 10
+      - name: "Test the CLI: studio"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 studio::'
+        timeout-minutes: 6
+      - name: "Test the CLI: studio img, answer, text"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 studio_img:: studio_answer:: studio_text::'
+        timeout-minutes: 6
+      - name: "Test the CLI: texture packs"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack_materials:: texpack_upscale:: texpack::'
+        timeout-minutes: 6
+      - name: "Test the CLI: pack gates and checks"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 gates:: pack_check:: pack_lint:: pack_gates:: pack_layers::'
+        timeout-minutes: 6
+      - name: "Test the CLI: texmap, tour, scene, artwork, glyphs, catalogue"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texmap:: tour:: scene:: artwork:: glyphs:: catalogue::'
+        timeout-minutes: 6
+      - name: "Test the CLI: the rest"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 img_cmd:: coverage:: tgp_disasm:: answer:: recomp_crates:: crawl:: soundtrack:: sound_render:: ram:: link_run::'
+        timeout-minutes: 6
       # One step per heavy crate for now: a runner that dies keeps the
       # steps before it, so this names the one that kills it (2026-11-25).
       - name: Test jit
