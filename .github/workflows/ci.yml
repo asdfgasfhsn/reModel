@@ -86,8 +86,17 @@ jobs:
       - name: "Test the CLI: studio img, answer, text"
         run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 studio_img:: studio_answer:: studio_text::'
         timeout-minutes: 6
-      - name: "Test the CLI: texture packs"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack_materials:: texpack_upscale:: texpack::'
+      - name: "Test the CLI: texpack"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack::'
+        timeout-minutes: 6
+      - name: "Test the CLI: texpack_materials"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack_materials::'
+        timeout-minutes: 6
+      - name: "Test the CLI: texpack_upscale, all but the external upscaler"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack_upscale:: --skip runs_an_external_upscaler'
+        timeout-minutes: 6
+      - name: "Test the CLI: texpack_upscale, the external upscaler"
+        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 runs_an_external_upscaler'
         timeout-minutes: 6
       - name: "Test the CLI: pack gates and checks"
         run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 gates:: pack_check:: pack_lint:: pack_gates:: pack_layers::'
