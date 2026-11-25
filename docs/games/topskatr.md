@@ -377,20 +377,67 @@ blank EEPROM, as `tour run` starts).
   everything else are unchanged). Unconfirmed: whether it also changes
   other things (the flag is read in a few places, 0x50ccc, 0x50f7c, 0x53710,
   0x6f5c8).
-- *Partly found, not confirmed:* the program ROM holds a secret event. A
-  string "WELCOME TO SECRET EVENT!!" is shown by the routine at ROM 0x39110
-  (which also sets the course-select value 0x5830c8 to 8, resets the
-  score and total time). A per-frame check at 0x392d0 calls it when the
-  skater is within 20 units of the world point (115.8, -367.4, -2696.6) with
-  its facing opposed to the vector (-1, 0, 0.006) (heading roughly +x). The
-  check is installed only when the race starts with Expert chosen
-  and jump front held while it loads (the course variable `course` then
-  reads 0, not 1; tour `expert-jump-held`), and the skater placed at the
-  point with a poke is in a stadium hall on the Expert course; the game
-  overwrote the heading so the check did not fire. Not reached by play or
-  a poke. The other routine at 0x39410 installed for the other branch is
-  unread. So whether the hidden "course" is this event, and the route to
-  it, remains unconfirmed.
+- *Confirmed:* the program ROM holds a **secret event**, a trick-score
+  skate park, and it is reached by play with inputs (tour `secret-event`,
+  which branches from `expert-jump-held-jill`; both in
+  `out/topskatr/tours/hidden.txt`; no pokes). What it takes, from the check at
+  ROM 0x392d0 and then run in reModel:
+  - *Arming.* Choose **Expert** and hold **jump front** while the race
+    loads (from the start press that leaves skater select until the GO;
+    tour `expert-jump-held` holds it for frames 2700-3000). Then `course`
+    (0x57bfa4) reads 0 instead of 1 and the race installs the check as a
+    task (ROM 0x3bb24, node entry 0x392d0 in the task list at 0x57cfc0).
+    Without the held jump the check is never installed.
+  - *The test, every frame.* The point is world (115.8, -367.4, -2696.6)
+    (the three floats at ROM 0x392b0). The check measures the distance (a
+    copro command, the sum of squares and a root; reading the 2C program) from the
+    skater object's *lead* point, not from `pos-*` (`lead-x/y/z`, about six
+    frames of motion ahead in x/z and 12 below `pos-y` in y), and fires when it
+    is under 20 *and* the skater's velocity direction has vel-x / speed above 0.5
+    (towards +x; the second vector is (-1, 0, 0.006)). So the skater must be
+    airborne at the right height: `pos-y` about 16 above the floor of the hall
+    there, which is what a jump from `jumpfront` gives. The check ends
+    itself, setting `course` to 1 and dropping its task, when the course
+    section counter (`section`, 0x5830ac) passes 19 or the skater word
+    `skater-cc` is above 0, so the point has to be reached in the first
+    stretch of the course (the player's run passes it at about 15 s of
+    race time).
+  - *The place.* In the Expert course's stadium hall (the hall with the
+    ramps seen at the left, after the straight past the first bend), at
+    about z = -2700. The player's own recording (Jill) passes at x about
+    -130, on the left of the hall; the point is 245 units to the right of
+    that, against the hall's right wall (the skater bounces off a wall at
+    pos-x about 105 there). The route that works: follow the player's
+    inputs to frame 3900 (race frame 838), then hold **curving 0xf0** (the
+    +x side) from 3900, and press **jump front** at frame 3976-3978
+    (race frame 914). The skater runs diagonally across the hall to
+    pos about (85, -368, -2693) heading +x and the check fires at
+    frame 3997 (distance 19.3, direction 0.83). Jump frames 3962-3974 miss
+    (the jump comes too early: distance 20.3 and more); the window is narrow.
+  - *What it does.* The banner "WELCOME TO SECRET EVENT!!" appears over the
+    race for 90 frames (a counter at 0x58253c, `secret-banner`), then the
+    game restarts itself (the routine at ROM 0x39190 resets the task
+    system, scores and timers, sets `course-cursor` to 8) into a **skate
+    park**: an indoor hall with ramps, quarter pipes, a bowl, a rail and
+    boxes under the sponsor boards, the skater starting on a long box, with
+    a 90 s limit (`clock` 5459 frames, a 91 s countdown), `total-time`
+    counting up, and score from tricks only. At TIME UP the Result screen
+    (screen 20) shows Trick Points, Time Points (0) and a class (D, 5,188
+    points, "out of ranking", with random inputs for 90 s). It is a
+    free-skate trick event, not a course with a finish. Pictures (one frame
+    of the banner at 4037, the park at 4117, a bowl at 4777, the Result at
+    10417) are in `out/serve/topskatr/` of the session that made them.
+  - *Not done:* whether a Novice start can arm it (the install is in the
+    Expert branch at ROM 0x3bac4), whether it can be reached at less than
+    race frame 914 with another skater, and the other routine at 0x39410
+    (installed for the other course kind), which is unread.
+  - *Poking the position fails because* the game rewrites the lead point,
+    the velocity and the section counter inside each frame, before the check
+    runs; a poke is applied after the frame, so the check never sees it
+    (writes to `skater-cc` and to the check's task entry persist and work).
+    The event can be started by a poke of the task entry (to ROM 0x39110 for
+    one frame, then back to 0x392d0), but that is a cheat route and was used
+    only to see the event before the inputs were found.
 - *Unconfirmed:* the third course-kind value, 0x5830a4 = 2, has its own
   routines (installed at 0x3ba58) but no input reaches it: the course
   select highlight only takes the values 5 and 0.
@@ -401,7 +448,7 @@ blank EEPROM, as `tour run` starts).
   (screen 170) follow with nothing new offered (checked in pictures at 12450,
   12600, 13000, 14500, 16000, 16300). The EEPROM before and after a
   finish was not compared (unconfirmed).
-- Pokes: `skater-id-6` and `skater-id-7` (partial; they give Ash's body
+- Pokes: none for the event (a position poke cannot work, above); `skater-id-6` and `skater-id-7` (partial; they give Ash's body
   with the hidden board's spray), and `character` / `code-pos-*` /
   `secret-flag` in the value table. Holding the cursor value (0x5dcdfc) at
   6 or 7 does nothing: the game falls back to Ash (the code clamps it).

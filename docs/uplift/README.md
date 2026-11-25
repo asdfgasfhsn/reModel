@@ -20,6 +20,7 @@ for interfaces, and the template. Read it before any one spec.
 |---|---|
 | [interface.md](interface.md) | Every verb, where files live, an asset's status, and three tasks written out |
 | [scenes-and-server.md](scenes-and-server.md) | Named scenes, drawing them without the emulator, live reload, the long-running server |
+| [session-field-notes.md](session-field-notes.md) | What using the live-session server and spines for a real task showed: what worked, what was missing |
 | [asset-identity.md](asset-identity.md) | One identity per artwork, its variants, and the context bundle for each asset |
 | [quality-gates.md](quality-gates.md) | Checks that give numbers, and what "done" means |
 | [pack-project.md](pack-project.md) | The pack as a versioned project: manifest, status, provenance, layers |
