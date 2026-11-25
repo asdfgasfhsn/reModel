@@ -1413,9 +1413,10 @@ made by one replay from power-on and kept in `out/GAME/spines/LABEL/`:
 
 Both are keyed by the tour's line and its `from=` parents' lines (and the
 geometrizer, the file layout and, for the index, the value table), so a changed
-recording or table makes the next use build them again. A change to the
-emulator itself is not seen: delete `out/GAME/spines/` after one that changes
-frames or states.
+recording or table makes the next use build them again. They are also keyed
+by the build (`remodel --version`): a change to the emulator can change every
+state after it, so the first use under a new build replays the spine once
+and replaces them.
 
 `remodel spine index LABEL [--tours FILE]... [--every N] [--index-every K]`
 (`make spine-index SPINE=LABEL`) builds them. `remodel spine where LABEL

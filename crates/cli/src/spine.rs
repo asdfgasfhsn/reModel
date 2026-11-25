@@ -47,10 +47,17 @@ fn fnv(s: &str) -> u64 {
 }
 
 /// What the cache of tour `t` is valid for: the game, the tour's line and
-/// its parents', the file layout and the geometrizer the states were made
-/// with.
+/// its parents', the file layout, the geometrizer the states were made
+/// with, and the build (a change to the emulator can change every state
+/// after it, so another build makes its own checkpoints).
 pub fn key(game: &Game, t: &Tour, native: bool) -> u64 {
-    fnv(&format!("{FORMAT}\n{}\n{}\n{}", game.id, if native { "native" } else { "chip" }, t.spec))
+    fnv(&format!(
+        "{FORMAT}\n{}\n{}\n{}\n{}",
+        remodel_version::VERSION,
+        game.id,
+        if native { "native" } else { "chip" },
+        t.spec
+    ))
 }
 
 fn table_key(table: &[ValueDef]) -> u64 {
