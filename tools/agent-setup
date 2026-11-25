@@ -136,8 +136,24 @@ def cmd_setup(argv):
                 break
     binary = None
     if art:
-        env_bin = subprocess.run([sys.executable, __file__, "bin"], capture_output=True, text=True)
+        # A fresh worktree has no build of its own: a binary the main
+        # checkout pinned for this commit (`make agent-bin` there) serves.
+        # The commit's own folder first; else the newest one built from
+        # it with local changes (ID commit-HASH).
+        commit = sh("git", "rev-parse", "--short=10", "HEAD")
+        bins = os.path.join(main, "out", "bin")
+        shared = ""
+        if commit and os.path.isdir(bins):
+            ids = [commit] + sorted((n for n in os.listdir(bins) if n.startswith(commit + "-")),
+                                    key=lambda n: os.path.getmtime(os.path.join(bins, n)), reverse=True)
+            shared = next((p for p in (os.path.join(bins, n, "remodel") for n in ids) if os.path.isfile(p)), "")
+        own = os.path.join(os.environ.get("CARGO_TARGET_DIR") or "target", "release", "remodel")
+        if main != root and shared and not os.path.isfile(own):
+            env_bin = subprocess.CompletedProcess([], 0, shared + "\n", "")
+        else:
+            env_bin = subprocess.run([sys.executable, __file__, "bin"], capture_output=True, text=True)
         if env_bin.returncode != 0:
+            env_bin.stderr += f"\nagent-setup: or run `make agent-bin` in {main} at this commit"
             print(env_bin.stderr.strip(), file=sys.stderr)
             return env_bin.returncode
         binary = env_bin.stdout.strip()

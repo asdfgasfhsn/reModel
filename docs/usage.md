@@ -329,7 +329,9 @@ read-only copy in `out/bin/COMMIT/remodel` (with a hash added when the tree
 has changes; a folder is never overwritten). `make agent-setup ART=1`
 then points `REMODEL` at it and marks it pinned: `make` targets that would
 build `release` use it as it is. Art work (renders, `studio`, `img`) needs
-nothing else.
+nothing else. A fresh worktree with no build of its own takes the main
+checkout's copy for its commit, so `make agent-bin` once in the main
+checkout serves every worktree at that commit.
 
 ## Versions and releases
 
