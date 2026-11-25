@@ -373,8 +373,6 @@ pub struct Launcher {
     blurs: HashMap<String, egui::TextureHandle>,
     art: Option<crate::art::Loader>,
     logo: Option<egui::TextureHandle>,
-    /// The glyph for "choose" in the hint bar, if the fonts have it.
-    choose: Option<&'static str>,
     /// The ROM folder being edited (no games found).
     pub rom_text: String,
     /// The player's name for network link play, as edited on the Link play page.
@@ -432,7 +430,6 @@ impl Default for Launcher {
             blurs: HashMap::new(),
             art: None,
             logo: None,
-            choose: None,
             rom_text: String::new(),
             player_name: String::new(),
         }
@@ -796,11 +793,6 @@ impl Launcher {
                 let image = egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &image.rgba);
                 self.logo = Some(ctx.load_texture("launcher logo", image, egui::TextureOptions::LINEAR));
             }
-        }
-        if self.choose.is_none() {
-            let font = FontId::new(18.0, theme::bold());
-            let has = ctx.fonts_mut(|f| f.has_glyph(&font, '✥'));
-            self.choose = Some(if has { "✥" } else { "D-pad" });
         }
         if self.cur.is_none() {
             self.empty(ctx, &l, view, &mut actions);
@@ -1717,7 +1709,8 @@ impl Launcher {
     /// was used last.
     fn home_hints(&self) -> Vec<Hint> {
         let grid = self.mode == ViewMode::Grid;
-        let choose = self.choose.unwrap_or("D-pad");
+        // Text, not the four-way-arrow glyph: none of the bundled fonts has it.
+        let choose = "D-pad";
         let hint = |chip, label: &str, click| Hint { chip, label: label.to_string(), click };
         if self.pad_used {
             let mut h = vec![
