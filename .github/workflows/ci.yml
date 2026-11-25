@@ -43,90 +43,14 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          # A fresh cache for the builds without debug info: restoring the
-          # old one (with it) and building beside it ran the runner out of
-          # room, losing every run and its log (2026-11-25).
+          # The cache of the builds without debug info (below).
           prefix-key: v1-nodebug
           workspaces: |
             . -> target
           cache-directories: target/web
-      # Cargo.toml builds the tests' dependencies, model2 and gpu optimised:
-      # a quarter of the test time on a big machine, but on the 4-CPU runner
-      # a cold build that never finished in 40 minutes (2026-11-25; before,
-      # the whole check took 13-15). CI builds them as it did before.
-      - name: Unoptimised test builds
-        run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml <<'EOF'
-          [profile.test.package."*"]
-          opt-level = 0
-          [profile.test.package.remodel-state]
-          opt-level = 0
-          [profile.test.package.remodel-model2]
-          opt-level = 0
-          [profile.test.package.remodel-gpu]
-          opt-level = 0
-          EOF
       - run: make fmt-check
       - run: make lint
-      # Building and running apart, with the disk and memory shown between,
-      # so a runner that dies says at which (runs since 2026-11-25 lost
-      # theirs with no log).
-      - name: Disk and memory before the test build
-        run: df -h / && free -m && du -sh target 2>/dev/null || true
-      - name: Build the tests
-        run: cargo test --workspace --no-run
-        timeout-minutes: 25
-      - name: Disk and memory after the test build
-        run: df -h / && free -m && du -sh target 2>/dev/null || true
-      # First while it's the one that loses the runner (2026-11-25).
-      - name: "Test the CLI: studio"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 studio::'
-        timeout-minutes: 6
-      - name: "Test the CLI: studio img, answer, text"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 studio_img:: studio_answer:: studio_text::'
-        timeout-minutes: 6
-      - name: "Test the CLI: texpack"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack::'
-        timeout-minutes: 6
-      - name: "Test the CLI: texpack_materials"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack_materials::'
-        timeout-minutes: 6
-      - name: "Test the CLI: texpack_upscale, all but the external upscaler"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texpack_upscale:: --skip runs_an_external_upscaler'
-        timeout-minutes: 6
-      - name: "Test the CLI: texpack_upscale, the external upscaler"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 runs_an_external_upscaler'
-        timeout-minutes: 6
-      - name: "Test the CLI: pack gates and checks"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 gates:: pack_check:: pack_lint:: pack_gates:: pack_layers::'
-        timeout-minutes: 6
-      - name: "Test the CLI: texmap, tour, scene, artwork, glyphs, catalogue"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 texmap:: tour:: scene:: artwork:: glyphs:: catalogue::'
-        timeout-minutes: 6
-      - name: "Test the CLI: the rest"
-        run: 'REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 240 cargo test -p remodel -- --test-threads=1 img_cmd:: coverage:: tgp_disasm:: answer:: recomp_crates:: crawl:: soundtrack:: sound_render:: ram:: link_run::'
-        timeout-minutes: 6
-      # One step per heavy crate for now: a runner that dies keeps the
-      # steps before it, so this names the one that kills it (2026-11-25).
-      - name: Test jit
-        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-jit
-        timeout-minutes: 15
-      - name: Test model2
-        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-model2
-        timeout-minutes: 15
-      - name: Test gpu
-        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-gpu
-        timeout-minutes: 10
-      - name: Test play
-        run: REMODEL_GPU_TESTS=1 cargo test -p remodel-play
-        timeout-minutes: 10
-      # These two lost the runner (2026-11-25): one test at a time, so the
-      # log names the test as it starts, and capped (memory, time) so the
-      # test dies before the runner does.
-      - name: Test linknet
-        run: timeout -k 10 480 bash -c 'ulimit -v 12000000; REMODEL_GPU_TESTS=1 cargo test -p remodel-linknet -- --test-threads=1'
-        timeout-minutes: 10
       - run: make test
-        timeout-minutes: 25
+        # A step's own limit; the whole check takes 13-15 minutes.
+        timeout-minutes: 30
       - run: make web-check WASM_RUSTUP=$(command -v rustup)

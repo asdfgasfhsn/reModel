@@ -2678,6 +2678,7 @@ version = "0.14.0"
 dependencies = [
  "adsp2106x",
  "i960",
+ "libc",
  "m68k",
  "mb86234",
  "mb86235",

@@ -28,3 +28,7 @@ remodel-state.workspace = true
 remodel-linknet.workspace = true
 remodel-version.workspace = true
 serde_json = { version = "1", features = ["preserve_order"] }
+
+# Stopping a stalled external tool's process group (texpack_upscale).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

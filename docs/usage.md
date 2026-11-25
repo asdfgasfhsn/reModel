@@ -395,10 +395,11 @@ check` runs (fmt-check, lint, test, web-check) on Ubuntu for every push to
 main and every pull request, except those that only change `docs/`, `site/`
 or Markdown files. The runners have no GPU, so the GPU tests
 skip (they print "no GPU adapter: skipped"); run `make check` here as
-before. The runner is small (4 CPUs, 16 GB): CI builds without debug info,
-and its test builds are unoptimised (Cargo.toml optimises the tests'
-dependencies, `model2` and `gpu`, which pays off here but made a cold CI
-build run past 40 minutes); it gives up after 40 minutes. The release builds aren't signed with a developer certificate (the
+before. The runner is small (4 CPUs, 16 GB): CI builds without debug info
+and gives up after 40 minutes. A test must never signal anything but its
+own children: one that ran `kill -KILL -PID` on a process group took the
+runner's agent down with it on CI, so the run died with no log (it now
+calls `killpg` itself). The release builds aren't signed with a developer certificate (the
 macOS app is ad-hoc signed, which Apple silicon requires, and not
 notarised): the archives' README says how to open them past macOS's
 Gatekeeper and Windows's SmartScreen.

@@ -642,8 +642,17 @@ pub(crate) fn run_watched(tool: &str, cmd: &str, log: &Path, out: &Path, stall: 
         if n != seen {
             (seen, since) = (n, Instant::now());
         } else if since.elapsed().as_secs() >= stall {
+            // The tool's whole process group (it was made the leader of its
+            // own), signalled directly. Not `kill -KILL -PID`: on the CI
+            // runner (Ubuntu's kill) this test took the runner's own agent
+            // down with it, every time (2026-11-25).
             #[cfg(unix)]
-            let _ = Command::new("kill").arg("-KILL").arg(format!("-{}", child.id())).status();
+            if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+                if pgid > 1 {
+                    // SAFETY: killpg only sends a signal; pgid is our child's own group.
+                    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("{tool} wrote nothing for {stall} s: stopped (rerun to retry what is missing)"));
