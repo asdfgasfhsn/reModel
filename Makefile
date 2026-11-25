@@ -662,6 +662,16 @@ scene-check: release ## The scene acceptance test, per SCENE_CHECK_GAMES (defaul
 	done
 	@rm -rf $(SCENE_CHECK_OUT)
 
+# The live-session server (docs/uplift/scenes-and-server.md, "The live session").
+SERVE_OPTS      ?= --no-stdio
+SERVE_CHECK_OUT ?= out/scratch/serve-check
+serve: release ## The live-session server for GAME on a Unix socket, out/serve/GAME.sock (SERVE_OPTS="--marks N --max-step N --sessions N --tours FILE --no-stdio"; an agent starts it itself over stdin/stdout, see docs/uplift-studio.md, "Live sessions"); call it with `remodel call session.open`
+	$(RUN) serve --socket $(SERVE_OPTS)
+serve-check: release ## The server acceptance test on GAME (needs the ROM; a GPU for the render): a real MCP client over stdin/stdout and the socket opens a session at power-on, steps a scene recipe's inputs to its frame (the scene's hash), opens from the scene, marks/steps/restores (the mark's hash), exports a tour that `tour run` replays to the same hash, reads, renders a PNG, calls over the socket and closes; MEASURE=1 also prints the speeds and memory
+	@rm -rf $(SERVE_CHECK_OUT)
+	python3 tools/serve-check.py "$(CAP) $(REMODEL)" $(GAME) $(ROM) $(SERVE_CHECK_OUT) $(if $(MEASURE),--measure)
+	@rm -rf $(SERVE_CHECK_OUT)
+
 # Options for gpu-check, depth-check and pack-check: --bloom N (gpu-check, temporal-probe: bloom), --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), --materials (the pack's material maps: gpu-check draws them from captures with light.bin;

@@ -26,6 +26,10 @@ mod ram;
 mod recomp_crates;
 mod run_ahead;
 mod scene;
+#[cfg(all(feature = "serve", unix))]
+mod serve;
+#[cfg(all(feature = "serve", unix))]
+mod session;
 mod sharc;
 mod sound_render;
 mod soundtrack;
@@ -549,6 +553,11 @@ commands:
                        (ok, code, error, data, warnings, next); exit 0 done,
                        1 a check failed, 2 bad request, 3 missing, 4 internal;
                        `remodel scene` lists the options
+  serve [--socket [PATH]] [--marks N] [--max-step N] [--sessions N]
+                       live game sessions over MCP (JSON-RPC on stdin/stdout
+                       and a Unix socket; docs/uplift-studio.md, \"Live
+                       sessions\"); call VERB name=value runs one verb on a
+                       running server; `remodel call` lists them
   asset check [ID..|--all] [--project DIR] [--from draft|pack]
                        the asset gates on images of a studio project: file,
                        alpha, stale (errors), seam, changed, noise (warnings),
@@ -1138,6 +1147,8 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "pack-flicker" => cmd_pack_flicker(o),
         "studio" => cmd_studio(o),
         "scene" => scene::main(o),
+        #[cfg(all(feature = "serve", unix))]
+        "call" | "session" => serve::call(o),
         "asset" => studio::asset_main(o),
         "pack" => pack_gates::main(o),
         "project" => studio::project_main(o),
@@ -1212,6 +1223,8 @@ fn main() -> ExitCode {
         "latency" => cmd_latency(&o, roms),
         "run" => cmd_run(&o, roms),
         "tour" => tour::run(&o, roms),
+        #[cfg(all(feature = "serve", unix))]
+        "serve" => serve::run(&o, roms),
         "ram" => ram::run(&o, roms),
         "crawl" => crawl::run(&o, roms),
         "link-run" => link_run::run(&o, roms),

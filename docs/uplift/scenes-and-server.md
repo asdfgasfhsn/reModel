@@ -2,10 +2,11 @@
 
 Shared words, roles and rules: [README.md](README.md). Status: the MVP
 slice at the end is built (2026-11-21) and its user-facing parts are in
-[../uplift-studio.md](../uplift-studio.md), "Scenes". The rest (the
-server, `scene what/where/sheet/clip`, `--asset`,
-`--overlay`, facts, the side channel) is still a design, as is the live
-session ("The live session", 2026-11-26).
+[../uplift-studio.md](../uplift-studio.md), "Scenes". The server and the
+live session's slice 2 are built (2026-11-26; "Slice 2 as built" below,
+[../uplift-studio.md](../uplift-studio.md), "Live sessions"). The rest
+(`scene what/where/sheet/clip`, `--asset`, `--overlay`, facts, the side
+channel, `session.what`) is still a design.
 
 **Re-check of "Observed" before building (2026-11-21, main at `32abfdc`).**
 Line numbers have all moved. What changed in substance: the `studio compare`
@@ -248,7 +249,7 @@ The server runs under `tools/capped`. A machine is 50 to 85 MB
 memory plus the pack, up to 512 MB (`docs/play.md:656-668`). One server for
 several agents avoids each holding a pack of its own.
 
-## The live session (design, 2026-11-26; not built)
+## The live session (design, 2026-11-26; slice 2 built the same day)
 
 The server above draws stills of scenes that were made beforehand. The
 **session** extends it to a running game: an agent opens a machine, sets
@@ -394,15 +395,117 @@ it draws. The browser build has no session, so its check is unaffected
    geometrizer (the state hash does not change), and the camera render
    matches photo mode's picture.
 2. `remodel serve` with stills (the server above), then `session.open`,
-   `input`, `step`, `mark`, `restore`, `render` and `export`.
-3. Top Skater's value table, `read`, and `until`. **Partly built**: the
-   table (`crates/romset/src/games/values/topskatr.txt`) and its read
+   `input`, `step`, `mark`, `restore`, `render` and `export`. **Built**
+   (2026-11-26), with `read`, `poke`, `camera`, `forget`, `close`,
+   `until value` and `scene.render` as well: "Slice 2 as built" below.
+3. Top Skater's value table, `read`, and `until`. **Built**: the
+   table (`crates/romset/src/games/values/topskatr.txt`), its read
    from the command line (`remodel ram values TOUR --at F1,F2,...`,
-   docs/uplift-studio.md, "Named values"). The `session.read` verb
-   and `until` wait for the server.
+   docs/uplift-studio.md, "Named values"), and `session.read` and
+   `until value NAME OP V` in the server. `until screen NAME` is not
+   built (the screen word does not name every screen).
 4. Spines from the person's recordings, and the `coverage` report counting
    the branches.
 5. `moves learn` and steps by move.
+
+### Slice 2 as built (2026-11-26)
+
+`remodel serve --game G [--socket [PATH]] [--marks N] [--max-step N]
+[--sessions N] [--tours FILE] [--no-stdio]` and `remodel call VERB name=value
+...`; how to connect is in [../uplift-studio.md](../uplift-studio.md), "Live
+sessions". The code is `crates/cli/src/session.rs` (the verb table and the
+sessions) and `crates/cli/src/serve.rs` (MCP, the transports, the command
+line); `crates/cli/src/scene.rs` gained `draw_frame` (a frame in hand, not a
+capture on disk) and `render_scene`, which `scene render` and the server both
+use. It is behind the `serve` cargo feature of the `remodel` crate (on by
+default, unix only); the browser build does not use that crate.
+
+**The MCP library question.** The messages are written over `serde_json`, not
+taken from a library. A server needs `initialize`, `notifications/initialized`,
+`ping`, `tools/list` and `tools/call`: about 100 lines. The Rust MCP libraries
+bring an async runtime and an HTTP stack (tokio, hyper or axum) that reModel
+has nowhere else, and follow a protocol that has had three dated revisions in
+two years, of which the part used here did not change; carrying them would cost
+build time and a dependency set for no function this server uses (no HTTP, no
+resources, no prompts, no sampling). The server answers with the client's
+protocol revision when it knows it (2025-06-18, 2025-03-26, 2024-11-05) and
+otherwise the newest. One line is one message, on standard input and output and
+on the socket; requests are handled one at a time, in order, whichever
+connection sends them.
+
+**One table.** `session::VERBS` lists each verb's name, text and arguments
+(name, type, required). `tools/list` is generated from it (the JSON schema of
+each tool), argument checks run from it (unknown names with the near ones,
+wrong types, missing required ones, all as answers with code 2), and
+`remodel call` builds its arguments from it (`name=value`, a list by repeating
+the name). A test calls every verb through the command line's path and the
+tools' and checks they validate the same. Every tool answers with the shared
+envelope (`ok`, `code`, `error`, `data`, `warnings`, `next`) as
+`structuredContent`, and the same text as `content`; `isError` is `!ok`. A
+wrong call is a JSON-RPC error only when it is not a tool call (parse error
+-32700, bad message -32600, unknown method -32601, unknown tool or malformed
+`params` -32602); a refused argument is an answer with code 2, as for every
+other command.
+
+**Deviations from the design above.**
+
+- **When inputs apply.** The design left it open. What `session.input` (or a
+  step's `inputs`) holds applies to the frame the session is on, the one about
+  to run, and every frame after, as a tour's script does. The frame the session
+  *started* on keeps the inputs of what it started from: a scene recipe's, a
+  tour's up to its branch point, none at power-on (all released). That is what
+  makes the log a branch tour: a session's own terms start after the branch
+  point, which the tour format requires. A session that holds `start` and
+  steps 30 frames runs 30 frames with `start`.
+- **The state hash.** It is the machine's state with the current frame's
+  inputs applied, as `tour run` ends. It equals a scene's recorded hash at the
+  scene's frame (a scene's is taken a moment before that frame's inputs; only a
+  poke covering the frame can tell them apart).
+- **`from: scene:NAME`** loads the scene's `state.save` (about 110 ms) and
+  checks it against the recorded hash (a mismatch is a warning: the scene is
+  stale). A scene is not a tour, so the exported line carries the recipe's own
+  inputs up to the scene's frame instead of a `from=`; it replays from
+  power-on to the same hash.
+- **Marks** keep their own copy of the log, so any mark can be restored at any
+  time, not only the newest ones (the design cut the log to the mark; the
+  result is the same for the mark restored). A mark's machine is made on
+  first use and kept for the next mark after a `forget`.
+- **Limits.** `--sessions N` (default 4) is new: the design left a cap open.
+  `--marks` names the oldest mark when it refuses. `session.step` refuses over
+  `--max-step`, not truncating.
+- **`session.camera`** takes the words of `scene render --camera` as one
+  string (`orbit=30,tilt=-8`; `reset` clears). A picture with a camera needs
+  the frame's display list: a step records it for its last three frames (as
+  `scene make` does), so it is there after any step and missing after `open`
+  or `restore` until the next step (the render says so, code 3). The game's
+  geometrizer needs a native implementation (the chip-run games have none).
+- **Not built:** `session.what`; `until screen NAME`; `session.export`'s
+  `scene: NAME`; a cache of opened packs (each render builds its pack layers
+  again; the GPU, the looks and the machines are kept warm); light-gun aim
+  in the log (the export says so in a warning); a named pipe on Windows.
+- **Answers the open questions.** `step` does not draw: drawing is its own
+  verb, so an agent draws when it wants a picture. A cap on sessions per server
+  exists (`--sessions`); how many agents share one server is for later.
+
+**Measured** (2026-11-26, Top Skater, interpreter, release build, this machine
+with an 8 GB NVIDIA GPU; `make serve-check MEASURE=1`):
+
+| | |
+|---|---|
+| Step, no drawing | 1,630 frames/s (27 times game speed), in 600-frame steps |
+| Step with a 1080p picture after every 10 frames | 55 frames/s, 18 ms a frame, 180 ms a cycle |
+| `session.render`, 1080p, warm (GPU started) | 152 ms round trip: draw 32 ms (including upload and read-back), PNG write 126 ms |
+| `scene.render`, 1080p, warm | 158 ms: draw 36 ms, write 122 ms |
+| `scene.render`, 540p, warm | 47 ms |
+| First render (GPU start) | adds the GPU's start, once per server (it ran inside the 267 ms of the first 540p picture) |
+| `session.open`, power-on / from a scene | 7 ms / 110 ms |
+| `session.mark` | 51 to 64 ms: the first copy into a machine of its own moves all its memory; `copy_from` skips what neither machine wrote when a copy repeats into the same one |
+| `session.restore` | 5 ms |
+| Memory | a session 76 MB, each mark 73 MB; the server at the end of the run (GPU, two sessions' worth, eight marks) 1,084 MB |
+
+The warm still misses the under 100 ms target at 1080p because of the PNG
+(126 of 152 ms: the encoder, not the GPU); at 540p it meets it. A smaller or
+faster encode, or a crop, is the lever.
 
 ### Open questions (session)
 

@@ -215,7 +215,7 @@ pub fn pokes(o: &crate::Opts) -> ExitCode {
 
 /// A named value's raw bytes as the table says they read: an unsigned or
 /// sign-extended integer, or an IEEE single (null if not finite).
-fn decode(def: &tour::ValueDef, raw: u32) -> Value {
+pub(crate) fn decode(def: &tour::ValueDef, raw: u32) -> Value {
     match def.kind {
         tour::Kind::Unsigned => json!(raw),
         tour::Kind::Signed => {

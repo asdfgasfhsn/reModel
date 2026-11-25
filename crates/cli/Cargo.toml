@@ -9,6 +9,13 @@ license.workspace = true
 name = "remodel"
 path = "src/main.rs"
 
+[features]
+# `remodel serve` and `remodel call`: live game sessions over MCP on standard
+# input and output and a Unix socket (docs/uplift/scenes-and-server.md). Native
+# only (unix); the browser build does not use this crate.
+default = ["serve"]
+serve = []
+
 [dependencies]
 i960.workspace = true
 remodel-romset.workspace = true

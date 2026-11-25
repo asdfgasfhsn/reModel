@@ -207,7 +207,7 @@ pub fn scenes_dir(game: &Game) -> PathBuf {
 }
 
 /// `scene.txt`: `key = value` lines.
-fn read_meta(dir: &Path) -> Option<BTreeMap<String, String>> {
+pub(crate) fn read_meta(dir: &Path) -> Option<BTreeMap<String, String>> {
     let text = std::fs::read_to_string(dir.join("scene.txt")).ok()?;
     Some(
         text.lines()
@@ -448,16 +448,16 @@ pub const DISPLAY_FILE: &str = "display.bin";
 /// How many frames before a scene's the display list is recorded from.
 const DISPLAY_LEAD: u64 = 3;
 
-struct Reached {
-    machine: model2::Machine,
-    hash: u64,
+pub(crate) struct Reached {
+    pub(crate) machine: model2::Machine,
+    pub(crate) hash: u64,
     script: InputScript,
 }
 
 /// Run the recipe from power-on, with a fresh EEPROM and the machine of the
 /// command line's geometrizer mode, to the start of its frame; the hash is
 /// taken as `--save-state` saves it, before that frame's inputs.
-fn run_to(roms: &RomSet, r: &Recipe, display: bool) -> Result<Reached, String> {
+pub(crate) fn run_to(roms: &RomSet, r: &Recipe, display: bool) -> Result<Reached, String> {
     let script = InputScript::parse(&r.input, &roms.game.controls)?;
     let mut m = crate::machine(roms);
     let mut last = 0;
@@ -691,6 +691,14 @@ pub struct DrawOpts {
     /// The scene seen from another camera (photo mode's words,
     /// `model2::photo::Spec`), from its `display.bin`.
     pub camera: Option<String>,
+    /// The look drawn with (a session picks its own; the scene commands
+    /// pass the command line's, [`global_look`]).
+    pub look: Option<std::sync::Arc<model2::look::Look>>,
+}
+
+/// The command line's `--look`, as a draw option.
+pub fn global_look() -> Option<std::sync::Arc<model2::look::Look>> {
+    crate::LOOK.get().map(|l| std::sync::Arc::new(l.clone()))
 }
 
 pub struct Picture {
@@ -743,28 +751,21 @@ fn crop_picture(p: Picture, view: &View, c: [i64; 4]) -> Result<Picture, String>
 }
 
 /// What a scene's display list gives for a camera.
-struct Posed {
-    stream: Vec<u32>,
-    side: Option<model2::light::Frame>,
-    near: f32,
-    hud: bool,
-    warnings: Vec<String>,
+pub struct Posed {
+    pub stream: Vec<u32>,
+    pub side: Option<model2::light::Frame>,
+    pub near: f32,
+    pub hud: bool,
+    pub warnings: Vec<String>,
 }
 
-/// The scene's frame seen from the camera `spec` (`model2::photo::Spec`)
-/// by the native geometrizer, from `display.bin` alone: no ROM, no machine.
-/// Exit 3 (something missing) when the scene has no display list.
-fn pose(scene_dir: &Path, spec: &str, lit: bool) -> Result<Posed, Answer> {
-    let name = scene_name(scene_dir);
-    let bytes = read_display(scene_dir)?;
-    let frame = model2::smooth::Frame::from_bytes(&bytes).map_err(|e| {
-        Answer::fail(Code::Missing, format!("scene `{name}`: {DISPLAY_FILE}: {e}"))
-            .next(format!("remodel scene make {name} --replace   (needs the ROM)"))
-    })?;
+/// A frame's display list seen from the camera `spec` (`model2::photo::Spec`)
+/// by the native geometrizer: no ROM, no machine.
+pub fn pose_frame(frame: &model2::smooth::Frame, spec: &str, lit: bool) -> Result<Posed, Answer> {
     let scale = model2::photo::scene_scale(frame.plan.transforms());
     let spec = model2::photo::Spec::parse(spec, scale)
         .map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
-    let (stream, side) = model2::photo::render(&frame, &spec.camera, 1.0, lit);
+    let (stream, side) = model2::photo::render(frame, &spec.camera, 1.0, lit);
     Ok(Posed { stream, side, near: spec.near_plane(scale), hud: spec.hud, warnings: spec.warnings })
 }
 
@@ -797,8 +798,39 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
     let frame_dir =
         capture_frame_dir(&cap).ok_or_else(|| missing(format!("scene `{}` has no capture", scene_name(scene_dir))))?;
     let rom = capture::load_texture_rom(&cap).map_err(|e| missing(format!("{}: {e}", cap.display())))?;
-    let mut f =
+    let f =
         Frame::load(&frame_dir).map_err(|e| Answer::fail(Code::Internal, format!("{}: {e}", frame_dir.display())))?;
+    let display = match &o.camera {
+        Some(_) => Some(display_frame(scene_dir)?),
+        None => None,
+    };
+    let mut d = draw_frame(game, f, &rom, display.as_ref(), o, gpu)?;
+    d.millis = started.elapsed().as_secs_f64() * 1e3;
+    Ok(d)
+}
+
+/// The scene's display list, parsed.
+fn display_frame(scene_dir: &Path) -> Result<model2::smooth::Frame, Answer> {
+    let name = scene_name(scene_dir);
+    let bytes = read_display(scene_dir)?;
+    model2::smooth::Frame::from_bytes(&bytes).map_err(|e| {
+        Answer::fail(Code::Missing, format!("scene `{name}`: {DISPLAY_FILE}: {e}"))
+            .next(format!("remodel scene make {name} --replace   (needs the ROM)"))
+    })
+}
+
+/// Draw a frame in hand: a scene's capture ([`draw`]) or a live machine's
+/// ([`Frame::grab`], a session). `display` is the frame's display list,
+/// which `o.camera` needs. Nothing here touches a machine.
+pub fn draw_frame(
+    game: &Game,
+    mut f: Frame,
+    rom: &[u16],
+    display: Option<&model2::smooth::Frame>,
+    o: &DrawOpts,
+    gpu: &mut gpu::Renderer,
+) -> Result<Drawn, Answer> {
+    let started = Instant::now();
     let view = o.view.with_hud_windows(game.hud_windows, game.hud_element_windows);
     let light = crate::light_options(game);
     let mut side = f.light_frame();
@@ -807,11 +839,14 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
     // near plane and HUD.
     let (mut near, mut hide_hud, mut warnings) = (0.0, false, Vec::new());
     if let Some(spec) = &o.camera {
-        let posed = pose(scene_dir, spec, light.as_ref().is_some_and(|l| l.runs()))?;
+        let Some(display) = display else {
+            return Err(Answer::fail(Code::Missing, "this frame has no display list, so no free camera"));
+        };
+        let posed = pose_frame(display, spec, light.as_ref().is_some_and(|l| l.runs()))?;
         (f.stream, side, near, hide_hud) = (posed.stream, posed.side, posed.near, !posed.hud);
         warnings = posed.warnings;
     }
-    let src = f.sources(&rom);
+    let src = f.sources(rom);
     let mut polys = raster::build_shaded_near(&f.stream, &src, side.as_ref(), light.as_ref(), near);
     video::HudLayout::new(&f.tiles, &f.palette, &view).anchor(&mut polys, &view);
     let mut placed = raster::place(&mut polys, &view);
@@ -870,7 +905,7 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
     } else {
         gpu.set_pack(None);
     }
-    gpu.set_look(crate::LOOK.get().map(|l| std::sync::Arc::new(l.clone())));
+    gpu.set_look(o.look.clone());
     gpu.set_overlay_miss(crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed));
     // What the pack's lookups gave, by texture: the pack log, in scratch.
     let log_path = packed.then(|| {
@@ -971,8 +1006,14 @@ pub fn pack_coverage(game: &'static Game, project: Option<&Path>, pack: &Path) -
     let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
     let mut out = Vec::new();
     for r in ready {
-        let o =
-            DrawOpts { pack: vec![pack.to_path_buf()], crop: None, against: true, view: View::native(), camera: None };
+        let o = DrawOpts {
+            pack: vec![pack.to_path_buf()],
+            crop: None,
+            against: true,
+            view: View::native(),
+            camera: None,
+            look: global_look(),
+        };
         let d = draw(game, &root.join(&r.name), &o, &mut gpu)?;
         out.push((r.name.clone(), d.changed_share.unwrap_or(0.0), d.drawn_share));
     }
@@ -1031,12 +1072,10 @@ pub fn parse_view(s: Option<&str>) -> Result<View, Answer> {
 }
 
 fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer, String), Answer> {
-    let started = Instant::now();
     let rs = load_recipes(game, a)?;
     let [name] = a.pos.as_slice() else {
         return Err(Answer::fail(Code::BadRequest, "scene render: which scene? NAME").next("remodel scene list"));
     };
-    let recipe = find_recipe(&rs, name)?;
     let against = match a.one("--against") {
         None => false,
         Some("original") => true,
@@ -1044,21 +1083,97 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
             return Err(Answer::unknown("--against target", other, &["original".to_string()]));
         }
     };
-    let crop = a.one("--crop").map(parse_crop).transpose()?;
-    let view = parse_view(a.one("--view"))?;
-    let camera = a.one("--camera").map(str::to_string);
-    if let Some(spec) = &camera {
-        // A wrong word is a wrong request whatever the scene holds.
-        model2::photo::Spec::parse(spec, 1.0).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
-    }
-    // The overlay (the global `--overlay`, which `main` has parsed and
-    // removed from the arguments): only `miss` is built.
-    let overlay = crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed).then_some("miss");
     let mut packs: Vec<PathBuf> =
         a.vals.get("--pack").map(|v| v.iter().map(PathBuf::from).collect()).unwrap_or_default();
     if packs.is_empty() {
         packs.extend(o.pack_dir.clone());
     }
+    let req = SceneRender {
+        name: name.clone(),
+        against,
+        crop: a.one("--crop").map(parse_crop).transpose()?,
+        view: parse_view(a.one("--view"))?,
+        camera: a.one("--camera").map(str::to_string),
+        packs,
+        look: global_look(),
+        // The overlay (the global `--overlay`, which `main` has parsed and
+        // removed from the arguments): only `miss` is built.
+        overlay: crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed),
+    };
+    // `--out DIR` is the CLI global option that says where `run` writes.
+    let out = crate::OUT_DIR.get().cloned().unwrap_or_else(|| data_dir().join(game.id).join("scene-render"));
+    render_scene(game, &rs, &req, &out, &mut |dir, opts| {
+        let t_gpu = Instant::now();
+        let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
+        let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1e3;
+        Ok((draw(game, dir, opts, &mut gpu)?, gpu_ms))
+    })
+}
+
+/// Draws a scene's capture: the GPU's start in ms with the picture.
+pub type Drawer<'a> = dyn FnMut(&Path, &DrawOpts) -> Result<(Drawn, f64), Answer> + 'a;
+
+/// What `scene render` is asked for.
+pub struct SceneRender {
+    pub name: String,
+    pub against: bool,
+    pub crop: Option<[i64; 4]>,
+    pub view: View,
+    pub camera: Option<String>,
+    pub packs: Vec<PathBuf>,
+    pub look: Option<std::sync::Arc<model2::look::Look>>,
+    /// `--overlay miss`.
+    pub overlay: bool,
+}
+
+/// The pictures of a drawn frame, written to `out` as `STEM[-original|-pack|-sheet].png`;
+/// the paths by kind (`picture`, and `original` and `sheet` when drawn against the original).
+pub fn write_drawn(out: &Path, stem: &str, d: &Drawn) -> Result<BTreeMap<String, String>, String> {
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut files = BTreeMap::new();
+    let mut jobs: Vec<(PathBuf, Picture)> = Vec::new();
+    let mut put = |k: &str, suffix: &str, p: Picture| {
+        let path = out.join(format!("{stem}{suffix}.png"));
+        files.insert(k.to_string(), path.display().to_string());
+        jobs.push((path, p));
+    };
+    let copy = |p: &Picture| Picture { width: p.width, height: p.height, rgb: p.rgb.clone() };
+    let sheet = d.original.as_ref().map(|orig| side_by_side(orig, &d.picture));
+    if let (Some(orig), Some(sheet)) = (d.original.as_ref(), sheet) {
+        put("original", "-original", copy(orig));
+        put("picture", "-pack", copy(&d.picture));
+        put("sheet", "-sheet", sheet);
+    } else {
+        put("picture", "", copy(&d.picture));
+    }
+    // The PNGs are encoded side by side: at 1080p each costs about 0.2 s.
+    let failed: Vec<String> = std::thread::scope(|sc| {
+        let hs: Vec<_> = jobs.iter().map(|(path, p)| sc.spawn(move || save_png(path, p))).collect();
+        hs.into_iter().filter_map(|h| h.join().unwrap_or_else(|_| Err("png thread panicked".into())).err()).collect()
+    });
+    match failed.into_iter().next() {
+        Some(e) => Err(e),
+        None => Ok(files),
+    }
+}
+
+/// Draw a scene's capture (`scene render`), through `drawer`, which makes
+/// the GPU (or has one kept warm, the server's) and says how long that took.
+pub fn render_scene(
+    game: &'static Game,
+    rs: &[Recipe],
+    req: &SceneRender,
+    out: &Path,
+    drawer: &mut Drawer,
+) -> Result<(Answer, String), Answer> {
+    let started = Instant::now();
+    let recipe = find_recipe(rs, &req.name)?;
+    let (camera, crop, packs) = (&req.camera, req.crop, &req.packs);
+    if let Some(spec) = camera {
+        // A wrong word is a wrong request whatever the scene holds.
+        model2::photo::Spec::parse(spec, 1.0).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
+    }
+    let overlay = req.overlay.then_some("miss");
     if overlay.is_some() && packs.is_empty() {
         return Err(Answer::fail(
             Code::BadRequest,
@@ -1074,46 +1189,20 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
     if camera.is_some() {
         read_display(&dir)?;
     }
-    // `--out DIR` is the CLI global option that says where `run` writes.
-    let out = crate::OUT_DIR.get().cloned().unwrap_or_else(|| data_dir().join(game.id).join("scene-render"));
-    std::fs::create_dir_all(&out).map_err(|e| Answer::fail(Code::Internal, format!("{}: {e}", out.display())))?;
-    let t_gpu = Instant::now();
-    let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
-    let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1e3;
-    let opts = DrawOpts { pack: packs.clone(), crop, against, view, camera: camera.clone() };
-    let d = draw(game, &dir, &opts, &mut gpu)?;
+    let opts = DrawOpts {
+        pack: packs.clone(),
+        crop,
+        against: req.against,
+        view: req.view,
+        camera: camera.clone(),
+        look: req.look.clone(),
+    };
+    let (d, gpu_ms) = drawer(&dir, &opts)?;
     // Render output is regenerated every time (the same files for the same
     // inputs), so it is replaced in place; drafts and approved images are
     // never written here.
-    let stem = &recipe.name;
     let t_write = Instant::now();
-    let mut files = BTreeMap::new();
-    let mut jobs: Vec<(PathBuf, Picture)> = Vec::new();
-    let mut put = |k: &str, suffix: &str, p: Picture| {
-        let path = out.join(format!("{stem}{suffix}.png"));
-        files.insert(k.to_string(), path.display().to_string());
-        jobs.push((path, p));
-    };
-    let sheet = d.original.as_ref().map(|orig| side_by_side(orig, &d.picture));
-    if let (Some(orig), Some(sheet)) = (d.original.as_ref(), sheet) {
-        put("original", "-original", Picture { width: orig.width, height: orig.height, rgb: orig.rgb.clone() });
-        put(
-            "picture",
-            "-pack",
-            Picture { width: d.picture.width, height: d.picture.height, rgb: d.picture.rgb.clone() },
-        );
-        put("sheet", "-sheet", sheet);
-    } else {
-        put("picture", "", Picture { width: d.picture.width, height: d.picture.height, rgb: d.picture.rgb.clone() });
-    }
-    // The PNGs are encoded side by side: at 1080p each costs about 0.2 s.
-    let failed: Vec<String> = std::thread::scope(|sc| {
-        let hs: Vec<_> = jobs.iter().map(|(path, p)| sc.spawn(move || save_png(path, p))).collect();
-        hs.into_iter().filter_map(|h| h.join().unwrap_or_else(|_| Err("png thread panicked".into())).err()).collect()
-    });
-    if let Some(e) = failed.into_iter().next() {
-        return Err(Answer::fail(Code::Internal, e));
-    }
+    let files = write_drawn(out, &recipe.name, &d).map_err(|e| Answer::fail(Code::Internal, e))?;
     let write_ms = t_write.elapsed().as_secs_f64() * 1e3;
     let ms = started.elapsed().as_secs_f64() * 1e3;
     let data = json!({
@@ -1173,6 +1262,10 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
 mod tests {
     use super::*;
 
+    fn pose(dir: &Path, spec: &str, lit: bool) -> Result<Posed, Answer> {
+        pose_frame(&display_frame(dir)?, spec, lit)
+    }
+
     #[test]
     fn the_drawn_share_counts_polygon_area_of_replaced_textures() {
         let log = "# header\nF\t0\n\
@@ -1216,6 +1309,7 @@ mod tests {
             against: false,
             view: View::new(540, 16.0 / 9.0, video::Hud::Edges),
             camera: None,
+            look: None,
         };
         let count = |d: &Drawn| d.picture.rgb.chunks(3).filter(|p| **p == [255, 0, 255]).count();
         let plain = draw(game(), &dir, &opts(vec![]), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
@@ -1325,6 +1419,7 @@ mod tests {
             against: false,
             view,
             camera: camera.map(str::to_string),
+            look: None,
         };
         let plain = draw(game(), &dir, &opts(None), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
         let same = draw(game(), &dir, &opts(Some("hud=on")), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));

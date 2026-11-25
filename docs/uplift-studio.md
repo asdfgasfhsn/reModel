@@ -1315,9 +1315,82 @@ tiles, no agent steering the crawler, no menu entry for the recorder (the
 flag only), no screen comparison in the crawler
 ([uplift/content-coverage.md](uplift/content-coverage.md), "Open questions").
 
+## Live sessions
+
+`remodel serve` is a long-running server with live game sessions: an agent
+opens a machine, sets its inputs, steps it, reads named values, keeps points
+and returns to them, draws what it sees and writes what it did as a tour. The
+game advances only when told to step (lockstep), so an agent can look at a
+frame, think, and send the next 30 frames of input. It speaks MCP (JSON-RPC,
+one message a line) on standard input and output, and with `--socket` on a
+Unix socket (default `out/serve/GAME.sock`, mode 0600). It never opens a
+network port. Design, deviations and measurements:
+[uplift/scenes-and-server.md](uplift/scenes-and-server.md), "Slice 2 as built".
+
+**Connecting.** An MCP client starts the server itself, over standard input and
+output, through the memory cap. For Claude Code, a `.mcp.json` (project
+folder) entry:
+
+```json
+{
+  "mcpServers": {
+    "remodel": {
+      "command": "tools/capped",
+      "args": ["target/release/remodel", "--game", "topskatr", "--rom", "rom", "serve", "--marks", "8"]
+    }
+  }
+}
+```
+
+(`make release` builds the binary; add `--socket` to also listen on
+`out/serve/topskatr.sock`.) By hand, `make serve GAME=topskatr` runs the
+server on the socket alone, and the same verbs are commands: `remodel call
+session.open`, `remodel call session.step frames=60 inputs=start`, `remodel
+call session.read names=clock names=speed --json`. A command takes the verb's
+arguments as `name=value`, a list by repeating the name, and prints the same
+envelope the tool gives (`--json`; exit 0 done, 2 bad request, 3 missing, 4
+internal). `--socket PATH` names another socket. Several clients may use one
+server; it handles one request at a time.
+
+**The verbs** (generated from one table, so the tool list, the argument checks
+and the command line cannot drift; `remodel call --help` lists them):
+
+| Verb | Does |
+|---|---|
+| `session.open` | `from`: `power-on` (default), `scene:NAME` (a made scene's state, about 0.1 s), `tour:LABEL@FRAME`. Answers the session id, frame and state hash |
+| `session.input` | Holds inputs from the current frame on, by the game's input names (`start`, `punch2`), analog channels (`steer=0x80`) and guns (`gun1=10:20`); an empty list releases all |
+| `session.step` | Runs `frames` (at most `--max-step`, default 3600), optionally with `inputs` for just those frames and `until` (`value NAME OP V`, OP `gt ge lt le eq ne`, a name of the game's value table; or `frames N`) |
+| `session.mark` / `restore` / `forget` | Named copies of the machine (at most `--marks`, default 16, each about 73 MB). `restore` returns the machine, the log and the held inputs |
+| `session.read` | Named values (the table of "Named values"), or raw `ADDR[:b\|w\|l]`; no names: all of the table |
+| `session.poke` | Holds a value in RAM for some frames (a poke-table name or `ADDR:VALUE[:b\|w\|l]`); logged, and the exported tour is marked as a cheat run |
+| `session.camera` | Photo mode's camera words for the session's pictures (`orbit=30,tilt=-8,z=1`); render state only, never in the log |
+| `session.render` | Draws the current frame (`view`, `pack` layers, `look`, `crop`, `against`, `camera`) to `out/serve/GAME/NAME.png` and answers the path, size, polygon count and, against the original, the changed share |
+| `session.export` | The log as a branch tour line, `LABEL\|Nf\|from=SPINE@F INPUTS`; with `file`, written to `out/serve/GAME/FILE.tours`. `remodel tour run LABEL --tours FILE` replays it to the same state hash |
+| `session.close` | Frees the machine and its marks |
+| `scene.render` | A still of a made scene (`scene render`'s arguments), with the GPU kept warm |
+
+A session holds inputs that apply to the frame it is on, so the frame it
+started from (the scene's, or the tour's branch point) keeps its own. The
+`session` argument may be left out while only one session is open. The server
+takes the `render` lock (`tools/lock`) only while the GPU draws; run it under
+`tools/capped` as above. `--sessions N` caps the sessions open (default 4),
+`--tours FILE` adds a project's tours for `tour:` starts, and `--out DIR`
+(before `serve`) moves the pictures and exported tours.
+
+**Checking it.** `make serve-check` starts the binary and plays an MCP client
+against it on a real game: initialize, the tool list, a session opened at
+power-on and stepped along a scene's recipe ends on the scene's recorded hash,
+and so does one opened from the scene; mark, step, restore gives the mark's
+hash; the exported tour, run by `tour run`, gives the session's hash; read;
+render writes a PNG; `remodel call` over the socket gives the same envelope;
+closing standard input stops the server and removes the socket (`MEASURE=1`
+prints the speeds and memory). Without ROMs the unit tests cover the protocol,
+the verb table, argument validation and the limits; the ROM tests
+(`session::tests`) skip silently without them.
+
 ## What is built, what comes later
 
-Built: the design above; named scenes and `scene render` (above); `remodel texmap` and `make texmap` (ID images,
+Built: the design above; named scenes and `scene render` (above); the live-session server (`remodel serve`, "Live sessions"); `remodel texmap` and `make texmap` (ID images,
 texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
 text to tiles, surface variants, artworks (`art_` images, colour ramps, `bake`), the seam check, the quality gates (`asset check`, `pack check`), projects (`project init/status/approve/reject`, `pack build`, `pack resolve`, stacked packs), context bundles (`asset bundle`, `asset show`) and before and after

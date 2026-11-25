@@ -15,6 +15,20 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- `remodel serve`: a long-running server with live game sessions, speaking MCP
+  (JSON-RPC) on standard input and output and, with `--socket`, on a Unix
+  socket (`out/serve/GAME.sock`, mode 0600; no network port). An agent opens
+  a machine of its own (`session.open` from power-on, a scene or a tour at a
+  frame), holds inputs, steps it (only then does the game advance), reads
+  named values, pokes, keeps and restores marks, moves photo mode's camera,
+  draws the frame to a PNG and exports what it did as a branch tour that
+  replays to the same state hash; `scene.render` draws a scene's still with
+  the GPU kept warm. The verbs are one table, so the MCP tools and the
+  command line (`remodel call VERB name=value`) share their arguments and
+  answers (the usual envelope). Limits: `--marks`, `--max-step`,
+  `--sessions`. `make serve` and `make serve-check` (docs/uplift-studio.md,
+  "Live sessions"). The `serve` cargo feature of the CLI crate (on by
+  default, unix only) holds it; no emulation or state hash changes.
 - `scene render --camera SPEC` (and `make scene-render CAMERA=...`) draws a
   scene from another camera with no ROM and no running game, using photo
   mode's camera words (`orbit`, `tilt`, `yaw`, `pitch`, `roll`, `x`, `y`,
