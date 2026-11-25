@@ -4,7 +4,8 @@ Shared words, roles and rules: [README.md](README.md). Status: the MVP
 slice at the end is built (2026-11-21) and its user-facing parts are in
 [../uplift-studio.md](../uplift-studio.md), "Scenes". The rest (the
 server, `scene what/where/sheet/clip`, `--asset`,
-`--overlay`, facts, the side channel) is still a design.
+`--overlay`, facts, the side channel) is still a design, as is the live
+session ("The live session", 2026-11-26).
 
 **Re-check of "Observed" before building (2026-11-21, main at `32abfdc`).**
 Line numbers have all moved. What changed in substance: the `studio compare`
@@ -245,6 +246,168 @@ The server runs under `tools/capped`. A machine is 50 to 85 MB
 (`docs/photo-mode.md:333-336`); the renderer holds 91 to 483 MiB of GPU
 memory plus the pack, up to 512 MB (`docs/play.md:656-668`). One server for
 several agents avoids each holding a pack of its own.
+
+## The live session (design, 2026-11-26; not built)
+
+The server above draws stills of scenes that were made beforehand. The
+**session** extends it to a running game: an agent opens a machine, sets
+its inputs, steps it, moves photo mode's camera, reads named values, keeps
+and returns to points, and draws what it sees, all over the same
+connection. It is the server's third role, beside stills and clips, and
+uses the same process, verb table and answers.
+
+**Lockstep.** A session advances only when it is told to step. Nothing
+runs in real time, so an agent can look at a frame, think as long as it
+needs and send the next 30 frames of input. A language model can play
+this way. It cannot keep up with a game running at 60 frames a second.
+
+### Where it starts and what it keeps
+
+`session.open` starts a machine from power-on, from a scene's state, or
+from a tour at a frame (`from=LABEL@FRAME`, as a branch tour does). Each
+session has:
+
+- the machine, which nothing else uses (the draw-only rule under
+  "Testing");
+- its **log**, which is every input from the start point onwards. The log
+  is a branch tour by construction, so `session.export` writes it as one
+  line (`LABEL|LENGTH|from=SPINE@F INPUTS`) that replays to the same state
+  hash. Pokes are logged as `poke=` terms and mark the tour as the tour
+  format already does;
+- **marks**, which are named copies of the machine (`Machine::copy_from`,
+  about 1 ms; `crates/model2/src/runahead.rs`). `session.restore` returns
+  to a mark and cuts the log back to that mark's frame. A mark costs one
+  machine (50 to 85 MB), so a session holds at most `--marks N` of them
+  (default 16) and refuses more, naming the oldest;
+- the **camera**, the pack and the look used for its pictures. These are
+  render state only, so they never reach the log.
+
+### Verbs
+
+| Verb | Does | Answer's data |
+|---|---|---|
+| `session.open` | `from: power-on \| scene:NAME \| tour:LABEL@FRAME`, `game` | session id, frame, state hash |
+| `session.input` | Sets buttons (by the game's input names: `start`, `punch2`, ...) and analog channels (`steer=0x80`), held until changed | the inputs now held |
+| `session.step` | `frames: N`, optional `inputs` for just those frames, `until` (below) | frame, state hash, the frames run, why it stopped |
+| `session.mark` / `restore` / `forget` | Keeps, returns to, or drops a named point | marks and their frames |
+| `session.read` | Named values (below), or raw `ADDR[:b\|w\|l]` | values |
+| `session.poke` | Holds a value as a tour's `poke=` does | the poke, logged |
+| `session.camera` | Photo mode's camera: `back`, `orbit`, `tilt`, `yaw`, `pitch`, `x`/`y`/`z`, `fov`, `reset` (the words of `--photo`, `docs/photo-mode.md`) | camera now |
+| `session.render` | Draws the current frame: `view`, `pack`, `look`, `hud`, `against original`, `crop` | picture paths, the scene render answer's per-asset report |
+| `session.what` | The assets under a point or box of the current frame (`scene what`) | assets |
+| `session.export` | Writes the log as a tour line, optionally `scene: NAME` (a scene at the current frame) | tour line, file |
+| `session.close` | Frees the machine and its marks | |
+
+`until` stops a step early when a condition holds: `value NAME OP V`
+(`speed gt 40`), `screen NAME` (a named value that says which screen
+shows), `frames N`. A step never runs more than `--max-step` frames
+(default 3,600, one minute of game time), so a wrong condition cannot
+hang the server.
+
+Coordinates are the game's 496x384, as for scenes. Inputs use the names of
+the game's input table (`crates/romset/src/games/`), and so does
+`--record-tour`.
+
+### Named values
+
+`session.read` answers from a per-game table of named work-RAM values:
+`crates/romset/src/games/values/GAME.txt`, one line per value,
+`NAME|ADDR:WIDTH[:signed]|what it is and how it was found`. The format is
+the same as the poke tables. Values are found with `ram search` on a tour,
+and the table records how, as the poke table does. For Top Skater the
+first values would be the skater's position, speed and heading, airborne
+or not, the clock, the score, the course and the current screen. A game
+without a table still answers raw addresses. Like the poke tables, these
+are facts about the game, so they are per-game data, separate from the
+generic code.
+
+### The free camera from a scene
+
+A capture holds the geometrizer's finished raster stream
+(`crates/model2/src/capture.rs`). That stream is already projected for
+the game's camera, so a capture alone cannot be seen from elsewhere.
+Photo mode's free camera works on the display list
+(`crates/model2/src/photo.rs`, "Free camera"). It applies one more rigid
+transform to every object transform and runs the list through the native
+geometrizer again. To use it from scenes, `scene make` also stores the
+frame's display list and lighting taps (`display.bin`,
+`crate::smooth::Frame`). `scene render --camera SPEC` and
+`session.camera` then re-project that list. Neither needs the ROM or a
+running machine. The limit is photo mode's: what the game culled for its
+own camera is missing, and polygons sent already in view space stay where
+the game's camera saw them. For a wall the game does not draw, the agent
+has to drive the session to where the game does draw it.
+
+### Exploring from a recording
+
+A person's recording of a course (`--record-tour`) becomes a **spine**.
+An agent opens a session at any frame of it, branches with its own inputs
+to look behind a wall or at a far corner, renders, and restores. It never
+has to play the hard parts itself, and everything it reaches can be
+exported as a branch tour that replays exactly. `coverage` and the
+catalogue already read tours, so what the branches reach counts toward a
+course's coverage like any other tour.
+
+**Moves.** `remodel moves learn TOUR...` cuts recordings into short input
+spans that recur, such as a push, a turn, an ollie or a trick. It measures
+what each span does to the named values from the same starting conditions
+(speed, heading change, airtime). The result is a per-game **move table**:
+`NAME|INPUTS over N frames|measured effect, range, sample count`. A step can
+then use moves instead of raw inputs (`step {move: "ollie"}`), so an
+agent picks among actions whose effects it knows. This is plain
+measurement over the person's own play, with no model training. Learning
+a policy from a few runs (imitation or reinforcement learning) is left
+until spines and moves stop being enough.
+
+### Transport and safety
+
+The protocol is MCP (JSON-RPC) over standard input and output, and over a
+Unix socket at `out/serve/GAME.sock` with mode 0600. Every verb is also a
+CLI command with the same answer envelope (`crates/cli/src/answer.rs`),
+generated from one table so the two cannot drift. It listens on nothing
+but the local socket, and nothing in reModel opens a network port for it.
+The server runs under `tools/capped` and holds the render lock only while
+it draws. The browser build has no session, so its check is unaffected
+(native-only feature).
+
+### Testing
+
+- **Replaying a tour through the session.** Opening a session at power-on
+  and stepping a tour's inputs ends on the tour's state hash (the
+  `scene-check` pattern).
+- **Export round trip.** `session.export` followed by `tour run` gives the
+  session's hash.
+- **Marks.** `restore` after any number of steps gives the mark's hash
+  exactly, and the log is cut to match.
+- **Camera.** `scene render --camera` from `display.bin` matches photo
+  mode's picture of the same frame and camera, within the GPU check's
+  tolerance.
+- **Without ROMs:** the protocol and the verb table against a synthetic
+  capture, plus name and limit errors (`--max-step`, `--marks`).
+
+### Slices
+
+1. `display.bin` in scenes and `scene render --camera`. This is useful on
+   its own for asset reviews, and it needs no server.
+2. `remodel serve` with stills (the server above), then `session.open`,
+   `input`, `step`, `mark`, `restore`, `render` and `export`.
+3. Top Skater's value table, `read`, and `until`.
+4. Spines from the person's recordings, and the `coverage` report counting
+   the branches.
+5. `moves learn` and steps by move.
+
+### Open questions (session)
+
+- **Step speed.** Unthrottled stepping with no drawing should run well
+  above game speed (`--fast` in `photo-check` does), but a session that
+  draws every step will not. How often agents render will decide whether
+  `step` draws by default.
+- **Several sessions in one server.** Each holds a machine (50 to 85 MB)
+  plus marks. Whether to cap sessions per server, or run one server per
+  agent, depends on measurements.
+- **Analog inputs while stepping.** Steering that changes every frame
+  makes long logs. The tour format already keeps them exact. Moves may
+  compress them for the agent's side only.
 
 ## Open questions
 
