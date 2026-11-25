@@ -2308,7 +2308,7 @@ fn compare_scenes(p: &Project, a: &Args, ctx: &Ctx, names: &str) -> Result<bool,
     let mut sheets = Vec::new();
     for n in &want {
         let dir = root.join(n);
-        let opts = scene::DrawOpts { pack: vec![pack_dir.clone()], crop: None, against: true, view };
+        let opts = scene::DrawOpts { pack: vec![pack_dir.clone()], crop: None, against: true, view, camera: None };
         let d = scene::draw(game, &dir, &opts, &mut gpu).map_err(|e| {
             format!("{}{}", e.message(), e.next.as_ref().map(|n| format!(" (next: {n})")).unwrap_or_default())
         })?;

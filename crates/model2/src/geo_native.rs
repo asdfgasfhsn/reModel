@@ -416,12 +416,33 @@ fn light_squarings(specular: bool, control: u32) -> u32 {
     (control >> 1 != 0) as u32 + (control >> 2 != 0) as u32 + (sat_add(control, 1) >> 3 != 0) as u32
 }
 
+impl Program {
+    /// A number for this program in saved display lists (`smooth::Frame::to_bytes`).
+    pub fn id(self) -> u8 {
+        match self {
+            Program::Shared2B => 0,
+            Program::Indy500 => 1,
+            Program::Vstriker => 2,
+            Program::Lastbrnx => 3,
+        }
+    }
+
+    pub fn from_id(id: u8) -> Option<Self> {
+        [Program::Shared2B, Program::Indy500, Program::Vstriker, Program::Lastbrnx].into_iter().find(|p| p.id() == id)
+    }
+}
+
 impl Native {
     /// The state after an upload of `program` that leaves `msgr7` in MSGR7.
     pub fn new(program: Program, msgr7: u32) -> Self {
         let mut dm = vec![0; DM_WORDS];
         dm[LAST_ATTR] = 0x3_0100;
         Native { program, dm, pm: [0; PM_WORDS], check: msgr7 != NO_CHECK_KEY, boot_frames: 2, stop: None }
+    }
+
+    /// A state to load a saved one into (`State::load`) for `program`.
+    pub fn blank(program: Program) -> Self {
+        Native::new(program, NO_CHECK_KEY)
     }
 
     /// Take over a SHARC's state between frames: its data words, and the

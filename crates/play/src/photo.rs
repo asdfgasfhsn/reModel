@@ -554,6 +554,7 @@ pub const SCRIPT_KEYS: &[&str] = &[
     "y",
     "z",
     "zoom",
+    "fov",
     "focus",
     "dof",
     "bokeh",
@@ -589,17 +590,13 @@ impl Mode {
             "off" | "0" | "false" => Ok(false),
             _ => Err(format!("--photo: {k}={v} wants on or off")),
         };
-        let (s, deg) = (self.scale, |x: f32| x.to_radians());
+        let s = self.scale;
+        // The camera's words are `model2::photo`'s, as `scene render
+        // --camera` takes them.
+        if self.camera.set_word(k, v, s, self.pivot()).map_err(|e| format!("--photo: {e}"))? {
+            return Ok(());
+        }
         match k {
-            "orbit" => self.camera.orbit(self.pivot(), deg(num()?), 0.0),
-            "tilt" => self.camera.orbit(self.pivot(), 0.0, deg(num()?)),
-            "yaw" => self.camera.yaw += deg(num()?),
-            "pitch" => self.camera.pitch += deg(num()?),
-            "roll" => self.camera.roll += deg(num()?),
-            "x" => self.camera.travel([num()? * s, 0.0, 0.0]),
-            "y" => self.camera.travel([0.0, num()? * s, 0.0]),
-            "z" => self.camera.travel([0.0, 0.0, num()? * s]),
-            "zoom" => self.camera.zoom = num()?.clamp(0.2, 20.0),
             "focus" => self.look.focus = num()? * s,
             "dof" => {
                 let a = num()?;

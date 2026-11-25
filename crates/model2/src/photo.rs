@@ -151,6 +151,95 @@ impl Camera {
     }
 }
 
+/// The words that set a [`Camera`] (`--photo`'s and `scene render
+/// --camera`'s): `fov` is `zoom`.
+pub const CAMERA_WORDS: &[&str] = &["orbit", "tilt", "yaw", "pitch", "roll", "x", "y", "z", "zoom", "fov"];
+
+impl Camera {
+    /// Apply one camera word: `orbit` and `tilt` turn about the point
+    /// `pivot` ahead (degrees), `yaw`, `pitch` and `roll` turn in place
+    /// (degrees), `x`, `y` and `z` move along the camera's axes in units of
+    /// `scale` (the scene's, [`scene_scale`]), `zoom` (`fov`) is the focal
+    /// length factor. Ok(false) for any other word, left alone.
+    pub fn set_word(&mut self, k: &str, v: &str, scale: f32, pivot: f32) -> Result<bool, String> {
+        if !CAMERA_WORDS.contains(&k) {
+            return Ok(false);
+        }
+        let n = v.parse::<f32>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{k}={v} wants a number"))?;
+        let deg = f32::to_radians;
+        match k {
+            "orbit" => self.orbit(pivot, deg(n), 0.0),
+            "tilt" => self.orbit(pivot, 0.0, deg(n)),
+            "yaw" => self.yaw += deg(n),
+            "pitch" => self.pitch += deg(n),
+            "roll" => self.roll += deg(n),
+            "x" => self.travel([n * scale, 0.0, 0.0]),
+            "y" => self.travel([0.0, n * scale, 0.0]),
+            "z" => self.travel([0.0, 0.0, n * scale]),
+            _ => self.zoom = n.clamp(0.2, 20.0),
+        }
+        Ok(true)
+    }
+}
+
+/// A camera as a still's command line gives it (`scene render --camera
+/// SPEC`): photo mode's words in order, `KEY=VALUE,...`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spec {
+    pub camera: Camera,
+    /// The near plane as a share of the scene's scale (photo mode's
+    /// `near`, in percent in the words; 1% by default).
+    pub near: f32,
+    /// The game's HUD stays (photo mode leaves it out by default).
+    pub hud: bool,
+    /// Words that mean nothing for a still.
+    pub warnings: Vec<String>,
+}
+
+impl Spec {
+    /// Parse `spec` for a frame whose objects are `scale` away
+    /// ([`scene_scale`]). Words: [`CAMERA_WORDS`], `near` (percent), `hud`
+    /// (`on` or `off`); `back` (photo mode's time scrub) has no history to
+    /// scrub in a scene and is noted and ignored.
+    pub fn parse(spec: &str, scale: f32) -> Result<Spec, String> {
+        let mut out = Spec { camera: Camera::default(), near: 0.01, hud: false, warnings: Vec::new() };
+        for kv in spec.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+            let (k, v) = kv.split_once('=').ok_or_else(|| format!("{kv} wants KEY=VALUE"))?;
+            if out.camera.set_word(k, v, scale, scale)? {
+                continue;
+            }
+            match k {
+                "near" => {
+                    let n = v.parse::<f32>().map_err(|_| format!("{k}={v} wants a number"))?;
+                    out.near = n.clamp(0.0, 50.0) / 100.0;
+                }
+                "hud" => {
+                    out.hud = match v {
+                        "on" | "1" | "true" => true,
+                        "off" | "0" | "false" => false,
+                        _ => return Err(format!("{k}={v} wants on or off")),
+                    }
+                }
+                "back" => out.warnings.push("`back` ignored: a scene is one frame, with no history to scrub".into()),
+                _ => {
+                    let all: Vec<&str> = CAMERA_WORDS.iter().copied().chain(["near", "hud", "back"]).collect();
+                    return Err(format!("unknown camera word `{k}` (one of {})", all.join(", ")));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The near plane in view units (0: the game's, with the game's view).
+    pub fn near_plane(&self, scale: f32) -> f32 {
+        if self.camera.is_identity() {
+            0.0
+        } else {
+            self.near * scale
+        }
+    }
+}
+
 /// How far the frame's objects are from the game's eye: the median
 /// distance of the matrices' translations (1 if none), the scale photo
 /// mode moves the camera by.

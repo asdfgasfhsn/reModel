@@ -635,14 +635,15 @@ look-render: release ## Draw the captured frames (CAPTURE=DIR, default OUT/captu
 # Named scenes (docs/uplift-studio.md, "Scenes"): SCENE=NAME, SCENE_OPTS="--json --project DIR".
 SCENE      ?=
 SCENE_OPTS ?=
+CAMERA     ?=
 scene-list: release ## List GAME's scenes (the manifest's and a project's scenes.txt) and whether each has a local copy: SCENE_OPTS="--json --tag play --project DIR" (docs/uplift-studio.md, "Scenes")
 	$(RUN) scene list $(SCENE_OPTS)
-scene-make: release ## Make GAME's scene SCENE (default: every scene without a local copy): run its recipe from power-on and keep the capture, state, hash and thumbnail in out/GAME/scenes/NAME; SCENE_OPTS="--replace --json" (needs the ROM)
+scene-make: release ## Make GAME's scene SCENE (default: every scene without a local copy): run its recipe from power-on and keep the capture, display list (for `scene-render CAMERA=`), state, hash and thumbnail in out/GAME/scenes/NAME; SCENE_OPTS="--replace --json" (needs the ROM)
 	$(RUN) scene make $(or $(SCENE),--all) $(SCENE_OPTS)
 scene-verify: release ## Run scenes' recipes again (SCENE=NAME, default all with a copy) and compare the state hash at their frames with the recorded one: a difference means the emulation changed and marks the scene stale (exit 1); run after a reModel update (needs the ROM)
 	$(RUN) scene verify $(SCENE) $(SCENE_OPTS)
-scene-render: release ## Draw scene SCENE from its capture with no emulator, ROM or boot, about 2 s: PACK=DIR a texture pack, VIEW the view (default 1080p 16:9), SCENE_OPTS="--against original --crop X,Y,W,H --json --out DIR" (game pixels, 496x384); writes NAME[-pack/-original/-sheet].png to out/GAME/scene-render (needs a GPU)
-	$(RUN) $(VIEW) scene render $(SCENE) $(if $(PACK),--pack $(PACK)) $(SCENE_OPTS)
+scene-render: release ## Draw scene SCENE from its capture with no emulator, ROM or boot, about 2 s: PACK=DIR a texture pack, VIEW the view (default 1080p 16:9), CAMERA="orbit=30,tilt=-8,z=1" the scene from another camera (photo mode's words: orbit, tilt, yaw, pitch, roll, x, y, z, fov, near, hud; from the scene's display.bin, so scenes made before it need `make scene-make SCENE_OPTS=--replace`), SCENE_OPTS="--against original --crop X,Y,W,H --json --out DIR" (game pixels, 496x384); writes NAME[-pack/-original/-sheet].png to out/GAME/scene-render (needs a GPU)
+	$(RUN) $(VIEW) scene render $(SCENE) $(if $(PACK),--pack $(PACK)) $(if $(CAMERA),--camera "$(CAMERA)") $(SCENE_OPTS)
 # Games `make scene-check` tries, and where it keeps their scenes.
 SCENE_CHECK_GAMES ?= topskatr vf2
 SCENE_CHECK_OUT   ?= out/scratch/scene-check

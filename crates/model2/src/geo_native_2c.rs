@@ -50,6 +50,22 @@ pub enum Program {
     Fixed,
 }
 
+impl Program {
+    /// A number for this program in saved display lists (`smooth::Frame::to_bytes`).
+    pub fn id(self) -> u8 {
+        match self {
+            Program::Shared => 0,
+            Program::Overrev => 1,
+            Program::TopSkater => 2,
+            Program::Fixed => 3,
+        }
+    }
+
+    pub fn from_id(id: u8) -> Option<Self> {
+        [Program::Shared, Program::Overrev, Program::TopSkater, Program::Fixed].into_iter().find(|p| p.id() == id)
+    }
+}
+
 /// Program hashes of the programs implemented here.
 pub const PROGRAMS: &[(u64, Program)] = &[
     (0x2917_7553_5904_96aa, Program::Shared),

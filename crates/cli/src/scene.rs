@@ -28,7 +28,8 @@ remodel [--game G] scene SUB [NAME] [options]   (docs/uplift-studio.md, \"Scenes
   make NAME | --all [--replace]       run a recipe from power-on; keep its capture, state, hash (needs the ROM)
   verify [NAME]                       run recipes again; a different state hash marks the scene stale (needs the ROM)
   render NAME [--pack DIR] [--crop X,Y,W,H] [--against original] [--overlay miss] [--view native|H[,A:B]] [--out DIR]
-                                      draw a scene from its capture: no boot, no ROM, no emulator
+         [--camera SPEC]              draw a scene from its capture: no boot, no ROM, no emulator;
+                                      --camera \"orbit=30,tilt=-8,z=1\" sees it from another camera (photo mode's words)
 common: --json (one object: ok, code, error, data, warnings, next), --project DIR (reads DIR/scenes.txt)
 exit codes: 0 done, 1 a check failed, 2 bad request, 3 something missing, 4 internal error
 ";
@@ -363,7 +364,8 @@ fn run_sub(o: &crate::Opts, sub: &str, argv: &[String]) -> Result<(Answer, Strin
             verify(o, game, &a)
         }
         "render" => {
-            let a = Args::parse(argv, &["--json"], &["--pack", "--crop", "--against", "--view", "--project"])?;
+            let a =
+                Args::parse(argv, &["--json"], &["--pack", "--crop", "--against", "--view", "--project", "--camera"])?;
             render_cmd(o, game, &a)
         }
         _ => {
@@ -440,6 +442,12 @@ fn list(game: &Game, a: &Args) -> Result<(Answer, String), Answer> {
 
 // ------------------------------------------------------------------ make
 
+/// The frame's display list in a scene's folder (`Frame::to_bytes`).
+pub const DISPLAY_FILE: &str = "display.bin";
+
+/// How many frames before a scene's the display list is recorded from.
+const DISPLAY_LEAD: u64 = 3;
+
 struct Reached {
     machine: model2::Machine,
     hash: u64,
@@ -449,13 +457,23 @@ struct Reached {
 /// Run the recipe from power-on, with a fresh EEPROM and the machine of the
 /// command line's geometrizer mode, to the start of its frame; the hash is
 /// taken as `--save-state` saves it, before that frame's inputs.
-fn run_to(roms: &RomSet, r: &Recipe) -> Result<Reached, String> {
+fn run_to(roms: &RomSet, r: &Recipe, display: bool) -> Result<Reached, String> {
     let script = InputScript::parse(&r.input, &roms.game.controls)?;
     let mut m = crate::machine(roms);
     let mut last = 0;
     while m.frames < r.frame {
         if let Err(s) = m.run_slice(u64::MAX / 2) {
             return Err(format!("the machine stopped at frame {} ({s:?}) before frame {}", m.frames, r.frame));
+        }
+        // The last frames on the native geometrizer with smooth motion's
+        // recording, which keeps the display list of the frame the capture
+        // takes (`display.bin`). Both compute or record what the chip's
+        // frames give: the state hash is the same.
+        if display && m.frames + DISPLAY_LEAD == r.frame {
+            if crate::GEO_MODE.get().copied().unwrap_or_default() == model2::geo::GeoMode::Chip {
+                m.bus.geo.set_mode(model2::geo::GeoMode::Native);
+            }
+            m.bus.geo.set_smooth(true);
         }
         if m.frames != last {
             if m.frames == r.frame {
@@ -489,7 +507,7 @@ fn geo_name() -> &'static str {
 
 fn make_one(roms: &RomSet, r: &Recipe, dir: &Path) -> Result<Value, String> {
     let started = Instant::now();
-    let mut reached = run_to(roms, r)?;
+    let mut reached = run_to(roms, r, true)?;
     let m = &mut reached.machine;
     let tmp = dir.with_extension("tmp");
     let _ = std::fs::remove_dir_all(&tmp);
@@ -500,6 +518,13 @@ fn make_one(roms: &RomSet, r: &Recipe, dir: &Path) -> Result<Value, String> {
     reached.script.apply(m.frames, &mut m.bus);
     let frame = Frame::grab(&mut m.bus);
     frame.save(&tmp.join("capture"), &m.bus.texture_rom).map_err(|e| format!("capture: {e}"))?;
+    // The frame's display list, to see it from another camera
+    // (`scene render --camera`): only with the native geometrizer's
+    // recording, which a game whose program it does not implement lacks.
+    let display = m.bus.geo.engine().smooth_frame().map(|f| f.to_bytes());
+    if let Some(bytes) = &display {
+        std::fs::write(tmp.join(DISPLAY_FILE), bytes).map_err(|e| format!("{DISPLAY_FILE}: {e}"))?;
+    }
     crate::draw_png(m, None, &tmp.join("thumb.png"));
     let mut meta = BTreeMap::new();
     meta.insert("name".to_string(), r.name.clone());
@@ -510,11 +535,13 @@ fn make_one(roms: &RomSet, r: &Recipe, dir: &Path) -> Result<Value, String> {
     meta.insert("geometrizer".into(), geo_name().into());
     meta.insert("remodel".into(), remodel_version::VERSION.into());
     meta.insert("state_hash".into(), format!("{:016x}", reached.hash));
+    meta.insert("display".into(), if display.is_some() { "yes" } else { "none" }.into());
     write_meta(&tmp, &meta).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(dir);
     std::fs::rename(&tmp, dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(json!({"name": r.name, "frame": r.frame, "state_hash": format!("{:016x}", reached.hash),
-        "dir": dir.display().to_string(), "state_bytes": state.len(), "seconds": round2(started.elapsed().as_secs_f64())}))
+        "dir": dir.display().to_string(), "state_bytes": state.len(), "display_bytes": display.as_ref().map(Vec::len),
+        "seconds": round2(started.elapsed().as_secs_f64())}))
 }
 
 fn round2(x: f64) -> f64 {
@@ -611,7 +638,7 @@ fn verify(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer, Str
             let why = if meta.get("input") != Some(&r.input) || meta.get("frame") != Some(&r.frame.to_string()) {
                 Some("the recipe changed since the copy was made".to_string())
             } else {
-                match run_to(&roms, r) {
+                match run_to(&roms, r, false) {
                     Err(e) => Some(e),
                     Ok(got) => {
                         let h = format!("{:016x}", got.hash);
@@ -661,6 +688,9 @@ pub struct DrawOpts {
     /// Also draw the original (no pack, no look).
     pub against: bool,
     pub view: View,
+    /// The scene seen from another camera (photo mode's words,
+    /// `model2::photo::Spec`), from its `display.bin`.
+    pub camera: Option<String>,
 }
 
 pub struct Picture {
@@ -712,6 +742,51 @@ fn crop_picture(p: Picture, view: &View, c: [i64; 4]) -> Result<Picture, String>
     Ok(Picture { width: w, height: h, rgb })
 }
 
+/// What a scene's display list gives for a camera.
+struct Posed {
+    stream: Vec<u32>,
+    side: Option<model2::light::Frame>,
+    near: f32,
+    hud: bool,
+    warnings: Vec<String>,
+}
+
+/// The scene's frame seen from the camera `spec` (`model2::photo::Spec`)
+/// by the native geometrizer, from `display.bin` alone: no ROM, no machine.
+/// Exit 3 (something missing) when the scene has no display list.
+fn pose(scene_dir: &Path, spec: &str, lit: bool) -> Result<Posed, Answer> {
+    let name = scene_name(scene_dir);
+    let bytes = read_display(scene_dir)?;
+    let frame = model2::smooth::Frame::from_bytes(&bytes).map_err(|e| {
+        Answer::fail(Code::Missing, format!("scene `{name}`: {DISPLAY_FILE}: {e}"))
+            .next(format!("remodel scene make {name} --replace   (needs the ROM)"))
+    })?;
+    let scale = model2::photo::scene_scale(frame.plan.transforms());
+    let spec = model2::photo::Spec::parse(spec, scale)
+        .map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
+    let (stream, side) = model2::photo::render(&frame, &spec.camera, 1.0, lit);
+    Ok(Posed { stream, side, near: spec.near_plane(scale), hud: spec.hud, warnings: spec.warnings })
+}
+
+/// `display.bin`'s bytes, or the answer that says to make the scene again.
+fn read_display(scene_dir: &Path) -> Result<Vec<u8>, Answer> {
+    let name = scene_name(scene_dir);
+    let again = |m: String| {
+        Answer::fail(Code::Missing, m).next(format!("remodel scene make {name} --replace   (needs the ROM)"))
+    };
+    match std::fs::read(scene_dir.join(DISPLAY_FILE)) {
+        Ok(b) => Ok(b),
+        Err(_) if read_meta(scene_dir).and_then(|m| m.get("display").cloned()).as_deref() == Some("none") => {
+            Err(again(format!(
+                "scene `{name}` has no display list: its game's geometrizer program has no native implementation here, so there is no free camera"
+            )))
+        }
+        Err(_) => Err(again(format!(
+            "scene `{name}` has no {DISPLAY_FILE} (it was made before the free camera): run `remodel scene make {name} --replace` again"
+        ))),
+    }
+}
+
 /// Draw the capture in `scene_dir` on `gpu`. Nothing here touches a machine.
 pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer) -> Result<Drawn, Answer> {
     let started = Instant::now();
@@ -722,23 +797,48 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
     let frame_dir =
         capture_frame_dir(&cap).ok_or_else(|| missing(format!("scene `{}` has no capture", scene_name(scene_dir))))?;
     let rom = capture::load_texture_rom(&cap).map_err(|e| missing(format!("{}: {e}", cap.display())))?;
-    let f =
+    let mut f =
         Frame::load(&frame_dir).map_err(|e| Answer::fail(Code::Internal, format!("{}: {e}", frame_dir.display())))?;
     let view = o.view.with_hud_windows(game.hud_windows, game.hud_element_windows);
-    let src = f.sources(&rom);
-    let side = f.light_frame();
     let light = crate::light_options(game);
-    let mut polys = raster::build_shaded_with(&f.stream, &src, side.as_ref(), light.as_ref());
+    let mut side = f.light_frame();
+    // The free camera: the display list through the native geometrizer
+    // again, as photo mode does (`model2::photo::render`), and photo mode's
+    // near plane and HUD.
+    let (mut near, mut hide_hud, mut warnings) = (0.0, false, Vec::new());
+    if let Some(spec) = &o.camera {
+        let posed = pose(scene_dir, spec, light.as_ref().is_some_and(|l| l.runs()))?;
+        (f.stream, side, near, hide_hud) = (posed.stream, posed.side, posed.near, !posed.hud);
+        warnings = posed.warnings;
+    }
+    let src = f.sources(&rom);
+    let mut polys = raster::build_shaded_near(&f.stream, &src, side.as_ref(), light.as_ref(), near);
     video::HudLayout::new(&f.tiles, &f.palette, &view).anchor(&mut polys, &view);
-    let placed = raster::place(&mut polys, &view);
-    let layers = video::layers_2d(&f.tiles, &f.palette, &view, !placed.is_empty());
+    let mut placed = raster::place(&mut polys, &view);
+    if hide_hud {
+        placed.retain(|p| {
+            let w = polys[p.poly].window;
+            w >= 32 || view.hud_windows >> w & 1 == 0
+        });
+    }
+    // Photo mode's picture without the HUD: its layer transparent (the
+    // original patterns, not a pack's tile images).
+    let hidden = |mut layers: video::Layers2d, has_3d: bool| {
+        if hide_hud {
+            if layers.tiles.is_some() {
+                layers = video::layers_2d(&f.tiles, &f.palette, &view, has_3d);
+            }
+            layers.hud.fill(0);
+        }
+        layers
+    };
+    let layers = hidden(video::layers_2d(&f.tiles, &f.palette, &view, !placed.is_empty()), !placed.is_empty());
     gpu.set_quality(gpu::Quality {
         msaa: crate::AA.get().copied().unwrap_or(1),
         depth: crate::DEPTH.get().copied().unwrap_or(false),
         tex_filter: crate::TEX_FILTER.get().copied().unwrap_or_default(),
         ..crate::gpu_light(light.as_ref())
     });
-    let mut warnings = Vec::new();
     let (w, h) = (view.width, view.height);
     let mut original = None;
     if o.against {
@@ -789,7 +889,7 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
     let has_3d = !placed.is_empty();
     let layers = if packed {
         gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d);
-        gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d)
+        hidden(gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d), has_3d)
     } else {
         layers
     };
@@ -871,7 +971,8 @@ pub fn pack_coverage(game: &'static Game, project: Option<&Path>, pack: &Path) -
     let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
     let mut out = Vec::new();
     for r in ready {
-        let o = DrawOpts { pack: vec![pack.to_path_buf()], crop: None, against: true, view: View::native() };
+        let o =
+            DrawOpts { pack: vec![pack.to_path_buf()], crop: None, against: true, view: View::native(), camera: None };
         let d = draw(game, &root.join(&r.name), &o, &mut gpu)?;
         out.push((r.name.clone(), d.changed_share.unwrap_or(0.0), d.drawn_share));
     }
@@ -945,6 +1046,11 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
     };
     let crop = a.one("--crop").map(parse_crop).transpose()?;
     let view = parse_view(a.one("--view"))?;
+    let camera = a.one("--camera").map(str::to_string);
+    if let Some(spec) = &camera {
+        // A wrong word is a wrong request whatever the scene holds.
+        model2::photo::Spec::parse(spec, 1.0).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
+    }
     // The overlay (the global `--overlay`, which `main` has parsed and
     // removed from the arguments): only `miss` is built.
     let overlay = crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed).then_some("miss");
@@ -965,13 +1071,16 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         return Err(Answer::fail(Code::Missing, format!("scene `{}` has no local copy", recipe.name))
             .next(format!("remodel scene make {}   (needs the ROM)", recipe.name)));
     }
+    if camera.is_some() {
+        read_display(&dir)?;
+    }
     // `--out DIR` is the CLI global option that says where `run` writes.
     let out = crate::OUT_DIR.get().cloned().unwrap_or_else(|| data_dir().join(game.id).join("scene-render"));
     std::fs::create_dir_all(&out).map_err(|e| Answer::fail(Code::Internal, format!("{}: {e}", out.display())))?;
     let t_gpu = Instant::now();
     let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
     let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1e3;
-    let opts = DrawOpts { pack: packs.clone(), crop, against, view };
+    let opts = DrawOpts { pack: packs.clone(), crop, against, view, camera: camera.clone() };
     let d = draw(game, &dir, &opts, &mut gpu)?;
     // Render output is regenerated every time (the same files for the same
     // inputs), so it is replaced in place; drafts and approved images are
@@ -1017,7 +1126,7 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         "miss_pixels": d.miss_pixels.map(|c| (c * 1e6).round() / 1e6),
         "pack": packs.first().map(|p| p.display().to_string()),
         "layers": packs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        "crop": crop, "ms": ms.round(), "ms_gpu_init": gpu_ms.round(), "ms_draw": d.millis.round(), "ms_write": write_ms.round(),
+        "crop": crop, "camera": camera, "ms": ms.round(), "ms_gpu_init": gpu_ms.round(), "ms_draw": d.millis.round(), "ms_write": write_ms.round(),
     });
     let mut text = format!(
         "scene         {} (frame {}), {}x{}{}\n",
@@ -1027,6 +1136,9 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         d.picture.height,
         if crop.is_some() { " crop" } else { "" }
     );
+    if let Some(c) = &camera {
+        text += &format!("camera        {c} (the display list through the native geometrizer; the game's HUD left out unless hud=on)\n");
+    }
     for (k, v) in &files {
         text += &format!("{k:<13} {v}\n");
     }
@@ -1103,6 +1215,7 @@ mod tests {
             crop: None,
             against: false,
             view: View::new(540, 16.0 / 9.0, video::Hud::Edges),
+            camera: None,
         };
         let count = |d: &Drawn| d.picture.rgb.chunks(3).filter(|p| **p == [255, 0, 255]).count();
         let plain = draw(game(), &dir, &opts(vec![]), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
@@ -1113,6 +1226,147 @@ mod tests {
 
     fn game() -> &'static Game {
         romset::games::find("topskatr").unwrap()
+    }
+
+    /// A Top Skater scene copy with a display list (`scene make` made it
+    /// from the ROM; the test is skipped without one), a 3D-rich one first.
+    fn scene_with_display() -> Option<PathBuf> {
+        let root = scenes_dir(game());
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join(DISPLAY_FILE).is_file() && has_capture(p))
+            .collect();
+        let rank = |p: &PathBuf| ["course-4800", "race-course", "race-go"].iter().position(|n| scene_name(p) == *n);
+        dirs.sort_by_key(|p| (rank(p).unwrap_or(9), p.clone()));
+        dirs.into_iter().next()
+    }
+
+    /// Photo mode's picture of a scene's frame and camera: the player's own
+    /// draw (`gpu::Renderer::photo`, as `remodel-play`'s photo mode calls
+    /// it) of a board frame made from the scene's capture and the display
+    /// list's replay, at the view, as RGB.
+    fn photo_picture(dir: &Path, spec: &str, view: &View, gpu: &mut gpu::Renderer) -> Vec<u8> {
+        let cap = dir.join("capture");
+        let rom: std::sync::Arc<[u16]> = capture::load_texture_rom(&cap).unwrap().into();
+        let f = Frame::load(&capture_frame_dir(&cap).unwrap()).unwrap();
+        let sf = model2::smooth::Frame::from_bytes(&std::fs::read(dir.join(DISPLAY_FILE)).unwrap()).unwrap();
+        let spec = model2::photo::Spec::parse(spec, model2::photo::scene_scale(sf.plan.transforms())).unwrap();
+        let (stream, side) = model2::photo::render(&sf, &spec.camera, 1.0, false);
+        let board = gpu::BoardFrame::from_capture(&f, rom, None);
+        let shot =
+            gpu::PhotoShot { stream: &stream, points: &f.texture_point_ram, light: side.map(std::sync::Arc::new) };
+        let scale = model2::photo::scene_scale(sf.plan.transforms());
+        let req = gpu::PhotoRequest {
+            view: *view,
+            shots: &[shot],
+            hud: spec.hud,
+            hide_base: false,
+            look: gpu::PhotoLook::default(),
+            bloom_levels: 0,
+            near: spec.near_plane(scale),
+        };
+        let (w, h) = (view.width as u32, view.height as u32);
+        let format = gpu::wgpu::TextureFormat::Rgba8Unorm;
+        let texture = gpu.device().create_texture(&gpu::wgpu::TextureDescriptor {
+            label: Some("photo test"),
+            size: gpu::wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: gpu::wgpu::TextureDimension::D2,
+            format,
+            usage: gpu::wgpu::TextureUsages::RENDER_ATTACHMENT | gpu::wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        gpu.photo(&board, &req, &texture.create_view(&Default::default()), format, (0, 0), (w, h));
+        let rgba = gpu.read_texture(&texture, w, h);
+        rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
+    }
+
+    /// Pixels that differ by more than 16 in a channel (the GPU check's
+    /// "large" difference), as a share.
+    fn large_share(a: &[u8], b: &[u8]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        let n =
+            a.chunks(3).zip(b.chunks(3)).filter(|(p, q)| p.iter().zip(*q).any(|(x, y)| x.abs_diff(*y) > 16)).count();
+        n as f64 / (a.len() / 3) as f64
+    }
+
+    /// The display list, run again through the native geometrizer with no
+    /// machine, is the frame the capture holds word for word; a moved
+    /// camera is not. Needs a Top Skater scene copy with a display list
+    /// (skipped without).
+    #[test]
+    fn a_scenes_display_list_replays_its_captured_frame() {
+        let Some(dir) = scene_with_display() else { return };
+        let f = Frame::load(&capture_frame_dir(&dir.join("capture")).unwrap()).unwrap();
+        let again = pose(&dir, "hud=on", false).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(again.stream == f.stream, "{}: the replay is not the captured stream", dir.display());
+        assert_eq!(again.near, 0.0);
+        let moved = pose(&dir, "orbit=30,tilt=-8", false).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(moved.stream != f.stream && !moved.stream.is_empty());
+        assert!(moved.near > 0.0 && !moved.hud);
+    }
+
+    /// `scene render --camera` draws what photo mode draws for the frame
+    /// and camera, within the GPU check's tolerance (no more than 1% of
+    /// pixels off by over 16 in a channel); the game's own view, with its
+    /// HUD, is the plain scene picture. Needs a Top Skater scene copy with
+    /// a display list and a GPU (skipped without).
+    #[test]
+    fn a_scene_camera_matches_photo_modes_picture() {
+        let Some(dir) = scene_with_display() else { return };
+        let Ok(mut gpu) = gpu::Renderer::new() else { return };
+        let view = View::new(540, 16.0 / 9.0, video::Hud::Edges);
+        let opts = |camera: Option<&str>| DrawOpts {
+            pack: vec![],
+            crop: None,
+            against: false,
+            view,
+            camera: camera.map(str::to_string),
+        };
+        let plain = draw(game(), &dir, &opts(None), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+        let same = draw(game(), &dir, &opts(Some("hud=on")), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(
+            large_share(&plain.picture.rgb, &same.picture.rgb) < 1e-4,
+            "the game's view differs from the plain picture"
+        );
+        let shown = view.with_hud_windows(game().hud_windows, game().hud_element_windows);
+        for spec in ["orbit=30,tilt=-8", "orbit=-100,tilt=25,x=0.4,fov=1.3", "yaw=15,roll=5,z=0.5", "hud=off"] {
+            let ours = draw(game(), &dir, &opts(Some(spec)), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+            let theirs = photo_picture(&dir, spec, &shown, &mut gpu);
+            let share = large_share(&ours.picture.rgb, &theirs);
+            eprintln!("{spec}: {:.4}% of pixels differ from photo mode by over 16", share * 100.0);
+            assert!(share < 0.01, "{spec}: {:.3}% of pixels differ from photo mode's", share * 100.0);
+        }
+    }
+
+    #[test]
+    fn a_scene_without_a_display_list_says_to_make_it_again() {
+        let root = std::env::var("REMODEL_SCRATCH").unwrap_or_else(|_| "out/scratch".into());
+        let dir = Path::new(&root).join(format!("scene-no-display-{}", std::process::id())).join("old-scene");
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = pose(&dir, "orbit=10", false).err().expect("no display.bin");
+        assert_eq!(e.code, Code::Missing);
+        assert!(e.message().contains("scene make old-scene"), "{}", e.message());
+        assert_eq!(e.next.as_deref(), Some("remodel scene make old-scene --replace   (needs the ROM)"));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn camera_words_are_photo_modes_and_strict() {
+        let spec = model2::photo::Spec::parse("back=60,orbit=30,tilt=-8,fov=1.5,near=2", 10.0).unwrap();
+        assert_eq!(spec.near, 0.02);
+        assert_eq!(spec.camera.zoom, 1.5);
+        assert!(!spec.camera.is_identity() && !spec.hud);
+        assert_eq!(spec.warnings.len(), 1, "back has no history to scrub");
+        let e = model2::photo::Spec::parse("orbit=thirty", 1.0).unwrap_err();
+        assert!(e.contains("wants a number"), "{e}");
+        let e = model2::photo::Spec::parse("dolly=3", 1.0).unwrap_err();
+        assert!(e.contains("unknown camera word") && e.contains("orbit"), "{e}");
+        assert!(model2::photo::Spec::parse("hud=maybe", 1.0).is_err());
+        assert!(model2::photo::Spec::parse("", 1.0).unwrap().camera.is_identity());
     }
 
     #[test]

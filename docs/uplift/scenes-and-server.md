@@ -95,6 +95,7 @@ derived from the ROM. It lives in `<data dir>/<set>/scenes/<name>/`:
 |---|---|---|
 | `scene.txt` | The recipe as run, the EEPROM it started from, the state hash at that frame, the reModel version, the geometrizer mode | Checking it is still valid |
 | `capture/` | The renderer's inputs for the frame (about 10 MB; `out/topskatr/capture` is 221 MB for 22 frames) | Still pictures, with no emulator |
+| `display.bin` | The frame's display list and the geometrizer's state before it (about 4.3 MB, mostly the polygon ROM) | The free camera (`scene render --camera`) |
 | `state.save` | A save state at the frame | Motion clips, the live player |
 | `facts.tsv` | Every asset drawn there: pixels, box, variant | "What is here" and "where is this" |
 | `thumb.png` | A small picture | Browsing |
@@ -388,7 +389,10 @@ it draws. The browser build has no session, so its check is unaffected
 ### Slices
 
 1. `display.bin` in scenes and `scene render --camera`. This is useful on
-   its own for asset reviews, and it needs no server.
+   its own for asset reviews, and it needs no server. **Built**
+   (2026-11-26): `scene make` records the last frames on the native
+   geometrizer (the state hash does not change), and the camera render
+   matches photo mode's picture.
 2. `remodel serve` with stills (the server above), then `session.open`,
    `input`, `step`, `mark`, `restore`, `render` and `export`.
 3. Top Skater's value table, `read`, and `until`.

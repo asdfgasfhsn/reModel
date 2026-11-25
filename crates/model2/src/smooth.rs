@@ -741,6 +741,64 @@ pub enum Native {
     C(Box<crate::geo_native_2c::Native>),
 }
 
+impl Kind {
+    fn id(self) -> u8 {
+        match self {
+            Kind::Matrix => 0,
+            Kind::Matrix2 => 1,
+            Kind::Translation => 2,
+            Kind::Focus => 3,
+        }
+    }
+
+    fn from_id(id: u8) -> Option<Self> {
+        [Kind::Matrix, Kind::Matrix2, Kind::Translation, Kind::Focus].into_iter().find(|k| k.id() == id)
+    }
+}
+
+impl Native {
+    fn write(&self, w: &mut state::Writer) {
+        use state::State;
+        match self {
+            Native::B(n) => {
+                (0u8, n.program.id()).save(w);
+                n.save(w);
+            }
+            Native::C(n) => {
+                (1u8, n.program.id()).save(w);
+                n.save(w);
+            }
+        }
+    }
+
+    fn read(r: &mut state::Reader) -> Result<Native, String> {
+        use state::State;
+        let mut head = (0u8, 0u8);
+        head.load(r).map_err(|e| e.to_string())?;
+        let bad = || format!("a geometrizer program numbered {} of kind {} this build does not know", head.1, head.0);
+        match head.0 {
+            0 => {
+                let mut n =
+                    crate::geo_native::Native::blank(crate::geo_native::Program::from_id(head.1).ok_or_else(bad)?);
+                n.load(r).map_err(|e| e.to_string())?;
+                Ok(Native::B(Box::new(n)))
+            }
+            1 => {
+                let mut n =
+                    crate::geo_native_2c::Native::new(crate::geo_native_2c::Program::from_id(head.1).ok_or_else(bad)?);
+                n.load(r).map_err(|e| e.to_string())?;
+                Ok(Native::C(Box::new(n)))
+            }
+            _ => Err(bad()),
+        }
+    }
+}
+
+/// A display list's file starts with these four bytes, then a version
+/// number (`u32`, little endian), then the zlib-compressed [`Frame`].
+const DISPLAY_MAGIC: &[u8; 4] = b"RMDL";
+const DISPLAY_VERSION: u32 = 1;
+
 /// Everything an in-between of one game frame needs, apart from the
 /// machine: the geometrizer's state before frame N, frame N's list (a copy
 /// of buffer RAM), polygon memory as it was then, the matched transforms.
@@ -815,6 +873,92 @@ impl Frame {
             window,
             motion: Default::default(),
         }
+    }
+
+    /// The frame as a file (`display.bin` in a scene,
+    /// docs/uplift-studio.md, "Scenes"): everything the native geometrizer
+    /// needs to run frame N's list again with other transforms, and with
+    /// no machine: its state before the frame, the list, polygon RAM, the
+    /// polygon ROM (so the file holds game data: keep it under `out/`) and
+    /// frame N's transforms (not the in-between's plan, and not the
+    /// texture point RAM, which a capture holds).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use state::State;
+        let mut w = state::Writer::default();
+        self.native.write(&mut w);
+        self.buffer.save(&mut w);
+        self.jumps.save(&mut w);
+        (self.read_ptr, self.latch, self.frame).save(&mut w);
+        (*self.poly).save(&mut w);
+        (*self.rom).save(&mut w);
+        self.window.is_some().save(&mut w);
+        self.window.unwrap_or_default().save(&mut w);
+        let xs = self.plan.transforms();
+        (xs.len() as u32).save(&mut w);
+        for x in xs {
+            (x.kind.id(), x.key).save(&mut w);
+            x.words.save(&mut w);
+        }
+        let mut out = DISPLAY_MAGIC.to_vec();
+        out.extend(DISPLAY_VERSION.to_le_bytes());
+        out.extend(png::zlib::compress(&w.buf));
+        out
+    }
+
+    /// A frame from [`Frame::to_bytes`]: it renders as the frame did
+    /// ([`Frame::render_posed`]); it has no in-betweens.
+    pub fn from_bytes(data: &[u8]) -> Result<Frame, String> {
+        use state::State;
+        if data.len() < 8 || &data[..4] != DISPLAY_MAGIC {
+            return Err("not a display list file".into());
+        }
+        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        if version != DISPLAY_VERSION {
+            return Err(format!("display list version {version}, this build reads {DISPLAY_VERSION}"));
+        }
+        let raw = png::zlib::decompress(&data[8..])?;
+        let mut r = state::Reader::new(&raw);
+        let e = |e: state::Error| e.to_string();
+        let native = Native::read(&mut r)?;
+        let (mut buffer, mut jumps): (Vec<u8>, Vec<u32>) = Default::default();
+        buffer.load(&mut r).map_err(e)?;
+        jumps.load(&mut r).map_err(e)?;
+        let mut ids = (0u32, 0u32, 0u64);
+        ids.load(&mut r).map_err(e)?;
+        let (mut poly, mut rom): (Vec<u32>, Vec<u32>) = Default::default();
+        poly.load(&mut r).map_err(e)?;
+        rom.load(&mut r).map_err(e)?;
+        let (mut has_window, mut window) = (false, [0u32; 7]);
+        has_window.load(&mut r).map_err(e)?;
+        window.load(&mut r).map_err(e)?;
+        let mut n = 0u32;
+        n.load(&mut r).map_err(e)?;
+        let mut xs = Vec::new();
+        for _ in 0..n {
+            let (mut head, mut words) = ((0u8, 0u32), [0u32; 12]);
+            head.load(&mut r).map_err(e)?;
+            words.load(&mut r).map_err(e)?;
+            let kind = Kind::from_id(head.0).ok_or("a transform of an unknown kind")?;
+            xs.push(Xform { kind, words, key: head.1 });
+        }
+        if !r.done() {
+            return Err("display list has trailing data".into());
+        }
+        let plan = Plan::new(&[], xs);
+        let window = has_window.then_some(window);
+        Ok(Frame::new(
+            native,
+            buffer,
+            jumps,
+            ids.0,
+            ids.1,
+            Arc::new(poly),
+            Arc::new(rom),
+            Vec::new(),
+            plan,
+            ids.2,
+            window,
+        ))
     }
 
     /// The raster stream between frame N-1 and frame N at `t` (0 to 1),
@@ -1183,6 +1327,54 @@ mod tests {
         assert!(frame.render_lit(1.0).is_none());
         assert!(poly.iter().all(|&w| w == 0), "polygon RAM untouched");
         assert_eq!(ram[0x10], 0xabcd, "the real frame's write");
+        // Through its file (a scene's `display.bin`): the same frame, from
+        // the game's view and from another camera, byte for byte.
+        let bytes = frame.to_bytes();
+        let again = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!((again.frame, again.plan.transforms().len()), (3, 2));
+        assert_eq!(again.render_values(again.plan.values(1.0)), real);
+        let cam = crate::photo::Camera { eye: [1.0, 0.5, 2.0], yaw: 0.4, pitch: -0.2, roll: 0.1, zoom: 1.5 };
+        let (a, la) = crate::photo::render(&frame, &cam, 1.0, true);
+        let (b, lb) = crate::photo::render(&again, &cam, 1.0, true);
+        assert_ne!(a, real, "the camera moved something");
+        assert_eq!(a, b);
+        assert_eq!(la.unwrap().to_words(), lb.unwrap().to_words());
+        assert_eq!(again.to_bytes(), bytes, "writing it again changes nothing");
+        // Not a display list, a version this build does not read, cut short.
+        assert!(Frame::from_bytes(b"nope").is_err());
+        let mut newer = bytes.clone();
+        newer[4] = 99;
+        assert!(Frame::from_bytes(&newer).err().unwrap().contains("version 99"));
+        assert!(Frame::from_bytes(&bytes[..bytes.len() / 2]).is_err());
+    }
+
+    /// A 2C geometrizer's frame (and a window) goes through the file too.
+    #[test]
+    fn a_2c_display_list_round_trips() {
+        use crate::geo_native_2c::{Native as N2c, Program};
+        let cur = vec![
+            Xform { key: 7, ..Xform::new(Kind::Matrix2, &[1.0f32; 12].map(f32::to_bits)) },
+            Xform::new(Kind::Focus, &[100.0f32.to_bits(), 120.0f32.to_bits()]),
+        ];
+        let frame = Frame::new(
+            Native::C(Box::new(N2c::new(Program::TopSkater))),
+            vec![1, 2, 3, 4],
+            vec![4],
+            8,
+            9,
+            Arc::new(vec![5, 6]),
+            Arc::new(vec![7, 8, 9]),
+            Vec::new(),
+            Plan::new(&[], cur.clone()),
+            12,
+            Some([1, 2, 3, 4, 5, 6, 7]),
+        );
+        let bytes = frame.to_bytes();
+        let again = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(again.plan.transforms(), &cur[..]);
+        assert_eq!((again.frame, again.window), (12, Some([1, 2, 3, 4, 5, 6, 7])));
+        assert!(matches!(&again.native, Native::C(n) if n.program == Program::TopSkater));
+        assert_eq!(again.to_bytes(), bytes);
     }
 
     #[test]

@@ -818,6 +818,18 @@ pub fn build_shaded_with(
     side: Option<&crate::light::Frame>,
     opts: Option<&crate::light::Options>,
 ) -> Vec<Poly> {
+    build_shaded_near(stream, src, side, opts, 0.0)
+}
+
+/// [`build_shaded_with`] with a near plane ([`BuildIn::near`]: photo
+/// mode's, for a free camera's view).
+pub fn build_shaded_near(
+    stream: &[u32],
+    src: &Sources,
+    side: Option<&crate::light::Frame>,
+    opts: Option<&crate::light::Options>,
+    near: f32,
+) -> Vec<Poly> {
     match opts.filter(|o| o.runs()) {
         Some(o) => {
             let sh = crate::light::shade_with(stream, side, o);
@@ -826,11 +838,12 @@ pub fn build_shaded_with(
                 skip_checker: o.skip_checker,
                 fine: o.fine,
                 relief: o.relief,
+                near,
                 ..Default::default()
             };
             build_with(stream, src, &b).0
         }
-        None => build(stream, src),
+        None => build_with(stream, src, &BuildIn { near, ..Default::default() }).0,
     }
 }
 

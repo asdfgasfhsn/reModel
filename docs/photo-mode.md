@@ -103,7 +103,7 @@ prints a `photo` line and closes it. Keys:
 | `orbit`, `tilt` | orbit about the pivot by degrees (sideways, up and down) |
 | `yaw`, `pitch`, `roll` | turn the camera in place by degrees |
 | `x`, `y`, `z` | move along the camera's axes (right, up, forward), in the scene's scale |
-| `zoom` | focal length factor |
+| `zoom` (or `fov`) | focal length factor |
 | `dof` | depth of field: the aperture in percent of the height (0 off) |
 | `focus` | focus distance in the scene's scale |
 | `bokeh`, `exposure`, `contrast`, `saturation`, `warmth`, `tint`, `vignette`, `grain`, `aberration` | the look's values as the dock has them (exposure in stops) |
@@ -179,6 +179,18 @@ for the game's, and smooth shading and material maps get the replay's own
 side channel. One mechanism serves every game with a native geometrizer
 (every 2B and 2C game, and 2A and the original Model 2 through the fixed
 geometrizer).
+
+`remodel scene render NAME --camera SPEC` uses the same code on a saved
+frame (docs/uplift-studio.md, "Scenes"): `scene make` keeps the frame's
+display list and the geometrizer's state before it (`display.bin`,
+`smooth::Frame::to_bytes`), and the render runs it through
+`model2::photo::render`, so a scene can be seen from another camera with no
+ROM and no running game. SPEC takes the camera words above (`orbit`, `tilt`,
+`yaw`, `pitch`, `roll`, `x`, `y`, `z`, `zoom` or `fov`, `near`, `hud`); both
+parse them with `model2::photo::Spec` and `Camera::set_word`. `back` has
+nothing to scrub in a scene and is ignored with a warning. The pictures
+match photo mode's for the same frame and camera: a test draws the scene
+both ways and finds no pixel off by more than 16 in a channel.
 
 What it can't show is what the game never sent. Objects the game culled
 for its own camera are missing (turn the camera around and the scene

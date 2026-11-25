@@ -902,6 +902,7 @@ source tree, else the player's data folder; `REMODEL_DATA` overrides):
 |---|---|
 | `scene.txt` | The recipe as run, `eeprom = fresh`, the geometrizer mode, the reModel version, the state hash at the frame, and `stale` or `verified` after `scene verify` |
 | `capture/` | The renderer's inputs for the frame (what `look-render`, `gpu-check` and `pack-check` read); about 19 MB on Top Skater and 28 MB on `vf2`, most of it the texture ROM, copied into every scene |
+| `display.bin` | The frame's display list (4 to 4.5 MB on Top Skater and `vf2`, zlib-compressed; most of it the game's polygon ROM, so it is game data like the rest): what `scene render --camera` runs through the native geometrizer. A scene made before it, or of a game whose geometrizer program has no native implementation, has none |
 | `state.save` | A save state at the frame, for the live player and clips (not used yet) |
 | `thumb.png` | A small picture |
 
@@ -912,7 +913,7 @@ remodel --game topskatr scene list [--tag play] [--project DIR]
 remodel --game topskatr scene make NAME | --all [--replace]    # needs the ROM
 remodel --game topskatr scene verify [NAME]                    # needs the ROM
 remodel --game topskatr scene render NAME [--pack DIR] [--crop X,Y,W,H] \
-        [--against original] [--view native|H[,A:B]] [--out DIR]
+        [--against original] [--view native|H[,A:B]] [--camera SPEC] [--out DIR]
 ```
 
 - `list` shows each scene and its state: `ready`, `missing` (no local
@@ -938,6 +939,28 @@ remodel --game topskatr scene render NAME [--pack DIR] [--crop X,Y,W,H] \
   apply as for `look-render`. Output goes to `out/<set>/scene-render`
   (`--out`); it is drawn again on every call, so nothing old is ever read
   back. Layered packs (several `--pack`) are not built.
+- `render --camera SPEC` sees the scene from another camera, with no ROM
+  and no machine. `scene make` also keeps the frame's display list
+  (`display.bin`), and render runs it through the native geometrizer with
+  photo mode's camera transform (`model2::photo`, docs/photo-mode.md, "The
+  free camera"), then draws the stream as usual. `SPEC` is photo mode's
+  words, `KEY=VALUE,...`: `orbit` and `tilt` (degrees about the point
+  ahead), `yaw`, `pitch`, `roll` (degrees, in place), `x`, `y`, `z`
+  (along the camera's axes, in the scene's scale, the median distance of
+  its objects), `fov` (also `zoom`: a focal length factor), `near` (the
+  near clip in percent of the scene's scale, 1 by default) and `hud`
+  (`on` or `off`; off by default, as in photo mode, since the game's HUD
+  does not follow a moved camera). `back`, photo mode's time scrub, is
+  accepted and ignored with a warning: a scene is one frame. Without
+  `--camera`, the picture and the time are as before; a scene without
+  `display.bin` answers exit 3 and says to run `scene make NAME --replace`
+  again. Rendering takes about the same time as a plain render (0.5 s wall on
+  Top Skater at 1080p, 0.1 s of it the replay and the draw). The limits are
+  photo mode's: what the game culled for its own camera is missing (a
+  view from the front shows a mostly empty scene behind the skater),
+  level of detail stays as the game chose it, polygons the game sent
+  already in view space stay put, and 2D layers stay on the screen. Make
+  it with `make scene-render SCENE=NAME CAMERA="orbit=30,tilt=-8"`.
 - `studio compare PROJECT --scene all` (or `NAME,NAME`) writes the studio's
   before and after sheets from scenes instead of running the game twice.
   The run-based compare now refuses a folder that already holds a run
@@ -959,7 +982,7 @@ remodel --game topskatr scene render race-course --pack out/topskatr/texpack --a
 `changed_share` (0 to 1), `pack`, `crop` and the time in ms.
 
 **Make targets:** `make scene-list`, `scene-make`, `scene-verify`,
-`scene-render` (`SCENE=`, `PACK=`, `SCENE_OPTS=`) and `make scene-check`,
+`scene-render` (`SCENE=`, `PACK=`, `CAMERA=`, `SCENE_OPTS=`) and `make scene-check`,
 the acceptance test: it makes every scene of `topskatr` and `vf2` from a
 fresh folder, verifies them, draws each against the original and times it.
 
@@ -992,8 +1015,10 @@ is still to do.
 **Not built yet:** `scene what`, `where`, `sheet` and `clip`; `--asset` and
 the overlays other than `miss` on `render` (`--overlay miss` is built: docs/texture-packs.md, "Draw rules and overlays"); the per-asset `assets[]` report (which assets the
 pack replaced, and why not); `facts.tsv`; the side channel in captures
-(each object's model key); layered packs; the server. The player's `--scene` is built (docs/play.md). Scenes use the default (chip) geometrizer; the design's choice of
-native waits for the side channel.
+(each object's model key); layered packs; the server. The player's `--scene` is built (docs/play.md). Scenes run on the default (chip) geometrizer, apart from the last
+three frames before the scene's, which run on the native one to record
+`display.bin` (the capture and the state hash are the same as the chip's;
+checked on all ten Top Skater scenes against the ones made before).
 ## Tours and coverage
 
 The catalogue holds what somebody happened to play, and its own

@@ -127,6 +127,35 @@ impl BoardFrame {
         self.bytes = bytes;
     }
 
+    /// A frame from a capture (`model2::capture::Frame`, with its texture
+    /// ROM) and the smooth motion frame read back from its scene, if any:
+    /// what `capture` would have copied from a machine at that frame (the
+    /// black level is 0). For tools that draw saved frames as the player
+    /// does.
+    pub fn from_capture(
+        f: &model2::capture::Frame,
+        texture_rom: Arc<[u16]>,
+        smooth: Option<Arc<model2::smooth::Frame>>,
+    ) -> Self {
+        BoardFrame {
+            texture_rom: Some(texture_rom),
+            render_ram: f.render_ram.clone(),
+            palette: f.palette.clone(),
+            tiles: f.tiles.clone(),
+            copied: None,
+            sync: (f.xoff, f.yoff),
+            versions: (f.frame + 1, f.frame + 1),
+            black: 0.0,
+            frame: f.frame,
+            stream: f.stream.clone(),
+            points: f.texture_point_ram.clone(),
+            smooth,
+            light: f.light_frame().map(Arc::new),
+            late: false,
+            bytes: 0,
+        }
+    }
+
     /// Forget what was copied, so the next capture copies everything: for
     /// another machine (run-ahead's, a new game) or a loaded state, whose
     /// RAM versions say nothing about what this holds.

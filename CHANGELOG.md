@@ -15,6 +15,15 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- `scene render --camera SPEC` (and `make scene-render CAMERA=...`) draws a
+  scene from another camera with no ROM and no running game, using photo
+  mode's camera words (`orbit`, `tilt`, `yaw`, `pitch`, `roll`, `x`, `y`,
+  `z`, `fov`, `near`, `hud`). `scene make` now also keeps the frame's
+  display list (`display.bin`, about 4.3 MB) for it; scenes made before
+  need `scene make NAME --replace`, and without `--camera` nothing
+  changes. Rendering only: the state hashes are the same. Photo mode's
+  `--photo` takes `fov` as another name for `zoom`.
+
 - `scene render` and `look-render` now draw a pack's tile images (HUD, menus,
   title) and regions as the player does; before they drew the original
   patterns there.
