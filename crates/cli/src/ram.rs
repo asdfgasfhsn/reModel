@@ -1,7 +1,8 @@
-//! `remodel ram search | show | pokes`: find work-RAM variables by running
-//! a tour, as a cheat finder does, and list a game's pokes
+//! `remodel ram search | show | pokes | values`: find work-RAM variables by
+//! running a tour, as a cheat finder does, list a game's pokes
 //! (docs/uplift/content-coverage.md, "Pokes"; docs/uplift-studio.md,
-//! "Tours and coverage").
+//! "Tours and coverage") and read its named values (docs/uplift-studio.md,
+//! "Named values").
 //!
 //! `ram search TOUR --at F1,F2,F3 --rule R1,R2` runs the tour from power-on
 //! (the EEPROM as the board is made, nothing read from a folder), copies
@@ -212,6 +213,151 @@ pub fn pokes(o: &crate::Opts) -> ExitCode {
     })
 }
 
+/// A named value's raw bytes as the table says they read: an unsigned or
+/// sign-extended integer, or an IEEE single (null if not finite).
+fn decode(def: &tour::ValueDef, raw: u32) -> Value {
+    match def.kind {
+        tour::Kind::Unsigned => json!(raw),
+        tour::Kind::Signed => {
+            let bits = 8 * def.width as u32;
+            json!(((raw as i64) << (64 - bits)) >> (64 - bits))
+        }
+        tour::Kind::Float => {
+            let f = f32::from_bits(raw);
+            // Through its shortest text, so 3.264 stays 3.264 and not 3.2639999389648438.
+            f.is_finite().then(|| format!("{f}").parse::<f64>().ok()).flatten().map_or(Value::Null, |f| json!(f))
+        }
+    }
+}
+
+/// `names` (all of the table's if empty) from the table, in the order asked.
+fn pick<'a>(table: &'a [tour::ValueDef], names: &[String]) -> Result<Vec<&'a tour::ValueDef>, String> {
+    if names.is_empty() {
+        return Ok(table.iter().collect());
+    }
+    names
+        .iter()
+        .map(|n| {
+            table.iter().find(|v| &v.name == n).ok_or_else(|| {
+                let all: Vec<&str> = table.iter().map(|v| v.name.as_str()).collect();
+                format!("no value named {n}{}", tour::near(n, &all))
+            })
+        })
+        .collect()
+}
+
+/// The values `defs` at each snapshot: `[{name, addr, width, kind, note,
+/// values: [one per frame]}]`.
+fn read_values(defs: &[&tour::ValueDef], snaps: &[Snapshot]) -> Result<Vec<Value>, String> {
+    defs.iter()
+        .map(|d| {
+            let vals = snaps
+                .iter()
+                .map(|s| {
+                    read_raw(s, d.addr, d.width)
+                        .map(|r| decode(d, r))
+                        .ok_or_else(|| format!("{}: {:#x} is not in work RAM", d.name, d.addr))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let kind = match d.kind {
+                tour::Kind::Unsigned => "unsigned",
+                tour::Kind::Signed => "signed",
+                tour::Kind::Float => "float",
+            };
+            Ok(json!({"name": d.name, "addr": format!("{:#x}", d.addr), "width": d.width, "kind": kind,
+                      "note": d.note, "values": vals}))
+        })
+        .collect()
+}
+
+/// `remodel ram values [TOUR --at F1,F2,.. [NAME...]]`: the game's named
+/// values (docs/uplift-studio.md, "Named values"), at those frames of a
+/// tour or scene recipe from power-on; with no `--at`, the table itself (no
+/// ROM needed). Reads only, like `ram show`: state hashes are a plain
+/// tour's.
+pub fn values(o: &crate::Opts, roms: Option<&RomSet>) -> ExitCode {
+    let mut args = o.args[2..].to_vec();
+    let c = match tour::common(&mut args) {
+        Ok(c) => c,
+        Err(e) => return fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
+    };
+    let usage = "remodel ram values TOUR --at F1,F2,.. [NAME...]   (no --at: list the table)";
+    let a = (|| -> Answer {
+        let game = match romset::games::find(&o.game_id) {
+            Ok(g) => g,
+            Err(e) => return fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
+        };
+        let table = match tour::value_table(romset::games::values(game)) {
+            Ok(t) => t,
+            Err(e) => return fail(answer::INTERNAL, format!("{} {e}", game.id), None),
+        };
+        let at = tour::take_opt(&mut args, "--at").map(|s| frames_list(&s));
+        let Some(at) = at else {
+            let rows: Vec<Value> = table
+                .iter()
+                .map(|v| json!({"name": v.name, "addr": format!("{:#x}", v.addr), "width": v.width, "note": v.note}))
+                .collect();
+            let mut a = Answer::done(json!({"game": game.id, "table": rows}));
+            if table.is_empty() {
+                a = a.warn(format!("{} has no named values yet: `remodel ram search` finds them", game.id));
+            }
+            return a.next("remodel ram values TOUR --at F1,F2,..");
+        };
+        let at = match at {
+            Ok(a) if !a.is_empty() => a,
+            Ok(_) => return fail(answer::BAD_REQUEST, "--at F1,F2,...: the frames to look at", Some(usage)),
+            Err(e) => return fail(answer::BAD_REQUEST, e, Some(usage)),
+        };
+        let [label, names @ ..] = &args[..] else {
+            return fail(answer::BAD_REQUEST, "name one tour or scene", Some(usage));
+        };
+        let defs = match pick(&table, names) {
+            Ok(d) => d,
+            Err(e) => return fail(answer::BAD_REQUEST, e, Some("remodel ram values")),
+        };
+        let Some(roms) = roms else {
+            return fail(answer::MISSING, format!("{}: the ROM set is needed to run the tour", game.id), None);
+        };
+        let script = match script_of(label, &c, game) {
+            Ok(s) => s,
+            Err(a) => return a,
+        };
+        let snaps = match snapshots(roms, &script, &at) {
+            Ok(s) => s,
+            Err(e) => return fail(answer::INTERNAL, e, None),
+        };
+        match read_values(&defs, &snaps) {
+            Ok(rows) => Answer::done(json!({"game": game.id, "tour": label, "frames": at, "values": rows})),
+            Err(e) => fail(answer::INTERNAL, e, None),
+        }
+    })();
+    a.finish(c.json, |d| {
+        let mut s = String::new();
+        if let Some(frames) = d["frames"].as_array() {
+            let f: Vec<String> = frames.iter().map(|f| f.to_string()).collect();
+            s.push_str(&format!("{} at frames {}\n", d["tour"].as_str().unwrap_or(""), f.join(" ")));
+        }
+        for v in d["values"].as_array().into_iter().flatten() {
+            let vals: Vec<String> = v["values"].as_array().into_iter().flatten().map(|x| x.to_string()).collect();
+            s.push_str(&format!(
+                "{:<18} {:<10} {}\n",
+                v["name"].as_str().unwrap_or(""),
+                v["addr"].as_str().unwrap_or(""),
+                vals.join(" ")
+            ));
+        }
+        for v in d["table"].as_array().into_iter().flatten() {
+            s.push_str(&format!(
+                "{:<18} {:<10} {}\n",
+                v["name"].as_str().unwrap_or(""),
+                v["addr"].as_str().unwrap_or(""),
+                v["note"].as_str().unwrap_or("")
+            ));
+        }
+        s
+    })
+}
+
 /// `remodel ram search ...` and `remodel ram show ...`.
 pub fn run(o: &crate::Opts, roms: &RomSet) -> ExitCode {
     let mut args = o.args[1..].to_vec();
@@ -224,9 +370,10 @@ pub fn run(o: &crate::Opts, roms: &RomSet) -> ExitCode {
     let a = match verb.as_str() {
         "search" | "show" => work(&verb, &mut args, &c, roms),
         "pokes" => return pokes(o),
+        "values" => return values(o, Some(roms)),
         v => fail(
             answer::BAD_REQUEST,
-            format!("ram {v}: no such verb{}", tour::near(v, &["search", "show", "pokes"])),
+            format!("ram {v}: no such verb{}", tour::near(v, &["search", "show", "pokes", "values"])),
             Some("remodel ram search TOUR --at F1,F2 --rule diff"),
         ),
     };
@@ -328,9 +475,15 @@ fn script_of(label: &str, c: &tour::Common, game: &romset::Game) -> Result<model
     let tours = tour::load(game, c.tours.as_deref()).map_err(|e| fail(answer::BAD_REQUEST, e, None))?;
     let names: Vec<&str> = tours.iter().map(|t| t.label.as_str()).collect();
     if !names.contains(&label) {
+        // A scene recipe is a tour too: its input, from power-on.
+        if let Some(sc) = game.scenes.iter().find(|s| s.name == label) {
+            return model2::input::InputScript::parse(sc.input, &game.controls)
+                .map_err(|e| fail(answer::INTERNAL, format!("scene {label}: {e}"), None));
+        }
+        let all: Vec<&str> = names.iter().copied().chain(game.scenes.iter().map(|s| s.name)).collect();
         return Err(fail(
             answer::BAD_REQUEST,
-            format!("no tour {label} for {}{}", game.id, tour::near(label, &names)),
+            format!("no tour or scene {label} for {}{}", game.id, tour::near(label, &all)),
             Some("remodel tour list"),
         ));
     }
@@ -340,6 +493,14 @@ fn script_of(label: &str, c: &tour::Common, game: &romset::Game) -> Result<model
         .map_err(|e| fail(answer::BAD_REQUEST, e, None))?;
     model2::input::InputScript::parse(&items.join(","), &game.controls)
         .map_err(|e| fail(answer::BAD_REQUEST, format!("tour {label}: {e}"), None))
+}
+
+/// The `w` little-endian bytes at `addr` of a snapshot, if that is work RAM.
+fn read_raw(snap: &Snapshot, addr: u32, w: usize) -> Option<u32> {
+    snap.iter().find_map(|(base, b)| {
+        let o = addr.checked_sub(*base)? as usize;
+        (o + w <= b.len()).then(|| (0..w).fold(0u32, |v, i| v | (b[o + i] as u32) << (8 * i)))
+    })
 }
 
 /// `ram show TOUR --at F ADDR[:w]...`: the values at those addresses.
@@ -365,11 +526,7 @@ fn show(args: &[String], at: &[u64], c: &tour::Common, roms: &RomSet) -> Answer 
         };
         let mut vals = Vec::new();
         for s in &snaps {
-            let v = s.iter().find_map(|(base, b)| {
-                let o = addr.checked_sub(*base)? as usize;
-                (o + w <= b.len()).then(|| (0..w).fold(0u32, |v, i| v | (b[o + i] as u32) << (8 * i)))
-            });
-            match v {
+            match read_raw(s, addr, w) {
                 Some(v) => vals.push(v),
                 None => {
                     return fail(
@@ -415,5 +572,77 @@ mod tests {
         assert_eq!(w, vec![(0x500002, vec![0x709, 0x703, 0x704])]);
         assert!(Rule::parse("bogus").is_err());
         assert!(Rule::parse("eq=zz").is_err());
+    }
+
+    const TABLE: &str = "# c\nclock|0x5830b0:w|the clock\nspeed|0x582f90:l:float|speed\nd|0x580000:b:signed|delta\n";
+
+    #[test]
+    fn value_table_parses_and_rejects() {
+        let t = tour::value_table(TABLE).unwrap();
+        assert_eq!(t.len(), 3);
+        assert_eq!((t[0].addr, t[0].width, t[0].kind), (0x5830b0, 2, tour::Kind::Unsigned));
+        assert_eq!((t[1].width, t[1].kind), (4, tour::Kind::Float));
+        assert_eq!(t[2].kind, tour::Kind::Signed);
+        for bad in [
+            "x|0x500000:w",
+            "x|0x500000:q|n",
+            "x|0x500000:w:float|n",
+            "x|zz:w|n",
+            "x|0x500000:w|n\nx|0x500004:w|n",
+            "bad name|0x500000:w|n",
+            "x|0x500000:w:signed:extra|n",
+            "x|0x500000:w|",
+        ] {
+            assert!(tour::value_table(bad).is_err(), "{bad}");
+        }
+        // Top Skater's own table parses, every address in work RAM.
+        let game = romset::games::find("topskatr").unwrap();
+        let t = tour::value_table(romset::games::values(game)).unwrap();
+        assert!(t.iter().any(|v| v.name == "clock"));
+        for v in &t {
+            assert!((0x200000..0x240000).contains(&v.addr) || (0x500000..0x600000).contains(&v.addr), "{}", v.name);
+        }
+    }
+
+    #[test]
+    fn values_decode_and_look_up() {
+        let t = tour::value_table(TABLE).unwrap();
+        let mut ram = vec![0u8; 0x10000];
+        ram[0x30b0] = 0x34;
+        ram[0x30b1] = 0x12;
+        ram[0x2f90..0x2f94].copy_from_slice(&3.264f32.to_le_bytes());
+        ram[0] = 0xff;
+        let snaps = vec![vec![(0x580000, ram)]];
+        let defs = pick(&t, &["speed".into(), "clock".into()]).unwrap();
+        let rows = read_values(&defs, &snaps).unwrap();
+        assert_eq!(rows[0]["values"], json!([3.264]));
+        assert_eq!(rows[1]["values"], json!([0x1234]));
+        assert!(pick(&t, &["clok".into()]).unwrap_err().contains("clock"));
+        assert_eq!(pick(&t, &[]).unwrap().len(), 3);
+        assert_eq!(decode(&t[2], 0xff), json!(-1));
+        assert_eq!(decode(&t[1], f32::NAN.to_bits()), Value::Null);
+        assert_eq!(read_raw(&snaps[0], 0x580000, 1), Some(0xff));
+        assert_eq!(read_raw(&snaps[0], 0x58ffff, 2), None);
+        assert_eq!(read_raw(&snaps[0], 0x400000, 1), None);
+    }
+
+    /// With the ROM (skipped without it): the clock at two frames of the
+    /// `race-go` and `race-course` scenes' recipe (a Novice start), 150
+    /// frames apart, falls by 150 and reads 58 s at the later one.
+    #[test]
+    fn clock_reads_at_two_frames_of_a_scene_recipe() {
+        let game = romset::games::find("topskatr").unwrap();
+        let rom = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rom");
+        let Ok(roms) = RomSet::load(game, &rom, false) else { return };
+        let sc = |n: &str| game.scenes.iter().find(|s| s.name == n).unwrap();
+        let (a, b) = (sc("race-go"), sc("race-course"));
+        assert_eq!(a.input, b.input);
+        let script = model2::input::InputScript::parse(a.input, &game.controls).unwrap();
+        let snaps = snapshots(&roms, &script, &[a.frame, b.frame]).unwrap();
+        let table = tour::value_table(romset::games::values(game)).unwrap();
+        let rows = read_values(&pick(&table, &["clock".into()]).unwrap(), &snaps).unwrap();
+        let v: Vec<u64> = rows[0]["values"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        assert_eq!(v[0] - v[1], b.frame - a.frame);
+        assert_eq!(v[1] / 60, 58);
     }
 }

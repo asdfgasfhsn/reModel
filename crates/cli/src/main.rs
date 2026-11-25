@@ -1145,6 +1145,10 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "catalogue" => cmd_catalogue(o),
         "tour" if o.args.get(1).map(String::as_str) != Some("run") => tour::list(o),
         "ram" if o.args.get(1).map(String::as_str) == Some("pokes") => ram::pokes(o),
+        // The table alone needs no ROM; reading values at frames does.
+        "ram" if o.args.get(1).map(String::as_str) == Some("values") && !o.args.iter().any(|a| a == "--at") => {
+            ram::values(o, None)
+        }
         "coverage" => coverage::main(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),

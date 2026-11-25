@@ -103,6 +103,18 @@ pub fn pokes(game: &Game) -> &'static str {
     }
 }
 
+/// The set's named game values (`remodel ram values`,
+/// docs/uplift-studio.md, "Named values"): lines of
+/// `NAME|ADDR:WIDTH[:signed|:float]|what it is, how it was found`, work-RAM
+/// words found by running the game with `remodel ram search`. Empty where
+/// there are none.
+pub fn values(game: &Game) -> &'static str {
+    match game.id {
+        "topskatr" => include_str!("values/topskatr.txt"),
+        _ => "",
+    }
+}
+
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &SGT24H, &DYNABB97, &DOA, &INDY500,
     &FVIPERS, &SCHAMP, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2, &SKYTARGT, &MANXTT,

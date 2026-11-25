@@ -1193,6 +1193,37 @@ value `eq=V`, `ne=V`, `lt=V`, `gt=V`, joined with `/` (`inc/lt=100`);
 screen at those frames (a counter, a menu index), then narrow with a rule
 that fits what changed. It only reads: state hashes are a plain tour's.
 
+### Named values
+
+A game's **named values** are the work-RAM words that say what the game is
+doing: a clock, a score, a position. They are per-game data like the poke
+table, `crates/romset/src/games/values/GAME.txt`, one value per line:
+`NAME|ADDR:WIDTH[:signed|:float]|what it is and how it was found`. `WIDTH`
+is `b`, `w` or `l` (little-endian); `float` is an IEEE single (width `l`).
+The third field says how the value was found, as the poke table's does, and
+marks what is unconfirmed. A value is found with `ram search` on a tour,
+then read against rendered frames of the same tour (`scene render`, or a
+scenes.txt recipe) at several frames before it goes in.
+
+```sh
+make ram-values GAME=topskatr                          # the table (no ROM)
+make ram-values GAME=topskatr TOUR=race-go RAM_ARGS="--at 3150,3300" NAMES="clock score"
+remodel --game topskatr ram values race-go --at 3150,3300 clock --json
+```
+
+`ram values TOUR --at F1,F2,...` runs the tour (or a manifest scene's
+recipe, from power-on) and prints the values at those frames as each frame
+starts, in the same way as `ram show`; with no names, all of them. `--json`
+gives the shared answer envelope: `data.values[]` of `name`, `addr`,
+`width`, `kind`, `note` and `values` (one per frame; floats as numbers, a
+non-finite one as null). It only reads, so state hashes are a plain tour's.
+This is the command-line half of the future `session.read`
+(docs/uplift/scenes-and-server.md, "Named values"). Top Skater's table has the
+screen (mode word), course, skater, clock, total time, score, speed,
+position, heading and airborne. Not found: a screen value
+for finishing the course (no tour finishes one), and the screen word does not name every screen (40 is
+both the SEGA logo and the press-start screen).
+
 ### The crawler
 
 `remodel crawl --from TOUR@FRAME (--minutes N | --tries N)` (`make crawl`)

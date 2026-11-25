@@ -395,7 +395,11 @@ it draws. The browser build has no session, so its check is unaffected
    matches photo mode's picture.
 2. `remodel serve` with stills (the server above), then `session.open`,
    `input`, `step`, `mark`, `restore`, `render` and `export`.
-3. Top Skater's value table, `read`, and `until`.
+3. Top Skater's value table, `read`, and `until`. **Partly built**: the
+   table (`crates/romset/src/games/values/topskatr.txt`) and its read
+   from the command line (`remodel ram values TOUR --at F1,F2,...`,
+   docs/uplift-studio.md, "Named values"). The `session.read` verb
+   and `until` wait for the server.
 4. Spines from the person's recordings, and the `coverage` report counting
    the branches.
 5. `moves learn` and steps by move.

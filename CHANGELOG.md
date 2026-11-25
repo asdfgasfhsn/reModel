@@ -23,7 +23,12 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   need `scene make NAME --replace`, and without `--camera` nothing
   changes. Rendering only: the state hashes are the same. Photo mode's
   `--photo` takes `fov` as another name for `zoom`.
-
+- Named game values: a per-game table of work-RAM words found by running the
+  game (`crates/romset/src/games/values/GAME.txt`), and `remodel ram values
+  TOUR --at F1,F2,...` (`make ram-values`) to read them at frames of a tour
+  or scene recipe, with `--json`. Top Skater's table has the screen, course,
+  skater, clock, total time, score, speed, position, heading and airborne,
+  each read against rendered frames (docs/uplift-studio.md, "Named values").
 - `scene render` and `look-render` now draw a pack's tile images (HUD, menus,
   title) and regions as the player does; before they drew the original
   patterns there.

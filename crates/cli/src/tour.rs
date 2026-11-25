@@ -303,6 +303,63 @@ pub fn poke_table(text: &str) -> Result<Vec<(String, String, String)>, String> {
     Ok(out)
 }
 
+/// How a named value's bytes read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Unsigned,
+    Signed,
+    /// An IEEE single (width 4 only).
+    Float,
+}
+
+/// One named game value: a work-RAM address, its width in bytes, how the
+/// bytes read, and the note that says what it is and how it was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueDef {
+    pub name: String,
+    pub addr: u32,
+    pub width: usize,
+    pub kind: Kind,
+    pub note: String,
+}
+
+/// The game's named values (`NAME|ADDR:WIDTH[:signed|:float]|what it is and
+/// how it was found`, `#` comments; WIDTH is `b`, `w` or `l`, a byte, a
+/// 16-bit word, a 32-bit long, little-endian), in file order.
+pub fn value_table(text: &str) -> Result<Vec<ValueDef>, String> {
+    let mut out: Vec<ValueDef> = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let want = || format!("values:{}: want NAME|ADDR:b|w|l[:signed|:float]|NOTE", n + 1);
+        let mut p = line.splitn(3, '|');
+        let (Some(name), Some(spec), Some(note)) = (p.next(), p.next(), p.next()) else { return Err(want()) };
+        let name = name.trim();
+        if !name_ok(name) || out.iter().any(|v| v.name == name) {
+            return Err(format!("values:{}: value name {name:?}: letters, digits, - and _, once", n + 1));
+        }
+        let parts: Vec<&str> = spec.trim().split(':').collect();
+        let (addr, width) = match parts.as_slice() {
+            [a, w, ..] => (number(a).and_then(|a| u32::try_from(a).ok()), ["b", "w", "l"].iter().position(|x| x == w)),
+            _ => return Err(want()),
+        };
+        let (Some(addr), Some(width)) = (addr, width.map(|i| 1usize << i)) else { return Err(want()) };
+        let kind = match parts.get(2).copied() {
+            None => Kind::Unsigned,
+            Some("signed") => Kind::Signed,
+            Some("float") if width == 4 => Kind::Float,
+            _ => return Err(want()),
+        };
+        if parts.len() > 3 || note.trim().is_empty() {
+            return Err(want());
+        }
+        out.push(ValueDef { name: name.into(), addr, width, kind, note: note.trim().into() });
+    }
+    Ok(out)
+}
+
 /// `items` with each named poke (`poke=hold-clock@10-20`) replaced by its
 /// table entry (`poke=0x500123:0x63@10-20`); numbers pass through.
 pub fn resolve_pokes(items: Vec<String>, table: &[(String, String, String)]) -> Result<Vec<String>, String> {
