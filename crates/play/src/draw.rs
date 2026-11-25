@@ -351,6 +351,15 @@ pub struct OverlayPaint {
     pub clear: bool,
 }
 
+/// A paint dropped unpainted (a job still queued when the player exits)
+/// would trip egui's "Dropped TexturesDelta" panic in debug builds; the
+/// renderer is going away with it, so the deltas are cleared on purpose.
+impl Drop for OverlayPaint {
+    fn drop(&mut self) {
+        self.textures.clear();
+    }
+}
+
 /// Apply `o`'s texture changes without painting it: for a redraw that
 /// draws nothing (the surface gave no texture). egui sends each change
 /// once, so a dropped one would leave a later update to a texture that
