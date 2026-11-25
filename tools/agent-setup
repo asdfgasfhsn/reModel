@@ -147,6 +147,18 @@ def cmd_setup(argv):
             ids = [commit] + sorted((n for n in os.listdir(bins) if n.startswith(commit + "-")),
                                     key=lambda n: os.path.getmtime(os.path.join(bins, n)), reverse=True)
             shared = next((p for p in (os.path.join(bins, n, "remodel") for n in ids) if os.path.isfile(p)), "")
+            if not shared:
+                # None for this commit yet: the newest pinned for an earlier
+                # commit of this branch serves art work, with a warning.
+                for n in sorted(os.listdir(bins), key=lambda n: os.path.getmtime(os.path.join(bins, n)), reverse=True):
+                    p = os.path.join(bins, n, "remodel")
+                    if os.path.isfile(p) and subprocess.run(
+                            ["git", "merge-base", "--is-ancestor", n.split("-")[0], "HEAD"],
+                            capture_output=True).returncode == 0:
+                        print(f"agent-setup: no binary pinned for {commit}; using {n}'s "
+                              f"(`make agent-bin` in {main} for this commit's)", file=sys.stderr)
+                        shared = p
+                        break
         own = os.path.join(os.environ.get("CARGO_TARGET_DIR") or "target", "release", "remodel")
         if main != root and shared and not os.path.isfile(own):
             env_bin = subprocess.CompletedProcess([], 0, shared + "\n", "")

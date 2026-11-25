@@ -331,7 +331,8 @@ then points `REMODEL` at it and marks it pinned: `make` targets that would
 build `release` use it as it is. Art work (renders, `studio`, `img`) needs
 nothing else. A fresh worktree with no build of its own takes the main
 checkout's copy for its commit, so `make agent-bin` once in the main
-checkout serves every worktree at that commit.
+checkout serves every worktree at that commit; with none for its commit
+yet, it takes the newest one pinned for an earlier commit and says so.
 
 ## Versions and releases
 
