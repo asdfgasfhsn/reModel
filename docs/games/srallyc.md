@@ -275,6 +275,25 @@ change on mostly flat cars and scenery: `docs/play.md`); smooth motion;
 run-ahead 1, which needs the machine to have twice the game's speed to
 spare.
 
+## Slow frames (`--perf-log`)
+
+- *Confirmed (by running it, 2026-11-26, `--perf-log --no-sound --input
+  coin-start --frames 1500`, release player):* the slow frame at 1381 (17.8
+  ms against a 1.7 ms median) is not special and not the JIT's. Slow
+  frames come every 60 frames, at 1, 61, 121, ..., 1381, 1441 (20 to 37 ms
+  each, all of it in "emulation", none in drawing or the surface); they
+  look the same with `--jit` (no blocks installing, nothing interpreted,
+  22 slow redraws against 39 with `--no-jit`), so the interpreter is not
+  the cause. With `--geo native` they nearly vanish (one or two in 1500
+  frames, median 0.7 ms, p99 about 11 ms), against 30 or more with the
+  default and `--geo chip` (p99 about 21 ms). *Not confirmed:* what the game
+  does once a second (60 frames) that costs the TGP's program this much;
+  the cost is in running the geometry chip's program on that frame (the
+  native geometrizer does that work in the host), likely a once-a-second
+  job in the TGP's data. Not fixed: it is the chip's own work, and one
+  slow frame a second is under the audio queue's slack (docs/play.md,
+  "Slowdowns").
+
 ## Idle loop
 
 - *Confirmed (from the code, then by running it):* the main program

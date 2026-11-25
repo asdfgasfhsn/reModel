@@ -544,6 +544,17 @@ differ with them. A saved `temporal = taa` (it turns multisampling off
 too) once made the check fail on `srallyc`: run-ahead pictures that
 differed and frames drawn twice two ways, wherever the 3D layer showed.
 
+`topskatr` once showed one picture differing at frame 7 (the draw thread
+"ahead") in 1,494 frames with equal state hashes. Two later runs with the
+same options (750 and 751 pictures, 749 and 377 frames drawn in both) found
+no difference, so it did not reproduce. The first frames of a run are the
+timing-dependent ones: frame 7 is drawn twice in the draw thread's log
+(`overlap.log`) and once in `--no-overlap`'s, and the frames before it
+(3 `ahead-late`, 4, 5) are not always drawn by both. *Unconfirmed:* the
+difference was most likely a picture of the boot frames drawn before the
+first texture upload had reached the draw thread's renderer; no cause was
+found in the look or ID targets.
+
 ### Slowdowns
 
 `--perf-log` (`make play PLAY_ARGS=--perf-log`) prints a `slow` line for
