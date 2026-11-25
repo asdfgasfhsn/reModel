@@ -15,6 +15,22 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Spines: a person's recording (a tour from power-on) opens fast at any
+  frame and can be searched. `remodel spine index LABEL` replays it once and
+  keeps a machine state every 600 frames and the game's named values every 30
+  under `out/GAME/spines/LABEL/`, keyed by the tour's line (and its `from=`
+  parents'), so a changed recording drops them. `session.open from:
+  tour:LABEL@F` loads the nearest state and steps the rest: on Top Skater's
+  Novice recording (19,368 frames), frame 5,000 opens in 0.9 s instead of
+  13.9 s, 10,000 in 1.5 s instead of 31.5 s and 15,000 in 0.1 s instead of
+  47 s, to the same state hashes. `remodel spine where LABEL --near pos-x=12
+  --where screen=7` (and the server verbs `spine.index` and `spine.where`)
+  answers "the frames nearest here" and "the stretches on this screen" from the
+  game's value table, each with the `tour:LABEL@FRAME` to open. `--tours FILE`
+  can be given more than once, so a branch tour whose spine is another file runs
+  in `tour run` and counts in `coverage`; a branch's read map now goes stale
+  when its spine's line changes. `make spine-index` and `make spine-where`
+  (docs/uplift-studio.md, "Spines").
 - `remodel serve`: a long-running server with live game sessions, speaking MCP
   (JSON-RPC) on standard input and output and, with `--socket`, on a Unix
   socket (`out/serve/GAME.sock`, mode 0600; no network port). An agent opens

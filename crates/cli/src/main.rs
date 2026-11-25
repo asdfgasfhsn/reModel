@@ -34,6 +34,7 @@ mod sharc;
 mod sound_render;
 mod soundtrack;
 mod spec_stats;
+mod spine;
 mod studio;
 mod studio_answer;
 mod studio_img;
@@ -1149,6 +1150,8 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "scene" => scene::main(o),
         #[cfg(all(feature = "serve", unix))]
         "call" | "session" => serve::call(o),
+        #[cfg(all(feature = "serve", unix))]
+        "spine" => serve::spine_main(o),
         "asset" => studio::asset_main(o),
         "pack" => pack_gates::main(o),
         "project" => studio::project_main(o),

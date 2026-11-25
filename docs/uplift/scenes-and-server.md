@@ -4,7 +4,7 @@ Shared words, roles and rules: [README.md](README.md). Status: the MVP
 slice at the end is built (2026-11-21) and its user-facing parts are in
 [../uplift-studio.md](../uplift-studio.md), "Scenes". The server and the
 live session's slice 2 are built (2026-11-26; "Slice 2 as built" below,
-[../uplift-studio.md](../uplift-studio.md), "Live sessions"). The rest
+[../uplift-studio.md](../uplift-studio.md), "Live sessions"); spines from a person's recording (slice 4) the same day, "Slice 4 as built". The rest
 (`scene what/where/sheet/clip`, `--asset`, `--overlay`, facts, the side
 channel, `session.what`) is still a design.
 
@@ -405,7 +405,7 @@ it draws. The browser build has no session, so its check is unaffected
    `until value NAME OP V` in the server. `until screen NAME` is not
    built (the screen word does not name every screen).
 4. Spines from the person's recordings, and the `coverage` report counting
-   the branches.
+   the branches. **Built** (2026-11-26): "Slice 4 as built" below.
 5. `moves learn` and steps by move.
 
 ### Slice 2 as built (2026-11-26)
@@ -506,6 +506,43 @@ with an 8 GB NVIDIA GPU; `make serve-check MEASURE=1`):
 The warm still misses the under 100 ms target at 1080p because of the PNG
 (126 of 152 ms: the encoder, not the GPU); at 540p it meets it. A smaller or
 faster encode, or a crop, is the lever.
+
+### Slice 4 as built (2026-11-26)
+
+`crates/cli/src/spine.rs` (the cache, the index, the queries), the verbs
+`spine.index` and `spine.where` in `session.rs`, and `remodel spine
+index|where LABEL` (`serve::spine_main`); user-facing description and the
+measured numbers in [../uplift-studio.md](../uplift-studio.md), "Spines".
+
+- **Checkpoints.** `out/GAME/spines/LABEL/ckpt-FRAME.state` every 600 frames
+  (`--every`), each a `save_session` taken after the frame's inputs are applied,
+  which is the state `session.open` hands out, so a load needs no fix-up and the
+  state hash equals the replay's at every frame (a test checks frames at, before
+  and after a checkpoint, and 1). `meta.txt` (the key, the interval, the frames
+  and the list) is written last, so a build that stopped half-way is no cache.
+  The key is the FNV of the file layout, the game, the geometrizer and the tour's
+  normalised line followed by its `from=` parents'. `tour::parse` now puts that
+  chain in `Tour::spec`, so a branch's read map goes stale when its spine's
+  line changes, which it did not before.
+- **Opening.** `session.open from: tour:LABEL@F` builds the cache on first use
+  (one replay, warned), loads the nearest checkpoint at or before F and steps the
+  rest; the answer says `checkpoint` and `stepped`. A tour whose length is in steps
+  has no checkpoints and replays as before.
+- **Index.** `index.tsv`: a header with the key and a hash of the value table,
+  the column names, and a row of numbers per sample (`-` for a value that is not
+  readable or not finite). It is made in the same replay as the checkpoints. A
+  changed key or table is no index. The query is a scan: `near` is the Euclidean
+  distance over the named values, results at least `gap` frames apart; with no
+  `near` the answer is the spans of consecutive matching rows.
+- **Branches and coverage.** `session.export` already wrote `from=LABEL@F`
+  branches; its `file` now holds every `--tours` file's text, not one. `--tours`
+  repeats in `tour run`, `coverage`, `ram`, `crawl`, `spine` and `serve`
+  (`tour::Common::tours` is a list), so a branch whose spine is in another file
+  runs and counts. A branch's map is a replay from power-on, so its reads include
+  its spine's, and `coverage` unions them.
+- **Not built:** `until screen NAME`, spans over a derived value (a speed from
+  positions), a nearest-neighbour structure (the scan is 645 rows for a 19,000
+  frame run), and a cache shared between worktrees.
 
 ### Open questions (session)
 

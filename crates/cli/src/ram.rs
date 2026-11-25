@@ -472,7 +472,7 @@ fn work(verb: &str, args: &mut Vec<String>, c: &tour::Common, roms: &RomSet) -> 
 }
 
 fn script_of(label: &str, c: &tour::Common, game: &romset::Game) -> Result<model2::input::InputScript, Answer> {
-    let tours = tour::load(game, c.tours.as_deref()).map_err(|e| fail(answer::BAD_REQUEST, e, None))?;
+    let tours = tour::load_paths(game, &c.tours).map_err(|e| fail(answer::BAD_REQUEST, e, None))?;
     let names: Vec<&str> = tours.iter().map(|t| t.label.as_str()).collect();
     if !names.contains(&label) {
         // A scene recipe is a tour too: its input, from power-on.

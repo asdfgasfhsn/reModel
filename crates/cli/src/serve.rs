@@ -154,7 +154,7 @@ impl Drop for SocketFile {
 }
 
 pub const SERVE_USAGE: &str = "\
-remodel --game G serve [--socket [PATH]] [--marks N] [--max-step N] [--sessions N] [--tours FILE] [--no-stdio]
+remodel --game G serve [--socket [PATH]] [--marks N] [--max-step N] [--sessions N] [--tours FILE]... [--no-stdio]
   MCP (JSON-RPC, a message a line) on standard input and output, and with --socket on a Unix
   socket (default out/serve/GAME.sock, mode 0600). No network port is ever opened.
   --marks N       marks a session keeps (default 16)         --max-step N   frames one step runs (default 3600)
@@ -215,11 +215,11 @@ pub fn run(o: &crate::Opts, roms: &romset::RomSet) -> ExitCode {
         cfg.marks = number(&mut args, "--marks", cfg.marks as u64, 1)? as usize;
         cfg.max_step = number(&mut args, "--max-step", cfg.max_step, 1)?;
         cfg.sessions = number(&mut args, "--sessions", cfg.sessions as u64, 1)? as usize;
-        cfg.tours = take(&mut args, "--tours")?.map(PathBuf::from);
-        if let Some(t) = &cfg.tours {
+        while let Some(t) = take(&mut args, "--tours")?.map(PathBuf::from) {
             if !t.is_file() {
                 return Err(format!("--tours {}: no such file", t.display()));
             }
+            cfg.tours.push(t);
         }
         let no_stdio = match args.iter().position(|a| a == "--no-stdio") {
             Some(i) => {
@@ -363,6 +363,104 @@ pub fn call(o: &crate::Opts) -> ExitCode {
             a.emit(json, || text)
         }
     }
+}
+
+pub const SPINE_USAGE: &str = "\
+remodel --game G spine index LABEL [--tours FILE]... [--every N] [--index-every K] [--dir DIR] [--json]
+remodel --game G spine where LABEL [--tours FILE]... [--near NAME=V]... [--where 'NAME OP V']... [--limit N] [--gap F] [--dir DIR] [--json]
+  A spine is a recording of a whole run (a tour from power-on, `--record-tour`). `index` replays it once and
+  keeps, in out/GAME/spines/LABEL/ (--dir moves the root), a checkpoint every N frames (default 600; a session
+  opened at tour:LABEL@F loads the nearest and steps the rest) and the game's named values every K frames
+  (default 30). `where` asks the index: with --near the frames nearest the point (at least --gap frames apart,
+  default 90), with only --where the stretches that match (--where screen=7, speed>3). Both take the tour
+  files with --tours as many times as a branch's spine needs; `where` needs no ROM once the index is made.
+";
+
+/// `remodel spine index|where LABEL ...`: the `spine.index` and `spine.where` verbs without a server.
+pub fn spine_main(o: &crate::Opts) -> ExitCode {
+    let mut args = o.args[1..].to_vec();
+    let json = args.iter().position(|a| a == "--json").map(|i| args.remove(i)).is_some();
+    let a = (|| -> Result<Answer, Answer> {
+        let bad = |e: String| Answer::fail(Code::BadRequest, e).next("remodel spine --help");
+        let game = romset::games::find(&o.game_id).map_err(|e| bad(e.to_string()))?;
+        let mut cfg = Config::default();
+        let mut call = serde_json::Map::new();
+        let put_list = |m: &mut serde_json::Map<String, Value>, k: &str, v: String| {
+            if let Some(a) = m.entry(k).or_insert_with(|| json!([])).as_array_mut() {
+                a.push(json!(v));
+            }
+        };
+        let mut positional = Vec::new();
+        let mut it = args.into_iter();
+        while let Some(a) = it.next() {
+            let mut val = |name: &str| it.next().ok_or_else(|| bad(format!("{name} wants a value")));
+            match a.as_str() {
+                "--help" | "-h" => {
+                    print!("{SPINE_USAGE}");
+                    return Err(bad("spine: which verb (index, where)?".into()));
+                }
+                "--tours" => {
+                    let t = PathBuf::from(val("--tours")?);
+                    if !t.is_file() {
+                        return Err(bad(format!("--tours {}: no such file", t.display())));
+                    }
+                    cfg.tours.push(t);
+                }
+                "--dir" => cfg.spines = Some(PathBuf::from(val("--dir")?)),
+                "--every" | "--limit" | "--gap" | "--index-every" => {
+                    let v = val(&a)?;
+                    let n: u64 = v.parse().map_err(|_| bad(format!("{a} wants a number, got `{v}`")))?;
+                    call.insert(a[2..].replace('-', "_"), json!(n));
+                }
+                "--near" => put_list(&mut call, "near", val("--near")?),
+                "--where" => put_list(&mut call, "where", val("--where")?),
+                f if f.starts_with("--") => return Err(bad(format!("spine: unknown option {f}"))),
+                _ => positional.push(a),
+            }
+        }
+        let (verb, label) = match positional.as_slice() {
+            [v, l] if v == "index" || v == "where" => (format!("spine.{v}"), l.clone()),
+            _ => return Err(bad("want: spine index LABEL, or spine where LABEL".into())),
+        };
+        call.insert("spine".into(), json!(label));
+        cfg.out = crate::OUT_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("out/serve"));
+        let roms = romset::RomSet::load(game, &o.rom_dir, false).ok();
+        if verb == "spine.index" && roms.is_none() {
+            return Err(Answer::fail(
+                Code::Missing,
+                format!("no ROMs for {}: a spine is made by running the game", game.id),
+            )
+            .next(format!("put the {} ROMs in {}", game.id, o.rom_dir.display())));
+        }
+        let mut server = Server::new(game, roms.as_ref(), cfg);
+        let args = Value::Object(call);
+        let v = session::find_verb(&verb)?;
+        session::validate(v, &args)?;
+        Ok(server.call(&verb, &args))
+    })();
+    let a = a.unwrap_or_else(|a| a);
+    a.emit(json, || {
+        let d = &a.data;
+        let mut s = String::new();
+        if let Some(rs) = d["results"].as_array() {
+            for r in rs {
+                if d["kind"] == "nearest" {
+                    s.push_str(&format!("frame {:>6}  distance {:<10.4}  {}", r["frame"], r["distance"].as_f64().unwrap_or(0.0), r["open"].as_str().unwrap_or("")));
+                    let vals: Vec<String> = r["values"].as_object().into_iter().flatten().map(|(k, v)| format!("{k}={v}")).collect();
+                    s.push_str(&format!("\n    {}\n", vals.join(" ")));
+                } else {
+                    s.push_str(&format!("frames {:>6} to {:<6} ({} rows)  {}\n", r["from"], r["to"], r["rows"], r["open"].as_str().unwrap_or("")));
+                }
+            }
+        } else if !d.is_null() {
+            s.push_str(&format!(
+                "spine {}: {} frames, {} checkpoints every {} ({} MB), {} index rows every {} ({} values), {:.1} s\n  {}\n",
+                d["spine"].as_str().unwrap_or(""), d["frames"], d["checkpoints"], d["checkpoint_every"], d["checkpoint_mb"],
+                d["index_rows"], d["index_every"], d["values"], d["seconds"].as_f64().unwrap_or(0.0), d["dir"].as_str().unwrap_or("")
+            ));
+        }
+        s
+    })
 }
 
 /// One `tools/call` on a server's socket.

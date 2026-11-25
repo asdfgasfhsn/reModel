@@ -17,6 +17,7 @@
 //! exact: the same frames and state hash as a tour of those terms.
 
 use crate::answer::{Answer, Code};
+use crate::spine;
 use crate::tour::{self, ValueDef};
 use model2::bus::CopyMarks;
 use model2::input::{InputScript, Recorder};
@@ -148,6 +149,26 @@ pub static VERBS: &[Verb] = &[
         ],
     },
     Verb { name: "session.close", about: "Free the session's machine and marks.", args: &[SESSION] },
+    Verb {
+        name: "spine.index",
+        about: "Replay a recording (a tour from power-on) once and keep, under out/GAME/spines/LABEL/, a checkpoint every N frames (so session.open at tour:LABEL@F loads the nearest and steps the rest) and the game's named values every K frames (for spine.where). Replaces what was there.",
+        args: &[
+            arg("spine", Ty::Str, true, "the tour's label (a tour with a length in frames)"),
+            arg("every", Ty::Int, false, "a checkpoint every this many frames (default 600)"),
+            arg("index_every", Ty::Int, false, "a row of values every this many frames (default 30)"),
+        ],
+    },
+    Verb {
+        name: "spine.where",
+        about: "Frames along a recording by what the game was doing, from the spine's index (made by spine.index, or on the first call): with near (NAME=VALUE points, e.g. pos-x=12,pos-z=-4000) the frames nearest it; with only where (NAME OP VALUE, e.g. screen=7) the stretches that match. Each result has an `open` for session.open.",
+        args: &[
+            arg("spine", Ty::Str, true, "the tour's label"),
+            arg("near", Ty::List, false, "points to be near: NAME=VALUE, with names from the game's value table"),
+            arg("where", Ty::List, false, "conditions that must hold: NAME OP VALUE (OP = != > >= < <=), e.g. screen=7, speed>3"),
+            arg("limit", Ty::Int, false, "most results (default 5)"),
+            arg("gap", Ty::Int, false, "with near: results at least this many frames apart (default 90)"),
+        ],
+    },
     Verb {
         name: "scene.render",
         about: "A still of a made scene, drawn from its capture with no emulator (the server keeps the GPU warm). The scene must have been made with `remodel scene make`.",
@@ -606,14 +627,29 @@ pub struct Config {
     pub marks: usize,
     pub max_step: u64,
     pub sessions: usize,
-    pub tours: Option<PathBuf>,
+    pub tours: Vec<PathBuf>,
+    /// Where spines' checkpoints and indexes go (default out/GAME/spines).
+    pub spines: Option<PathBuf>,
+    /// A checkpoint every this many frames of a spine.
+    pub checkpoint_every: u64,
+    /// A row of values every this many frames of a spine.
+    pub index_every: u64,
     /// Pictures and exported tours go here.
     pub out: PathBuf,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { marks: 16, max_step: 3600, sessions: 4, tours: None, out: PathBuf::from("out/serve") }
+        Config {
+            marks: 16,
+            max_step: 3600,
+            sessions: 4,
+            tours: Vec::new(),
+            spines: None,
+            checkpoint_every: crate::spine::CHECKPOINT_EVERY,
+            index_every: crate::spine::INDEX_EVERY,
+            out: PathBuf::from("out/serve"),
+        }
     }
 }
 
@@ -676,6 +712,8 @@ impl<'a> Server<'a> {
             "session.render" => self.with(args, Self::render),
             "session.export" => self.with(args, Self::export),
             "session.close" => self.close(args),
+            "spine.index" => self.spine_index(args),
+            "spine.where" => self.spine_where(args),
             "scene.render" => self.scene_render(args),
             _ => Err(internal(format!("{verb} is in the table but not wired"))),
         };
@@ -722,13 +760,9 @@ impl<'a> Server<'a> {
     }
 
     fn fresh_machine(&self, roms: &RomSet) -> Box<Machine> {
-        let mut m = Box::new(crate::machine(roms));
-        if crate::GEO_MODE.get().is_none() {
-            // The native geometrizer where the game has one: the same
-            // frames and state hashes, much faster (as tours run).
-            m.bus.geo.set_mode(model2::geo::GeoMode::Native);
-        }
-        m
+        // The native geometrizer where the game has one: the same frames
+        // and state hashes, much faster (as tours run).
+        crate::spine::fresh_machine(roms)
     }
 
     // ---------------------------------------------------------------- open
@@ -758,6 +792,7 @@ impl<'a> Server<'a> {
         let rss0 = rss_bytes();
         let id = format!("s{}", self.next_id);
         let mut m = self.fresh_machine(roms);
+        let mut ckpt = 0;
         let (kind, start, base, poked, mut warnings) = match from.as_str() {
             "power-on" => {
                 InputScript::default().apply(0, &mut m.bus);
@@ -814,14 +849,54 @@ impl<'a> Server<'a> {
                     return Err(bad(format!("from `{f}`: the frame is 1 to {OPEN_MAX_FRAMES}"))
                         .with_data(json!({"limit": OPEN_MAX_FRAMES})));
                 }
-                let tours = tour::load(game, self.cfg.tours.as_deref()).map_err(bad)?;
-                if tours.iter().all(|t| t.label != label) {
+                let tours = tour::load_paths(game, &self.cfg.tours).map_err(bad)?;
+                let Some(t) = tours.iter().find(|t| t.label == label) else {
                     let known: Vec<String> = tours.iter().map(|t| t.label.clone()).collect();
                     return Err(Answer::unknown("tour", label, &known).next("remodel tour list"));
-                }
+                };
                 let (script, poked) = tour::build_script(game, &tours, label).map_err(bad)?;
                 script.apply(0, &mut m.bus);
-                let mut last = 0;
+                // The nearest checkpoint at or before the frame (made on the
+                // first open of a spine: one replay), or power-on.
+                let mut tw: Vec<String> = Vec::new();
+                let mut from_ckpt = 0;
+                if matches!(t.length, tour::Length::Frames(_)) {
+                    let dir = spine::dir_of(&self.spines_root(), label);
+                    let key = spine::key(game, t, spine::native());
+                    if spine::meta(&dir, key).is_none() {
+                        let table = self.table.clone();
+                        let (ce, ie) = (self.cfg.checkpoint_every, self.cfg.index_every);
+                        let b = spine::build(roms, t, &script, &dir, ce, ie, &table).map_err(internal)?;
+                        tw.push(format!(
+                            "made the spine's checkpoints and index ({} checkpoints, {} rows, {:.1} s, once: {})",
+                            b.meta.checkpoints.len(),
+                            b.rows,
+                            b.seconds,
+                            dir.display()
+                        ));
+                    }
+                    if let Some((f, path)) = spine::nearest(&dir, key, frame) {
+                        let loaded = std::fs::read(&path)
+                            .map_err(|e| e.to_string())
+                            .and_then(|d| model2::load_session(&mut m, None, &d));
+                        match loaded {
+                            Ok(()) => from_ckpt = f,
+                            Err(e) => {
+                                // A checkpoint that will not load (an older state format): the
+                                // whole run from power-on, and the cache is dropped for the next open.
+                                tw.push(format!("checkpoint {f} does not load ({e}): replayed from power-on"));
+                                let _ = std::fs::remove_dir_all(&dir);
+                                m = self.fresh_machine(roms);
+                                script.apply(0, &mut m.bus);
+                            }
+                        }
+                    }
+                }
+                let mut last = m.frames;
+                if from_ckpt > 0 {
+                    script.apply(m.frames, &mut m.bus);
+                }
+                ckpt = from_ckpt;
                 while m.frames < frame {
                     m.run_slice(u64::MAX / 2)
                         .map_err(|e| internal(format!("the machine stopped at frame {}: {e:?}", m.frames)))?;
@@ -831,7 +906,7 @@ impl<'a> Server<'a> {
                     }
                 }
                 m.bus.uart_log.clear();
-                (Start::Tour(label.to_string(), frame), frame, vec![], poked, vec![])
+                (Start::Tour(label.to_string(), frame), frame, vec![], poked, tw)
             }
             other => {
                 return Err(bad(format!("from `{other}`: want power-on, scene:NAME or tour:LABEL@FRAME"))
@@ -862,6 +937,7 @@ impl<'a> Server<'a> {
             "session": id, "game": game.id, "from": from, "frame": frame, "state_hash": format!("{hash:016x}"),
             "limits": {"marks": self.cfg.marks, "max_step": self.cfg.max_step, "sessions": self.cfg.sessions},
             "ms": ms.round(), "rss_added_mb": (rss / (1 << 20)),
+            "checkpoint": ckpt, "stepped": frame.saturating_sub(ckpt),
         }));
         for w in warnings.drain(..) {
             a = a.warn(w);
@@ -1297,10 +1373,11 @@ impl<'a> Server<'a> {
             std::fs::create_dir_all(&dir).map_err(|e| internal(format!("{}: {e}", dir.display())))?;
             let path = dir.join(format!("{name}.tours"));
             // A branch from a tour of the project's file needs that file's lines too.
-            let mut text = match &self.cfg.tours {
-                Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
-                None => String::new(),
-            };
+            let mut text = String::new();
+            for p in &self.cfg.tours {
+                text.push_str(&std::fs::read_to_string(p).unwrap_or_default());
+                text.push('\n');
+            }
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
             }
@@ -1323,6 +1400,106 @@ impl<'a> Server<'a> {
             Some(f) => format!("remodel tour run {label} --tours {f}"),
             None => format!("remodel tour run {label} --tours FILE   (FILE holds the line)"),
         }))
+    }
+
+    // ---------------------------------------------------------------- spines
+
+    fn spines_root(&self) -> PathBuf {
+        self.cfg.spines.clone().unwrap_or_else(|| spine::default_dir(self.game.id))
+    }
+
+    /// The tour `label` of the game's and the project's files, and its
+    /// whole input as a script.
+    fn spine_tour(&self, label: &str) -> Result<(tour::Tour, InputScript), Answer> {
+        let tours = tour::load_paths(self.game, &self.cfg.tours).map_err(bad)?;
+        let Some(t) = tours.iter().find(|t| t.label == label) else {
+            let known: Vec<String> = tours.iter().map(|t| t.label.clone()).collect();
+            return Err(Answer::unknown("tour", label, &known).next("remodel tour list"));
+        };
+        let (script, _) = tour::build_script(self.game, &tours, label).map_err(bad)?;
+        Ok((t.clone(), script))
+    }
+
+    fn spine_build(
+        &self,
+        t: &tour::Tour,
+        script: &InputScript,
+        every: u64,
+        index_every: u64,
+    ) -> Result<spine::Built, Answer> {
+        let roms = self.roms()?;
+        spine::build(roms, t, script, &spine::dir_of(&self.spines_root(), &t.label), every, index_every, &self.table)
+            .map_err(|e| bad(e).next("remodel tour list"))
+    }
+
+    fn spine_index(&mut self, args: &Value) -> Result<Answer, Answer> {
+        let label = s_arg(args, "spine").unwrap_or("");
+        let every = n_arg(args, "every").unwrap_or(self.cfg.checkpoint_every);
+        let index_every = n_arg(args, "index_every").unwrap_or(self.cfg.index_every);
+        if every == 0 || index_every == 0 {
+            return Err(bad("spine.index: `every` and `index_every` are at least 1"));
+        }
+        let (t, script) = self.spine_tour(label)?;
+        let b = self.spine_build(&t, &script, every, index_every)?;
+        let dir = spine::dir_of(&self.spines_root(), label);
+        Ok(Answer::done(json!({
+            "spine": label, "dir": dir.display().to_string(), "key": format!("{:016x}", b.meta.key),
+            "frames": b.meta.frames, "checkpoint_every": every, "checkpoints": b.meta.checkpoints.len(),
+            "index_every": index_every, "index_rows": b.rows, "values": self.table.len(),
+            "checkpoint_mb": (b.bytes / (1 << 20)), "seconds": b.seconds,
+        }))
+        .next(format!("spine.where spine={label} near=NAME=VALUE")))
+    }
+
+    fn spine_where(&mut self, args: &Value) -> Result<Answer, Answer> {
+        let label = s_arg(args, "spine").unwrap_or("");
+        let limit = n_arg(args, "limit").unwrap_or(5).clamp(1, 1000) as usize;
+        let gap = n_arg(args, "gap").unwrap_or(90);
+        let near =
+            l_arg(args, "near").iter().map(|s| spine::parse_near(s)).collect::<Result<Vec<_>, _>>().map_err(bad)?;
+        let filters =
+            l_arg(args, "where").iter().map(|s| spine::parse_filter(s)).collect::<Result<Vec<_>, _>>().map_err(bad)?;
+        let (t, script) = self.spine_tour(label)?;
+        let dir = spine::dir_of(&self.spines_root(), label);
+        let key = spine::key(self.game, &t, spine::native());
+        let mut made = None;
+        let index = match spine::load_index(&dir, key, &self.table) {
+            Some(i) => i,
+            None => {
+                if self.roms.is_none() {
+                    return Err(Answer::fail(
+                        Code::Missing,
+                        format!("spine {label} has no index (or it is of another recording)"),
+                    )
+                    .next(format!("remodel spine index {label}   (needs the ROM)")));
+                }
+                let b = self.spine_build(&t, &script, self.cfg.checkpoint_every, self.cfg.index_every)?;
+                made =
+                    Some(format!("made the spine's index and checkpoints ({} rows, {:.1} s, once)", b.rows, b.seconds));
+                spine::load_index(&dir, key, &self.table)
+                    .ok_or_else(|| internal("the index just made does not load"))?
+            }
+        };
+        let found = index.find(&near, &filters, limit, gap).map_err(|e| bad(e).next("remodel ram values"))?;
+        let (kind, results, empty) = match &found {
+            spine::Found::Nearest(h) => {
+                ("nearest", h.iter().map(|h| spine::hit_json(label, h)).collect::<Vec<_>>(), h.is_empty())
+            }
+            spine::Found::Spans(s) => {
+                ("spans", s.iter().map(|s| spine::span_json(label, s)).collect::<Vec<_>>(), s.is_empty())
+            }
+        };
+        let mut a = Answer::done(json!({
+            "spine": label, "kind": kind, "frames": index.frames, "index_every": index.every,
+            "results": results,
+        }));
+        if empty {
+            a = a.warn("nothing in the index matches");
+        }
+        if let Some(w) = made {
+            a = a.warn(w);
+        }
+        Ok(a.next("session.open from=tour:LABEL@FRAME (a result's `open`)"))
     }
 
     fn close(&mut self, args: &Value) -> Result<Answer, Answer> {
@@ -1356,7 +1533,7 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), VERBS.len());
-        assert_eq!(VERBS.len(), 13);
+        assert_eq!(VERBS.len(), 15);
         for v in VERBS {
             let mut a: Vec<&str> = v.args.iter().map(|a| a.name).collect();
             a.sort();
@@ -1472,7 +1649,7 @@ mod tests {
         let out =
             Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../out/scratch/serve-test-{}", std::process::id()));
         std::env::set_var("REMODEL_LOCK_DIR", out.join("locks"));
-        let cfg = Config { marks: 2, max_step: 3600, sessions: 2, tours: None, out: out.clone() };
+        let cfg = Config { marks: 2, max_step: 3600, sessions: 2, out: out.clone(), ..Config::default() };
         let mut srv = Server::new(game, Some(&roms), cfg);
         let recipes = crate::scene::recipes(game, None).unwrap();
         let recipe = |n: &str| recipes.iter().find(|r| r.name == n).unwrap().clone();
@@ -1601,6 +1778,132 @@ mod tests {
             srv.call("session.camera", &json!({"camera": "orbit=20"}));
             assert_eq!(srv.call("session.export", &json!({})).data["line"], l1);
         }
+        let _ = std::fs::remove_dir_all(&out);
+    }
+    /// A short recording as a spine (skipped without the ROM): the checkpoints
+    /// give the same state as stepping from power-on, `spine.where` finds
+    /// frames that open, a changed recording drops the cache, and a branch
+    /// exported from the session replays to its hash, its spine in another file.
+    #[test]
+    fn a_spine_opens_from_checkpoints_and_exports_a_branch() {
+        let game = romset::games::find("topskatr").unwrap();
+        let rom = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rom");
+        let Ok(roms) = RomSet::load(game, &rom, false) else { return };
+        let out =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../out/scratch/spine-test-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        std::env::set_var("REMODEL_LOCK_DIR", out.join("locks"));
+        let items: Vec<String> = game.controls.coin_start.split(',').map(str::to_string).collect();
+        let spine_file = out.join("spine.txt");
+        let write_spine = |len: u64| {
+            std::fs::write(&spine_file, format!("spn|{len}f|coin-start\n")).unwrap();
+        };
+        write_spine(1300);
+        let cfg = Config {
+            tours: vec![spine_file.clone()],
+            spines: Some(out.join("spines")),
+            checkpoint_every: 400,
+            index_every: 50,
+            out: out.clone(),
+            ..Config::default()
+        };
+        let mut srv = Server::new(game, Some(&roms), cfg.clone());
+
+        // The state at frame 1000 stepped from power-on: the reference.
+        let a = srv.call("session.open", &json!({}));
+        assert!(a.ok(), "{:?}", a.error);
+        drive(&mut srv, &items, 0, 1000);
+        let want = format!("{:016x}", srv.sessions.values_mut().next().unwrap().hash());
+        assert!(srv.call("session.close", &json!({})).ok());
+
+        // The first open makes the cache (once); it loads the checkpoint at 800 and steps 200.
+        let a = srv.call("session.open", &json!({"from": "tour:spn@1000"}));
+        assert!(a.ok(), "{:?}", a.error);
+        assert_eq!(a.data["checkpoint"], 800, "{a:?}");
+        assert_eq!(a.data["stepped"], 200);
+        assert!(a.warnings.iter().any(|w| w.contains("made the spine's")), "{:?}", a.warnings);
+        assert_eq!(hash_of(&a), want, "opening through a checkpoint gives power-on's state");
+        assert!(srv.call("session.close", &json!({})).ok());
+        // Every frame, at, before and after a checkpoint, agrees; the second open makes nothing.
+        for f in [1u64, 399, 400, 401, 799] {
+            let a = srv.call("session.open", &json!({"from": format!("tour:spn@{f}")}));
+            assert!(a.ok() && a.warnings.is_empty(), "{:?} {:?}", a.error, a.warnings);
+            assert_eq!(a.data["checkpoint"], f / 400 * 400);
+            let h = hash_of(&a);
+            let b = srv.call("session.close", &json!({}));
+            assert!(b.ok());
+            let a = srv.call("session.open", &json!({}));
+            assert!(a.ok());
+            drive(&mut srv, &items, 0, f);
+            let w = format!("{:016x}", srv.sessions.values_mut().next().unwrap().hash());
+            assert_eq!(h, w, "frame {f}");
+            assert!(srv.call("session.close", &json!({})).ok());
+        }
+
+        // spine.where: the stretches on a screen, and the frames nearest one.
+        let a = srv.call("spine.where", &json!({"spine": "spn", "where": ["screen>=0"]}));
+        assert!(a.ok(), "{:?}", a.error);
+        assert_eq!(a.data["kind"], "spans");
+        assert_eq!(a.data["results"][0]["from"], 50);
+        assert_eq!(a.data["results"][0]["to"], 1300 / 50 * 50);
+        let a = srv.call("spine.where", &json!({"spine": "spn", "near": ["clock=0", "screen=32"], "limit": 3}));
+        assert!(a.ok(), "{:?}", a.error);
+        let hits = a.data["results"].as_array().unwrap();
+        assert_eq!(a.data["kind"], "nearest");
+        assert!(!hits.is_empty());
+        let at = hits[0]["frame"].as_u64().unwrap();
+        assert_eq!(hits[0]["distance"], 0.0, "the boot text is on screen 32: {hits:?}");
+        assert_eq!(hits[0]["open"], format!("tour:spn@{at}"));
+        assert_eq!(hits[0]["values"]["screen"], 32.0);
+        let e = srv.call("spine.where", &json!({"spine": "spn", "near": ["scren=1"]}));
+        assert_eq!(e.code, Code::BadRequest);
+        assert!(e.message().contains("did you mean screen"), "{}", e.message());
+        let a = srv.call("session.open", &json!({"from": hits[0]["open"]}));
+        assert!(a.ok(), "{:?}", a.error);
+        assert_eq!(a.data["frame"], at);
+        // And on a screen that is never there: nothing, with a word about it.
+        let a = srv.call("spine.where", &json!({"spine": "spn", "where": ["screen=999"]}));
+        assert!(a.ok() && a.data["results"].as_array().unwrap().is_empty());
+        assert!(srv.call("session.close", &json!({})).ok());
+
+        // A branch from the spine at 1000: step with its own inputs, export, replay.
+        let a = srv.call("session.open", &json!({"from": "tour:spn@1000"}));
+        assert!(a.ok(), "{:?}", a.error);
+        assert!(srv.call("session.input", &json!({"inputs": ["start"]})).ok());
+        let a = srv.call("session.step", &json!({"frames": 40}));
+        assert!(a.ok(), "{:?}", a.error);
+        let exp = srv.call("session.export", &json!({"label": "br", "file": "br"}));
+        assert!(exp.ok(), "{:?}", exp.error);
+        let line = exp.data["line"].as_str().unwrap().to_string();
+        assert!(line.starts_with("br|1040f|from=spn@1000,"), "{line}");
+        // The spine in one file, the branch alone in another.
+        let branch_file = out.join("branch.txt");
+        std::fs::write(&branch_file, format!("{line}\n")).unwrap();
+        let tours = tour::load_paths(game, &[spine_file.clone(), branch_file.clone()]).unwrap();
+        assert!(tour::load_paths(game, std::slice::from_ref(&branch_file)).is_err(), "a branch alone has no spine");
+        let (script, poked) = tour::build_script(game, &tours, "br").unwrap();
+        assert!(!poked);
+        let dir = out.join("tour");
+        std::fs::create_dir_all(dir.join("states")).unwrap();
+        let t = tours.iter().find(|t| t.label == "br").unwrap();
+        let (row, _) = tour::run_one(&roms, t, &script, &dir, false).unwrap();
+        assert_eq!(row["state_hash"].as_str().unwrap(), exp.data["state_hash"].as_str().unwrap(), "{line}");
+        // A branch opened from the branch: its spine's spine is in the other file.
+        assert!(srv.call("session.close", &json!({})).ok());
+        let mut cfg2 = cfg.clone();
+        cfg2.tours.push(branch_file);
+        let mut srv2 = Server::new(game, Some(&roms), cfg2);
+        let a = srv2.call("session.open", &json!({"from": "tour:br@1020"}));
+        assert!(a.ok(), "{:?}", a.error);
+        assert_eq!(a.data["frame"], 1020);
+
+        // A changed recording drops the cache: the next open makes it again.
+        write_spine(1250);
+        let mut srv3 = Server::new(game, Some(&roms), cfg);
+        let a = srv3.call("session.open", &json!({"from": "tour:spn@1000"}));
+        assert!(a.ok(), "{:?}", a.error);
+        assert!(a.warnings.iter().any(|w| w.contains("made the spine's")), "{:?}", a.warnings);
+        assert_eq!(hash_of(&a), want, "the same inputs, the same state");
         let _ = std::fs::remove_dir_all(&out);
     }
 }

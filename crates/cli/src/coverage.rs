@@ -324,7 +324,7 @@ fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[Stri
         Ok(g) => g,
         Err(e) => return fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
     };
-    let tours = match tour::load(game, c.tours.as_deref()) {
+    let tours = match tour::load_paths(game, &c.tours) {
         Ok(t) => t,
         Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
@@ -488,5 +488,61 @@ mod tests {
         let t = text(&report(&[map("a", &[(0, 100)], &[(0, 10)])], 5).unwrap());
         assert!(t.contains("polygon ROM"), "{t}");
         assert!(t.contains("unread stretches"), "{t}");
+    }
+
+    /// A branch whose spine is in another `--tours` file is counted like any
+    /// tour, and its map goes stale when the spine's line changes (no ROM).
+    #[test]
+    fn a_branch_with_its_spine_in_another_file_counts_toward_coverage() {
+        let dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../out/scratch/cov-branch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (spine, branch) = (dir.join("spine.txt"), dir.join("branch.txt"));
+        std::fs::write(&spine, "spn|100f|coin-start\n").unwrap();
+        std::fs::write(&branch, "br|120f|from=spn@50,start@60-70\n").unwrap();
+        let game = romset::games::find("topskatr").unwrap();
+        let files = vec![spine.clone(), branch.clone()];
+        let tours = tour::load_paths(game, &files).unwrap();
+        let maps = dir.join("maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        for (label, poly) in [("spn", (0u64, 100u64)), ("br", (100, 300))] {
+            let t = tours.iter().find(|t| t.label == label).unwrap();
+            let mut m = map(label, &[poly], &[]);
+            m.game = "topskatr".into();
+            m.spec = fnv(&t.spec);
+            m.save(&MapFile::path(&maps, label)).unwrap();
+        }
+        let o = crate::Opts {
+            game_id: "topskatr".into(),
+            rom_dir: dir.clone(),
+            input: None,
+            geo_frame: None,
+            pack_dir: None,
+            soundtrack: None,
+            interp: false,
+            single_thread: false,
+            args: vec![],
+        };
+        let c = tour::Common { json: true, tours: files.clone(), dir: Some(maps.clone()) };
+        let a = answer_for(&o, &c, None, &[]);
+        assert!(a.ok(), "{:?}", a.error);
+        let labels: Vec<&str> =
+            a.data["tours"].as_array().unwrap().iter().map(|t| t["label"].as_str().unwrap()).collect();
+        assert!(labels.contains(&"spn") && labels.contains(&"br"), "{labels:?}");
+        assert_eq!(a.data["changed_tours"], json!([]));
+        let missing = a.data["missing_tours"].to_string();
+        assert!(!missing.contains("spn") && !missing.contains("\"br\""), "{missing}");
+        // What the branch read (words 100 to 300) is counted beside the spine's (0 to 100): 300 words, 1200 bytes.
+        assert_eq!(a.data["polygon"]["read_bytes"], 1200);
+        // The spine's line changes: the branch's map is stale too, and says so.
+        std::fs::write(&spine, "spn|100f|coin-start,left@80-90\n").unwrap();
+        let a = answer_for(&o, &c, None, &[]);
+        let changed: Vec<&str> =
+            a.data["changed_tours"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert!(changed.contains(&"spn") && changed.contains(&"br"), "{changed:?}");
+        // A branch with no spine in the files given is refused.
+        let c = tour::Common { json: true, tours: vec![branch], dir: Some(maps) };
+        assert!(!answer_for(&o, &c, None, &[]).ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

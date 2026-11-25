@@ -667,6 +667,14 @@ SERVE_OPTS      ?= --no-stdio
 SERVE_CHECK_OUT ?= out/scratch/serve-check
 serve: release ## The live-session server for GAME on a Unix socket, out/serve/GAME.sock (SERVE_OPTS="--marks N --max-step N --sessions N --tours FILE --no-stdio"; an agent starts it itself over stdin/stdout, see docs/uplift-studio.md, "Live sessions"); call it with `remodel call session.open`
 	$(RUN) serve --socket $(SERVE_OPTS)
+SPINE ?=
+SPINE_OPTS ?=
+spine-index: release ## Replay a recording once (SPINE=LABEL, a tour from power-on; SPINE_OPTS="--tours FILE --every N --index-every K --dir DIR --json") and keep out/GAME/spines/LABEL/: a checkpoint every N frames (default 600; `session.open from: tour:LABEL@F` loads the nearest and steps the rest) and the game's named values every K frames (default 30); keyed by the tour line, so a changed recording drops them (docs/uplift-studio.md, "Spines")
+	@test -n "$(SPINE)" || { echo "SPINE=LABEL is needed (a tour of GAME's or of SPINE_OPTS's --tours files)"; exit 2; }
+	$(RUN) spine index $(SPINE) $(SPINE_OPTS)
+spine-where: release ## Ask a spine's index (SPINE=LABEL; SPINE_OPTS="--near pos-x=12 --near pos-z=-4000 --where screen=7 --limit N --gap F --tours FILE --json"): the frames nearest a point, or the stretches that match; each says the `tour:LABEL@F` to open (needs the ROM only if the index is not made yet)
+	@test -n "$(SPINE)" || { echo "SPINE=LABEL is needed"; exit 2; }
+	$(RUN) spine where $(SPINE) $(SPINE_OPTS)
 serve-check: release ## The server acceptance test on GAME (needs the ROM; a GPU for the render): a real MCP client over stdin/stdout and the socket opens a session at power-on, steps a scene recipe's inputs to its frame (the scene's hash), opens from the scene, marks/steps/restores (the mark's hash), exports a tour that `tour run` replays to the same hash, reads, renders a PNG, calls over the socket and closes; MEASURE=1 also prints the speeds and memory
 	@rm -rf $(SERVE_CHECK_OUT)
 	python3 tools/serve-check.py "$(CAP) $(REMODEL)" $(GAME) $(ROM) $(SERVE_CHECK_OUT) $(if $(MEASURE),--measure)

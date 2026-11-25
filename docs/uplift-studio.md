@@ -1367,14 +1367,16 @@ and the command line cannot drift; `remodel call --help` lists them):
 | `session.render` | Draws the current frame (`view`, `pack` layers, `look`, `crop`, `against`, `camera`) to `out/serve/GAME/NAME.png` and answers the path, size, polygon count and, against the original, the changed share |
 | `session.export` | The log as a branch tour line, `LABEL\|Nf\|from=SPINE@F INPUTS`; with `file`, written to `out/serve/GAME/FILE.tours`. `remodel tour run LABEL --tours FILE` replays it to the same state hash |
 | `session.close` | Frees the machine and its marks |
+| `spine.index` | Replays a recording once and keeps its checkpoints and value index ("Spines", below) |
+| `spine.where` | The frames of a recording nearest a point, or the stretches that match a condition, each with the `tour:LABEL@FRAME` to open |
 | `scene.render` | A still of a made scene (`scene render`'s arguments), with the GPU kept warm |
 
-A session holds inputs that apply to the frame it is on, so the frame it
+A session opened `from: tour:LABEL@FRAME` is quick at any frame of a long recording ("Spines", below). A session holds inputs that apply to the frame it is on, so the frame it
 started from (the scene's, or the tour's branch point) keeps its own. The
 `session` argument may be left out while only one session is open. The server
 takes the `render` lock (`tools/lock`) only while the GPU draws; run it under
 `tools/capped` as above. `--sessions N` caps the sessions open (default 4),
-`--tours FILE` adds a project's tours for `tour:` starts, and `--out DIR`
+`--tours FILE` (as often as needed) adds a project's tours for `tour:` starts, and `--out DIR`
 (before `serve`) moves the pictures and exported tours.
 
 **Checking it.** `make serve-check` starts the binary and plays an MCP client
@@ -1387,6 +1389,63 @@ closing standard input stops the server and removes the socket (`MEASURE=1`
 prints the speeds and memory). Without ROMs the unit tests cover the protocol,
 the verb table, argument validation and the limits; the ROM tests
 (`session::tests`) skip silently without them.
+
+### Spines
+
+A person's recording of a whole run (a tour from power-on; "Recording a tour")
+is a **spine**: a session opens at any frame of it, branches with its own
+inputs to look at what the recording never showed, and `session.export` writes
+the branch as a tour (`from=LABEL@F`) that `tour run` replays to the same hash
+and that `coverage` counts like any tour. Two things make that practical, both
+made by one replay from power-on and kept in `out/GAME/spines/LABEL/`:
+
+- **Checkpoints**, a machine state every N frames (default 600, about 1.4 MB
+  each; 32 and 47 MB for a 19,368-frame run). `session.open from:
+  tour:LABEL@F` loads the nearest one at or before F and steps the rest, so an
+  open costs the load (about 0.1 s) and at most N frames of stepping, not the
+  run from power-on. The first open of a spine makes them (one replay, with a
+  warning saying so); a state that does not load (an older state format) falls
+  back to the replay and drops the cache.
+- **An index** of the game's named values (its value table, "Named values")
+  every K frames (default 30): `index.tsv`, one row a sample, a column a value.
+  Nothing in the code names a game's values; a game with a table is searchable,
+  one without has an index of no columns.
+
+Both are keyed by the tour's line and its `from=` parents' lines (and the
+geometrizer, the file layout and, for the index, the value table), so a changed
+recording or table makes the next use build them again. A change to the
+emulator itself is not seen: delete `out/GAME/spines/` after one that changes
+frames or states.
+
+`remodel spine index LABEL [--tours FILE]... [--every N] [--index-every K]`
+(`make spine-index SPINE=LABEL`) builds them. `remodel spine where LABEL
+--near pos-x=12 --near pos-z=-4000 [--where screen=7] [--limit N] [--gap F]`
+(`make spine-where`; the verbs `spine.index` and `spine.where` in a server)
+answers from the index: with `--near`, the frames nearest the point (distance
+over the named values, results at least `--gap` frames apart, default 90),
+with only `--where` (`NAME OP VALUE`, OP `=` `!=` `>` `>=` `<` `<=`; a number may
+be hex) the stretches of consecutive rows that match. Each result says the
+`tour:LABEL@FRAME` to open. Asking needs no ROM once the index is made.
+
+`--tours FILE` may be given more than once (`tour run`, `coverage`, `ram`,
+`crawl`, `spine` and `serve`), so a branch tour whose spine is another file (a
+person's recording, and a session's export of a branch from it) runs and counts
+without copying lines between files. A branch's read map also records its
+spine's line, so it counts as changed when the recording does.
+
+Measured on Top Skater's Novice recording (19,368 frames, native geometrizer,
+release build, this machine; the build of 32 checkpoints and 645 rows took 66
+s, once), `session.open from: tour:novice-full@F`:
+
+| F | from power-on | from a checkpoint (frame loaded, stepped) |
+|---|---|---|
+| 5,000 | 13.9 s | 0.91 s (4,800, 200) |
+| 10,000 | 31.5 s | 1.51 s (9,600, 400) |
+| 15,000 | 47.0 s | 0.12 s (15,000, 0) |
+
+The state hashes are the same both ways (28af51daa696e03a, 310bd44b43178233,
+d65955f4630b2a04). The cost left is stepping, about 290 frames a second on the
+race screen; `--every 300` halves the worst case for twice the disk.
 
 ## What is built, what comes later
 

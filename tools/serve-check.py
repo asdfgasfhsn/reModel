@@ -133,7 +133,7 @@ if r["result"]["serverInfo"]["name"] != "remodel":
 rpc("notifications/initialized", notify=True)
 tools = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
 want = ["session.open", "session.input", "session.step", "session.mark", "session.restore", "session.forget",
-        "session.read", "session.poke", "session.camera", "session.render", "session.export", "session.close", "scene.render"]
+        "session.read", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "scene.render"]
 if tools != want:
     fail(f"tools/list {tools}")
 if "error" not in rpc("tools/call", {"name": "session.nonesuch", "arguments": {}}):

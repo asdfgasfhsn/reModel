@@ -102,7 +102,8 @@ pub struct Tour {
     pub marks: Vec<(String, u64)>,
     /// The input items of the tour's own, as written.
     pub inputs: Vec<String>,
-    /// The line, normalised: what a map records to know the tour changed.
+    /// The line, normalised, and a branch's parents' lines: what a map
+    /// or a spine's checkpoints record to know the tour changed.
     pub spec: String,
 }
 
@@ -202,6 +203,10 @@ pub fn parse(text: &str, source: &str) -> Result<Vec<Tour>, String> {
                 }
             }
         }
+    }
+    let specs: Vec<String> = tours.iter().map(|t| chain_spec(&tours, &t.label)).collect();
+    for (t, spec) in tours.iter_mut().zip(specs) {
+        t.spec = spec;
     }
     Ok(tours)
 }
@@ -382,12 +387,26 @@ pub fn resolve_pokes(items: Vec<String>, table: &[(String, String, String)]) -> 
         .collect()
 }
 
-/// The game's own tours, then a project's (`--tours FILE`).
-pub fn load(game: &romset::Game, extra: Option<&Path>) -> Result<Vec<Tour>, String> {
-    load_many(game, &extra.into_iter().collect::<Vec<_>>())
+/// The game's own tours, then each of `extra`'s files in order.
+pub fn load_paths(game: &romset::Game, extra: &[PathBuf]) -> Result<Vec<Tour>, String> {
+    load_many(game, &extra.iter().map(PathBuf::as_path).collect::<Vec<_>>())
 }
 
-/// The game's own tours, then each of `extra`'s files in order.
+/// A tour's line and its `from=` parents' lines (`Tour::spec` of a
+/// branch, so a branch changes when its spine does).
+fn chain_spec(tours: &[Tour], label: &str) -> String {
+    let mut out = String::new();
+    let mut cur = tours.iter().find(|t| t.label == label);
+    while let Some(t) = cur {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&t.spec);
+        cur = t.from.as_ref().and_then(|(p, _)| tours.iter().find(|x| x.label == *p));
+    }
+    out
+}
+
 pub fn load_many(game: &romset::Game, extra: &[&Path]) -> Result<Vec<Tour>, String> {
     let mut text = romset::games::tours(game).to_string();
     let mut source = format!("{} tours", game.id);
@@ -430,14 +449,19 @@ pub fn default_dir(game: &str) -> PathBuf {
 /// The options both verbs share, taken out of the arguments.
 pub struct Common {
     pub json: bool,
-    pub tours: Option<PathBuf>,
+    /// `--tours FILE`, as many times as given: a branch's spine can be in another file.
+    pub tours: Vec<PathBuf>,
     pub dir: Option<PathBuf>,
 }
 
 pub fn common(args: &mut Vec<String>) -> Result<Common, String> {
     let json = take_flag(args, "--json");
-    let (tours, dir) = (take_opt(args, "--tours"), take_opt(args, "--dir"));
-    Ok(Common { json, tours: tours.map(PathBuf::from), dir: dir.map(PathBuf::from) })
+    let mut tours = Vec::new();
+    while let Some(t) = take_opt(args, "--tours") {
+        tours.push(PathBuf::from(t));
+    }
+    let dir = take_opt(args, "--dir");
+    Ok(Common { json, tours, dir: dir.map(PathBuf::from) })
 }
 
 /// `remodel tour VERB`: `list` here (no ROMs needed); `run` is [`run`].
@@ -490,7 +514,7 @@ fn list_answer(o: &crate::Opts, c: &Common, args: &[String]) -> Answer {
         Ok(g) => g,
         Err(e) => return fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
     };
-    let tours = match load(game, c.tours.as_deref()) {
+    let tours = match load_paths(game, &c.tours) {
         Ok(t) => t,
         Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
@@ -551,9 +575,9 @@ pub fn run(o: &crate::Opts, roms: &RomSet) -> ExitCode {
 
 fn run_answer(args: &mut Vec<String>, c: &Common, roms: &RomSet) -> Answer {
     let all = take_flag(args, "--all");
-    let usage = "remodel tour run NAME|--all [--tours FILE] [--dir DIR] [--json]";
+    let usage = "remodel tour run NAME|--all [--tours FILE]... [--dir DIR] [--json]";
     let game = roms.game;
-    let tours = match load(game, c.tours.as_deref()) {
+    let tours = match load_paths(game, &c.tours) {
         Ok(t) => t,
         Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
@@ -805,7 +829,7 @@ mod tests {
     #[test]
     fn the_shipped_tours_parse_and_their_inputs_are_valid() {
         for g in romset::games::ALL {
-            let tours = load(g, None).unwrap_or_else(|e| panic!("{}: {e}", g.id));
+            let tours = load_many(g, &[]).unwrap_or_else(|e| panic!("{}: {e}", g.id));
             for t in &tours {
                 let items = inputs(&tours, &t.label, g.controls.coin_start).unwrap();
                 let table = poke_table(romset::games::pokes(g)).unwrap_or_else(|e| panic!("{} {e}", g.id));
@@ -814,7 +838,7 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{} {}: {e}", g.id, t.label));
             }
         }
-        let top = load(romset::games::find("topskatr").unwrap(), None).unwrap();
+        let top = load_many(romset::games::find("topskatr").unwrap(), &[]).unwrap();
         assert!(top.iter().any(|t| t.label == "bench" && t.length == Length::Steps(600_000_000)));
     }
 }

@@ -245,7 +245,7 @@ fn crawl_answer(args: &mut Vec<String>, c: &tour::Common, roms: &RomSet, json: b
         return fail(answer::BAD_REQUEST, format!("crawl: unexpected {extra}"), Some(usage));
     }
     let game = roms.game;
-    let tours = match tour::load(game, c.tours.as_deref()) {
+    let tours = match tour::load_paths(game, &c.tours) {
         Ok(t) => t,
         Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
@@ -555,7 +555,7 @@ fn verify_answer(args: &mut Vec<String>, c: &tour::Common, roms: &RomSet) -> Ans
         Err(e) => return fail(answer::INTERNAL, format!("crawl.json: {e}"), None),
     };
     let crawl_txt = dir.join("crawl.txt");
-    let mut files: Vec<&Path> = c.tours.as_deref().into_iter().collect();
+    let mut files: Vec<&Path> = c.tours.iter().map(PathBuf::as_path).collect();
     files.push(&crawl_txt);
     let tours = match tour::load_many(game, &files) {
         Ok(t) => t,
