@@ -233,7 +233,8 @@ impl Dsp {
                 2 => sext(self.acc * 2, 24),
                 _ => sext(self.acc, 24),
             };
-            self.acc = sext((((x as i64) * (y as i64)) >> 12) as i32 + b, 26);
+            // The adder wraps, as release builds always did; sext keeps its 26 bits.
+            self.acc = sext(((((x as i64) * (y as i64)) >> 12) as i32).wrapping_add(b), 26);
             if twt {
                 self.temp[((twa + self.dec) & 0x7f) as usize] = shifted;
             }
