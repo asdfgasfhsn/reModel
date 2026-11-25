@@ -126,7 +126,11 @@ pub fn run(root: &Path, out_dir: &Path, o: &Options) -> Result<(), String> {
         }
         video::HudLayout::new(&f.tiles, &f.palette, &view).anchor(&mut polys, &view);
         let placed = raster::place(&mut polys, &view);
-        let layers = video::layers_2d(&f.tiles, &f.palette, &view, !placed.is_empty());
+        // The pack's tile images (HUD, menus) in place of the patterns, from
+        // the GPU's layers (twice: the first fills the tile atlas).
+        let has_3d = !placed.is_empty();
+        gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d);
+        let layers = gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d);
         gpu.set_quality(o.quality);
         gpu.set_look(None);
         let plain = gpu.frame(&polys, &placed, &src, &view, &layers);

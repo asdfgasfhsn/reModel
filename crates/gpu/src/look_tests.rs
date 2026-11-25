@@ -408,6 +408,104 @@ fn toon_lighting_quantises_into_its_steps() {
     assert!((0.2..0.7).contains(&share), "dot share {share}");
 }
 
+/// `outline_silhouette` widens the lines at depth steps only: the box's
+/// outer edge gets thicker, and 1 is the plain weight.
+#[test]
+fn silhouette_lines_can_be_wider_than_the_weight() {
+    let Some(mut gpu) = Renderer::for_test() else { return };
+    let scene = Scene::new();
+    let polys = flat_scene();
+    let off = scene.draw(&mut gpu, &polys, None, Quality::default());
+    let (gx, gy) = scene.px();
+    let (ex, ey) = (gx(60), gy(130));
+    let mut width = |look: Look| {
+        let on = scene.draw(&mut gpu, &polys, Some(look), Quality::default());
+        (ex..ex + 24).filter(|&x| at(&off, x, ey) != at(&on, x, ey)).count()
+    };
+    let plain = width(ink_look());
+    let mut one = ink_look();
+    one.params.set("outline_silhouette", "1").unwrap();
+    assert_eq!(width(one), plain, "1 is the old weight");
+    let mut wide = ink_look();
+    wide.params.set("outline_silhouette", "3").unwrap();
+    let wider = width(wide);
+    assert!(wider >= plain * 2, "silhouette 3: {wider} pixels against {plain}");
+}
+
+/// `toon_gain` stretches the light before the bands: a polygon lit across
+/// a narrow, bright range shows fewer bands at gain 1 than at a high gain;
+/// gain 1 is the same picture as the parameter left out.
+#[test]
+fn toon_gain_shows_more_steps_on_narrow_light() {
+    let Some(mut gpu) = Renderer::for_test() else { return };
+    let scene = Scene::new();
+    let mut lit = quad(40.0, 60.0, 440.0, 160.0, 0.004, [28, 8, 4], 500.0);
+    lit.lit = [170.0, 250.0, 250.0, 170.0].map(|l| [l, 0.0, 0.0, 1.0]).to_vec();
+    let polys = vec![lit];
+    let q = Quality { shading: Shading::Vertex, ..Default::default() };
+    let (px, py) = scene.px();
+    let mut bands = |gain: Option<&str>| {
+        let mut look = Look::default();
+        look.params.set("outline", "off").unwrap();
+        look.params.set("toon_steps", "4").unwrap();
+        look.params.set("toon_cut", "0.2").unwrap();
+        if let Some(g) = gain {
+            look.params.set("toon_gain", g).unwrap();
+        }
+        let rgb = scene.draw(&mut gpu, &polys, Some(look), q);
+        let mut d: Vec<[u8; 3]> = (px(40) + 3..px(440) - 3).map(|x| at(&rgb, x, py(110))).collect();
+        d.sort();
+        d.dedup();
+        d.len()
+    };
+    let plain = bands(None);
+    assert_eq!(bands(Some("1")), plain, "gain 1 changes nothing");
+    let gained = bands(Some("3.5"));
+    assert!(gained > plain, "gain 3.5 gives {gained} bands, gain 1 gives {plain}");
+}
+
+/// `halftone_ramp` grows the dots with the darkness inside the darkest
+/// band: more ink at the dark end than at the band's top; with no ramp
+/// both ends carry the same share.
+#[test]
+fn halftone_dots_swell_towards_the_dark() {
+    let Some(mut gpu) = Renderer::for_test() else { return };
+    let scene = Scene::new();
+    let mut lit = quad(40.0, 60.0, 440.0, 160.0, 0.004, [28, 8, 4], 500.0);
+    lit.lit = [0.0, 250.0, 250.0, 0.0].map(|l| [l, 0.0, 0.0, 1.0]).to_vec();
+    let polys = vec![lit];
+    let q = Quality { shading: Shading::Vertex, ..Default::default() };
+    let (px, py) = scene.px();
+    let mut shares = |ramp: &str| {
+        let mut look = Look::default();
+        look.params.set("outline", "off").unwrap();
+        look.params.set("toon_steps", "2").unwrap();
+        look.params.set("toon_cut", "0").unwrap();
+        look.params.set("halftone", "0.4").unwrap();
+        look.params.set("halftone_ramp", ramp).unwrap();
+        look.params.set("halftone_colour", "#ff00ff").unwrap();
+        let rgb = scene.draw(&mut gpu, &polys, Some(look), q);
+        let magenta = |c: [u8; 3]| c[0] > 200 && c[1] < 60 && c[2] > 200;
+        // Over every row of two stretches of the dark (left) half: dots
+        // are a grid, a row alone is noisy.
+        let share = |x0: usize, x1: usize| {
+            let (mut n, mut all) = (0, 0);
+            for g in 70..150 {
+                for x in px(x0)..px(x1) {
+                    all += 1;
+                    n += magenta(at(&rgb, x, py(g))) as usize;
+                }
+            }
+            n as f32 / all as f32
+        };
+        (share(50, 100), share(190, 240))
+    };
+    let (dark, top) = shares("1");
+    assert!(dark > top * 1.5 && dark > 0.2, "ramp 1: dark end {dark}, band top {top}");
+    let (dark, top) = shares("0");
+    assert!((dark - top).abs() < 0.08, "ramp 0: dark end {dark}, band top {top}");
+}
+
 /// An emissive tag draws a texture at full brightness whatever the
 /// polygon's luma.
 #[test]

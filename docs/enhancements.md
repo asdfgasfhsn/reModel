@@ -1395,9 +1395,15 @@ byte for byte the same).
   game's formula or the stream's lumas) is cut into N hard bands before the
   colour tables turn it into a colour, so the game's own palettes and a
   pack's images are lit in flat steps and keep their hue. The darkest band
-  can carry halftone dots (a rotated grid in screen space). Polygons the
+  can carry halftone dots (a rotated grid in screen space, its pitch in
+  output pixels scaled by the height; `halftone_ramp` grows the dots with
+  the depth into the band; `toon_gain` stretches the light before the cut
+  so lit models show their steps). Polygons the
   game didn't light are untouched. The cost is a few instructions per lit
   pixel. Not combined with material maps (they have their own luma path).
+- **Outline width** is in pixels at 1080 times the output's height over
+  1080, in the shared WGSL (the browser too); `outline_silhouette` widens
+  the depth lines against the texture lines.
 - **The texture-ID target.** Every texture has a live ID: `2 + (key folded
   to 23 bits)` from the 64-bit key pack files are named by
   (`gpu::texture_id`); untextured polygons `2^23 | colour`

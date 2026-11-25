@@ -1291,6 +1291,7 @@ tag	surf_fedcba9876543210_32x32	toon=off emissive
 | `outline_weight` | 0-8 (1.5; Comic 5) | thickness in pixels on a 1080-line picture (a line is as wide as asked, on the nearer side of an edge only); scales with the output height |
 | `outline_opacity` | 0-1 (0.9) | how solid |
 | `outline_depth` | 0-4 (1; Comic 1.5) | sensitivity to depth jumps and creases (0: none from depth); a thing narrower than twice the line's weight (a wire, a fence's mesh) is drawn at a third |
+| `outline_silhouette` | 0.5-4 (1) | width of the depth lines (a figure's outer contour, creases) as a multiple of `outline_weight`; texture lines keep the plain weight. Weights are pixels at 1080 and scale with the output's height (the browser's shared WGSL too), so a look reads alike at 1080p and 4K; 2 to 3 makes contours read as ink |
 | `outline_ids` | 0-1 (0.6; Comic 0.8) | strength of lines between two textures where the surface bends (0: none). Two textures on one flat surface (a floor of many pieces, a banner on a wall) never get one, however steeply the surface is tilted: that is paint, not a shape; a tag that names an `outline=` weight lines its texture there anyway |
 | `outline_fade_near`, `outline_fade_far` | game units (0, 0) | distance where lines start to thin, and where they are gone, so far scenery isn't ink noise. 0 leaves it to the scene: full strength up to 100 times its typical distance (where half the picture's polygon area is further away), gone at 800 times, since games' units and depth ranges differ by orders of magnitude (Top Skater's median surface is at 45, its stands at 15,000) |
 | `outline_colour` | `#rrggbb` (`#120f19`) | ink |
@@ -1298,8 +1299,10 @@ tag	surf_fedcba9876543210_32x32	toon=off emissive
 | `toon_steps` | 0 or 2-6 (3) | the game's smooth lighting in this many hard bands (0: smooth). Needs smooth shading (the Comic style turns it on; `look-render` does for a look with steps) |
 | `toon_floor` | 0-1 (0.45; Comic 0.35) | the darkest band's brightness, of the lit one |
 | `toon_cut` | 0-0.9 (0.35; Comic 0.3) | brightness below which everything is the darkest band |
+| `toon_gain` | 0.5-4 (1) | stretches the light about a lit tone before it is cut into bands, so a model's narrow range of light spans more of them; above 1 shows more steps on lit models, 1 is as before |
 | `halftone` | 0-1 (0; Comic 0.6) | dots of ink in the darkest band, this share of its area |
-| `halftone_pitch`, `halftone_angle`, `halftone_colour` | 2-24 px at 1080 (6), 0-90 (45), `#rrggbb` | the dot grid |
+| `halftone_pitch`, `halftone_angle`, `halftone_colour` | 2-24 px at 1080 (6), 0-90 (45), `#rrggbb` | the dot grid, in output pixels (the pitch scales with the output's height), only in the darkest band |
+| `halftone_ramp` | 0-1 (0) | dots swell with the darkness inside the band (about a quarter of `halftone` at the band's top, up to 1.6 times at black), as a printed tone does; 0 keeps every dot the same size |
 | `speed_lines` | 0-1 (0) | streaks from the middle of the picture; approximate: a fixed amount, not driven by speed |
 
 **The Comic defaults** (`Look::comic`, the built-in look with no pack):

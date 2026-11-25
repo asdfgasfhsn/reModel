@@ -24,7 +24,8 @@ struct Ink {
     // Line weight (pixels at 1080), opacity, depth sensitivity, texture
     // line strength.
     line: vec4f,
-    // Ink colour, and the rim light's glow strength.
+    // Ink colour, and the width of depth lines (silhouettes, creases) as a
+    // multiple of the line weight.
     colour: vec4f,
     // Fade, as distances (1/z): where lines are at full strength (and
     // nearer), where they are gone (and further); w a seed for the speed
@@ -186,6 +187,8 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
         let wpx = ink.line.x * ink.scale * wmul;
         if wpx > 0.0 && ink.line.y > 0.0 && fade > 0.002 {
             let r = max(i32(round(wpx)), 1);
+            // Silhouettes and creases can be inked wider than texture lines.
+            let rs = max(i32(round(wpx * ink.colour.w)), 1);
             // Under a pixel wide, thinner lines are fainter.
             let thin = min(wpx, 1.0);
             var k = 0.0;
@@ -193,7 +196,7 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
                 // Edge strength from a relative drop of 1/z (a fraction
                 // of it): a tenth is a clear step.
                 let t = 0.1 / ink.line.z;
-                k = smoothstep(t * 0.5, t, near_side(c, iz0, r, cp));
+                k = smoothstep(t * 0.5, t, near_side(c, iz0, rs, cp));
             }
             if ink.line.w > 0.0 {
                 k = max(k, ink.line.w * id_side(c, e.x, iz0, r, ((tag >> 16u) & 1u) != 0u, cp));

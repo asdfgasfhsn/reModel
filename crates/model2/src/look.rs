@@ -69,12 +69,13 @@ const fn p(
 /// Every parameter, in the order the Advanced page and the docs list them.
 /// Colours are three entries each (`_r`, `_g`, `_b` in `Params::values`,
 /// 0 to 1) and are written as `#rrggbb`.
-pub const PARAMS: [Param; 20] = [
+pub const PARAMS: [Param; 23] = [
     p("outline", Kind::Flag, 1.0, 0.0, 1.0, 1.0, "Ink outlines", "Lines where the picture's depth jumps and where one texture meets another."),
     p("outline_weight", Kind::Number, 1.5, 0.0, 8.0, 0.25, "Line weight", "Thickness in pixels on a 1080-line picture; it scales with the output's height."),
     p("outline_opacity", Kind::Number, 0.9, 0.0, 1.0, 0.05, "Line opacity", "How solid the ink is."),
     p("outline_depth", Kind::Number, 1.0, 0.0, 4.0, 0.1, "Depth lines", "How readily a jump in depth, or a crease, draws a line. 0 draws none from depth."),
     p("outline_ids", Kind::Number, 0.6, 0.0, 1.0, 0.05, "Texture lines", "Lines where one texture meets another at the same depth. 0 draws none."),
+    p("outline_silhouette", Kind::Number, 1.0, 0.5, 4.0, 0.1, "Outer line weight", "Width of lines at depth jumps and creases (a figure's outer contour), as a multiple of the line weight. Texture lines keep the plain weight. 1 draws all alike."),
     p("outline_fade_near", Kind::Number, 0.0, 0.0, 1000000.0, 250.0, "Fade starts at", "Distance (game units) where lines begin to thin out, so far scenery isn't ink noise. 0 leaves it to the scene: 100 times its typical distance, gone at 800 times."),
     p("outline_fade_far", Kind::Number, 0.0, 0.0, 1000000.0, 250.0, "Gone at", "Distance (game units) where lines have faded out completely (used when the start is set)."),
     p("outline_r", Kind::Colour, 0.07, 0.0, 1.0, 0.0, "Ink colour", "The colour of the lines."),
@@ -84,8 +85,10 @@ pub const PARAMS: [Param; 20] = [
     p("toon_steps", Kind::Steps, 3.0, 0.0, 6.0, 1.0, "Toon steps", "The game's lighting in this many hard bands (2 to 6); 0 leaves it smooth. Needs smooth shading, which the style turns on."),
     p("toon_floor", Kind::Number, 0.45, 0.0, 1.0, 0.05, "Shadow level", "How bright the darkest band is, of the lit one."),
     p("toon_cut", Kind::Number, 0.35, 0.0, 0.9, 0.05, "Band start", "Brightness below which everything is the darkest band."),
+    p("toon_gain", Kind::Number, 1.0, 0.5, 4.0, 0.1, "Band contrast", "Stretches the lighting before it is cut into bands, so a model's narrow range of light spans several. Above 1 shows more steps on lit models; 1 leaves the game's light as it is."),
     p("halftone", Kind::Number, 0.0, 0.0, 1.0, 0.05, "Halftone dots", "Dots of ink in the darkest band. 0 draws none."),
     p("halftone_pitch", Kind::Number, 6.0, 2.0, 24.0, 0.5, "Dot pitch", "Distance between dots in pixels on a 1080-line picture."),
+    p("halftone_ramp", Kind::Number, 0.0, 0.0, 1.0, 0.05, "Dot growth", "How much the dots swell towards the darkest light, as a printed tone does. 0 keeps every dot the same size."),
     p("halftone_angle", Kind::Number, 45.0, 0.0, 90.0, 5.0, "Dot angle", "Rotation of the dot grid in degrees."),
     p("halftone_r", Kind::Colour, 0.05, 0.0, 1.0, 0.0, "Dot colour", "The colour of the dots."),
     p("halftone_g", Kind::Colour, 0.04, 0.0, 1.0, 0.0, "", ""),

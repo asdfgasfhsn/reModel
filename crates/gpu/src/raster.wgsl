@@ -864,12 +864,17 @@ fn poly_px(i: u32, px: vec2f) -> Poly {
         }
         if steps >= 2u {
             let n = f32(steps);
-            let t = clamp((l / 255.0 - screen.toon.z) / (1.0 - screen.toon.z), 0.0, 0.9999);
+            var t = (l / 255.0 - screen.toon.z) / (1.0 - screen.toon.z);
+            // Band contrast: stretch the light about a lit tone (0.85) so a
+            // model's narrow range of light spans the bands (ink.w, 1: as is).
+            t = clamp(0.85 + (t - 0.85) * max(screen.ink.w, 0.5), 0.0, 0.9999);
             let k = floor(t * n);
             let level = screen.toon.y + (1.0 - screen.toon.y) * k / (n - 1.0);
             p.luma = clamp(u32(level * 255.0), lit_range.x, lit_range.y);
             if k == 0.0 {
-                toon_dark = 1.0;
+                // How deep into the darkest band: just above 0 at its top,
+                // 1 at black (the halftone's dots swell with it).
+                toon_dark = max(1.0 - t * n, 0.001);
                 toon_px = px;
             }
         } else {
@@ -882,8 +887,8 @@ fn poly_px(i: u32, px: vec2f) -> Poly {
     return p;
 }
 
-// Toon lighting's halftone: 1 in the darkest band of a toon-lit pixel
-// (set by `poly_px`), and where the pixel is.
+// Toon lighting's halftone: above 0 in the darkest band of a toon-lit pixel
+// (how deep, up to 1; set by `poly_px`), and where the pixel is.
 var<private> toon_dark: f32 = 0.0;
 var<private> toon_px: vec2f = vec2f(0.0);
 
@@ -899,7 +904,9 @@ fn toon_ink(rgb: vec3f) -> vec3f {
     let q = toon_px + 0.5;
     let r = vec2f(q.x * c + q.y * s, -q.x * s + q.y * c) / screen.half.y;
     let d = length(fract(r) - 0.5);
-    let radius = sqrt(screen.half.x / 3.14159265);
+    // Dot growth (half.w): coverage follows the darkness, as in print.
+    let cover = clamp(screen.half.x * mix(1.0, 0.25 + 1.5 * toon_dark, screen.half.w), 0.0, 0.78);
+    let radius = sqrt(cover / 3.14159265);
     let aa = 0.75 / screen.half.y;
     return mix(rgb, screen.ink.xyz, smoothstep(radius + aa, radius - aa, d));
 }

@@ -15,6 +15,15 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- `scene render` and `look-render` now draw a pack's tile images (HUD, menus,
+  title) and regions as the player does; before they drew the original
+  patterns there.
+
+- Looks: three new parameters, rendering only (defaults leave existing looks
+  as they were). `outline_silhouette` inks contours wider than texture
+  lines, `toon_gain` stretches the light so toon steps show on lit models,
+  and `halftone_ramp` swells the dots towards the dark like a printed tone.
+
 ## 0.15.0 (2026-11-25): System settings, seats, ROMs found by SHA-1
 
 - ROMs: chips are found by their SHA-1, not only by file name. Sets with

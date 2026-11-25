@@ -783,6 +783,16 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
             gpu.set_log_frame(0);
         }
     }
+    // The pack's tile images (HUD, menus, title) in place of the patterns:
+    // the GPU's own 2D layers (twice: the first looks the patterns up and
+    // fills the tile atlas).
+    let has_3d = !placed.is_empty();
+    let layers = if packed {
+        gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d);
+        gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d)
+    } else {
+        layers
+    };
     let rgb = gpu.frame(&polys, &placed, &src, &view, &layers);
     let drawn_share = log_path.map(|path| {
         gpu.set_pack_log(None);
@@ -1060,6 +1070,45 @@ mod tests {
             k\t00000001\t0000000000000004\thit\t99\t1\t1\n";
         assert_eq!(drawn_share_of(log), Some(0.4), "tiles do not count");
         assert_eq!(drawn_share_of("F\t0\n"), None);
+    }
+
+    /// A pack's `tile_<key>.png` replaces the pattern in a scene's picture:
+    /// `scene render --pack` draws the 2D layers through the pack as the
+    /// player does. Needs the `race-go` scene copy and a GPU (skipped
+    /// without).
+    #[test]
+    fn a_pack_tile_image_reaches_the_scene_picture() {
+        let dir = scenes_dir(game()).join("race-go");
+        let Some(frame_dir) = capture_frame_dir(&dir.join("capture")) else { return };
+        let Ok(mut gpu) = gpu::Renderer::new() else { return };
+        let f = Frame::load(&frame_dir).unwrap();
+        // The most used tile pattern of the frame's enabled maps.
+        let mut uses: HashMap<u64, usize> = HashMap::new();
+        for map in (0..4).filter(|&m| video::map_enabled(&f.tiles, m)) {
+            for i in 0..4096 {
+                let (key, _) = video::cell_key(&f.tiles, &f.palette, map, i & 63, i >> 6);
+                if key != model2::regions::BLANK {
+                    *uses.entry(key).or_default() += 1;
+                }
+            }
+        }
+        let Some((&key, _)) = uses.iter().max_by_key(|(k, n)| (**n, **k)) else { return };
+        let root = std::env::var("REMODEL_SCRATCH").unwrap_or_else(|_| "out/scratch".into());
+        let pack = Path::new(&root).join(format!("scene-tile-test-{}", std::process::id()));
+        std::fs::create_dir_all(&pack).unwrap();
+        let magenta: Vec<u8> = (0..32 * 32).flat_map(|_| [255u8, 0, 255, 255]).collect();
+        std::fs::write(pack.join(format!("tile_{key:016x}.png")), png::encode_rgba(32, 32, &magenta)).unwrap();
+        let opts = |pack: Vec<PathBuf>| DrawOpts {
+            pack,
+            crop: None,
+            against: false,
+            view: View::new(540, 16.0 / 9.0, video::Hud::Edges),
+        };
+        let count = |d: &Drawn| d.picture.rgb.chunks(3).filter(|p| **p == [255, 0, 255]).count();
+        let plain = draw(game(), &dir, &opts(vec![]), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+        let tiled = draw(game(), &dir, &opts(vec![pack.clone()]), &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+        let _ = std::fs::remove_dir_all(&pack);
+        assert!(count(&tiled) > count(&plain) + 50, "tile image missing: {} against {}", count(&tiled), count(&plain));
     }
 
     fn game() -> &'static Game {

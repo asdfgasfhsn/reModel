@@ -336,7 +336,7 @@ fn ink_params(look: &Look, w: u32, h: u32, typical: f32) -> [f32; 16] {
         p.num("outline_r"),
         p.num("outline_g"),
         p.num("outline_b"),
-        0.0,
+        p.num("outline_silhouette"),
         near,
         far,
         0.0,
@@ -346,7 +346,8 @@ fn ink_params(look: &Look, w: u32, h: u32, typical: f32) -> [f32; 16] {
 
 /// The toon and halftone values for the 3D layer's shader (`raster.wgsl`
 /// `Screen`: toon, half, ink; the toon's w, the ID entries' place, is set
-/// by the caller): all zero for no look.
+/// by the caller): all zero for no look. `half.w` is the dots' growth and
+/// `ink.w` the bands' contrast.
 pub(crate) fn toon_params(look: Option<&Look>, out_height: f32) -> [f32; 12] {
     let Some(l) = look else { return [0.0; 12] };
     let p = &l.params;
@@ -360,11 +361,11 @@ pub(crate) fn toon_params(look: Option<&Look>, out_height: f32) -> [f32; 12] {
         half,
         (p.num("halftone_pitch") * out_height / 1080.0).max(1.0),
         p.num("halftone_angle").to_radians(),
-        0.0,
+        p.num("halftone_ramp"),
         p.num("halftone_r"),
         p.num("halftone_g"),
         p.num("halftone_b"),
-        0.0,
+        p.num("toon_gain"),
     ]
 }
 
