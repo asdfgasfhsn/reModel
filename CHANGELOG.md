@@ -15,11 +15,8 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
-- Tests: the external-upscaler test stops its stalled tool with `killpg`
-  instead of running `kill -KILL -PID`, which on GitHub's Ubuntu runner took
-  the runner itself down (every CI run lost, with no log, 2026-11-25). Test
-  builds optimise the dependencies, `remodel-state`, `model2` and `gpu`:
-  `make test` from about 22 minutes to about 4 here.
+## 0.15.0 (2026-11-25): System settings, seats, ROMs found by SHA-1
+
 - ROMs: chips are found by their SHA-1, not only by file name. Sets with
   renamed members, split, merged or non-merged zips, loose chips in any
   folders work, and the launcher lists a game whose chips are there under
@@ -62,6 +59,11 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   press still takes the next free seat; `--link-keyboard off` keeps working). With
   the seats as they start the game takes the usual path and nothing changes;
   state hashes are unchanged.
+- Tests: the external-upscaler test stops its stalled tool with `killpg`
+  instead of running `kill -KILL -PID`, which on GitHub's Ubuntu runner took
+  the runner itself down (every CI run lost, with no log, 2026-11-25). Test
+  builds optimise the dependencies, `remodel-state`, `model2` and `gpu`:
+  `make test` from about 22 minutes to about 4 here.
 
 ## 0.14.0 (2026-11-24): more link games, Zero Gunner, texture pack authoring
 
