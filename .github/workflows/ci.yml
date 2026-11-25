@@ -79,6 +79,10 @@ jobs:
         timeout-minutes: 25
       - name: Disk and memory after the test build
         run: df -h / && free -m && du -sh target 2>/dev/null || true
+      # First while it's the one that loses the runner (2026-11-25).
+      - name: Test the CLI
+        run: REMODEL_GPU_TESTS=1 tools/ci-watchdog.sh cli-tests.log timeout -k 10 480 cargo test -p remodel -- --test-threads=1
+        timeout-minutes: 10
       # One step per heavy crate for now: a runner that dies keeps the
       # steps before it, so this names the one that kills it (2026-11-25).
       - name: Test jit
@@ -98,9 +102,6 @@ jobs:
       # test dies before the runner does.
       - name: Test linknet
         run: timeout -k 10 480 bash -c 'ulimit -v 12000000; REMODEL_GPU_TESTS=1 cargo test -p remodel-linknet -- --test-threads=1'
-        timeout-minutes: 10
-      - name: Test the CLI
-        run: timeout -k 10 480 bash -c 'ulimit -v 12000000; REMODEL_GPU_TESTS=1 cargo test -p remodel -- --test-threads=1'
         timeout-minutes: 10
       - run: make test
         timeout-minutes: 25
