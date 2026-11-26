@@ -22,93 +22,50 @@ pub const RATE: u32 = 44_100;
 /// the native build. Unconfirmed against a cabinet: a listening choice.
 pub const DEFAULT_MIX: (f32, f32) = (8.0, -8.0);
 
-/// The sound board: the SCSP one (Model 2A/2B/2C) or the original Model
-/// 2's (MultiPCMs and an OPN2). Both take the sound link's bytes and give
-/// 44.1 kHz stereo.
-enum Sound {
-    Scsp(Box<sound::SoundBoard>),
-    Pcm(Box<sound::PcmBoard>),
+/// A board the sound link feeds: the sound board (the SCSP one on Model
+/// 2A/2B/2C, or the original Model 2's, MultiPCMs and an OPN2) or a music
+/// board (the DSB2, 68000, `topskatr`; the DSB1, Z80, `stcc`). Each takes
+/// the link's bytes and gives 44.1 kHz stereo.
+trait Board: state::State + Send {
+    fn midi_in(&mut self, byte: u8);
+    fn run(&mut self, samples: usize, out: &mut Vec<i16>);
+    /// Replace music tracks (a music board's; the sound board has none).
+    fn set_soundtrack(&mut self, _: dsb::Soundtrack) {}
 }
 
-impl Sound {
-    fn midi_in(&mut self, byte: u8) {
-        match self {
-            Sound::Scsp(s) => s.midi_in(byte),
-            Sound::Pcm(s) => s.midi_in(byte),
+/// `Board` for a chip crate's board by its own methods, and `$extra`.
+macro_rules! board {
+    ($t:ty $(, $extra:item)*) => {
+        impl Board for $t {
+            fn midi_in(&mut self, byte: u8) {
+                <$t>::midi_in(self, byte)
+            }
+            fn run(&mut self, samples: usize, out: &mut Vec<i16>) {
+                <$t>::run(self, samples, out)
+            }
+            $($extra)*
         }
-    }
-
-    fn run(&mut self, samples: usize, out: &mut Vec<i16>) {
-        match self {
-            Sound::Scsp(s) => s.run(samples, out),
-            Sound::Pcm(s) => s.run(samples, out),
-        }
-    }
+    };
 }
 
-impl state::State for Sound {
-    fn save(&self, w: &mut state::Writer) {
-        match self {
-            Sound::Scsp(s) => s.save(w),
-            Sound::Pcm(s) => s.save(w),
-        }
-    }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        match self {
-            Sound::Scsp(s) => s.load(r),
-            Sound::Pcm(s) => s.load(r),
-        }
-    }
-}
-
-/// A music board: the DSB2 (68000, `topskatr`) or the DSB1 (Z80, `stcc`).
-/// Both take the sound link's bytes and give 44.1 kHz stereo.
-enum Music {
-    Dsb2(dsb::Dsb2),
-    Dsb1(dsb::Dsb1),
-}
-
-impl Music {
-    fn midi_in(&mut self, byte: u8) {
-        match self {
-            Music::Dsb2(m) => m.midi_in(byte),
-            Music::Dsb1(m) => m.midi_in(byte),
-        }
-    }
-
-    fn run(&mut self, samples: usize, out: &mut Vec<i16>) {
-        match self {
-            Music::Dsb2(m) => m.run(samples, out),
-            Music::Dsb1(m) => m.run(samples, out),
-        }
-    }
-
+board!(sound::SoundBoard);
+board!(sound::PcmBoard);
+board!(
+    dsb::Dsb2,
     fn set_soundtrack(&mut self, st: dsb::Soundtrack) {
-        match self {
-            Music::Dsb2(m) => m.set_soundtrack(st),
-            Music::Dsb1(m) => m.set_soundtrack(st),
-        }
+        dsb::Dsb2::set_soundtrack(self, st)
     }
-}
-
-impl state::State for Music {
-    fn save(&self, w: &mut state::Writer) {
-        match self {
-            Music::Dsb2(m) => m.save(w),
-            Music::Dsb1(m) => m.save(w),
-        }
+);
+board!(
+    dsb::Dsb1,
+    fn set_soundtrack(&mut self, st: dsb::Soundtrack) {
+        dsb::Dsb1::set_soundtrack(self, st)
     }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        match self {
-            Music::Dsb2(m) => m.load(r),
-            Music::Dsb1(m) => m.load(r),
-        }
-    }
-}
+);
 
 pub struct Live {
-    sound: Option<Sound>,
-    music: Option<Music>,
+    sound: Option<Box<dyn Board>>,
+    music: Option<Box<dyn Board>>,
     /// Output samples produced so far (per channel).
     samples: u64,
     a: Vec<i16>,
@@ -130,23 +87,23 @@ impl Live {
         // The original Model 2's sound board is another design: a 68000
         // with MultiPCM and FM chips (docs/hw/model2.md §5).
         let prog = roms.region16be(Role::AudioCpu);
-        let sound = (!prog.is_empty()).then(|| {
+        let sound = (!prog.is_empty()).then(|| -> Box<dyn Board> {
             if roms.game.board == romset::Board::Model2 {
                 let (a, b) = (roms.multipcm(Role::MultiPcmA), roms.multipcm(Role::MultiPcmB));
-                Sound::Pcm(Box::new(sound::PcmBoard::new(prog, a, b)))
+                Box::new(sound::PcmBoard::new(prog, a, b))
             } else {
-                Sound::Scsp(Box::new(sound::SoundBoard::new(prog, roms.region16be(Role::Samples))))
+                Box::new(sound::SoundBoard::new(prog, roms.region16be(Role::Samples)))
             }
         });
         let chip = |role| roms.game.files.iter().position(|f| f.role == role).map(|i| &roms.chips[i]);
-        let music = if let Some(prog) = chip(Role::MpegCpu) {
+        let music: Option<Box<dyn Board>> = if let Some(prog) = chip(Role::MpegCpu) {
             let mut d = dsb::Dsb2::new(prog, roms.mpeg_data());
             d.set_diagnostics(false);
-            Some(Music::Dsb2(d))
+            Some(Box::new(d))
         } else if let Some(prog) = chip(Role::Dsb1Cpu) {
             let mut d = dsb::Dsb1::new(prog, roms.mpeg_data());
             d.set_diagnostics(false);
-            Some(Music::Dsb1(d))
+            Some(Box::new(d))
         } else {
             None
         };
