@@ -24,6 +24,7 @@ mod pack_gates;
 mod pack_layers;
 mod pack_lint;
 mod pack_log_run;
+mod probe;
 mod ram;
 mod recomp_crates;
 mod run_ahead;

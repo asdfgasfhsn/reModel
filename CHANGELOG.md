@@ -15,6 +15,8 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- `remodel scene probe NAME --at X,Y[,W,H]` (`make scene-probe`) and the server verbs `scene.probe` and `session.probe`: what draws each game pixel, top to bottom (2D plane, tile cell, `tile_KEY`, region; 3D texture key, palette variant, polygon) and which pack file supplies it, with no GPU (docs/texture-packs.md, "Probing a pixel").
+
 ## 0.16.0 (2026-11-26): live game sessions, per-palette texture packs, sharing audit
 
 - Studio: `studio sharing` audits skin, hair and garments: skin and hair stay the original's, each garment one design. `owners.txt` marks an owner's

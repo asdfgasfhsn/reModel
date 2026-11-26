@@ -210,6 +210,20 @@ pub static VERBS: &[Verb] = &[
         ],
     },
     Verb {
+        name: "session.probe",
+        about: "What draws each game pixel of a rectangle in the session's current frame, top to bottom: 2D tile layers (plane, map cell, tile_KEY, the pack's region), the 3D polygon (texture key, palette variant, polygon, object) and which file of the packs given supplies each. No GPU, no picture.",
+        args: &[
+            SESSION,
+            arg("at", Ty::Str, true, "X,Y or X,Y,W,H in game pixels (496x384)"),
+            PACK,
+        ],
+    },
+    Verb {
+        name: "scene.probe",
+        about: "session.probe for a made scene's capture, with no emulator: what draws each game pixel of a rectangle and which pack file supplies it.",
+        args: &[arg("scene", Ty::Str, true, "the scene's name"), arg("at", Ty::Str, true, "X,Y or X,Y,W,H in game pixels (496x384)"), PACK],
+    },
+    Verb {
         name: "scene.render",
         about: "A still of a made scene, drawn from its capture with no emulator (the server keeps the GPU warm). The scene must have been made with `remodel scene make`.",
         args: &[
@@ -1104,6 +1118,8 @@ impl<'a> Server<'a> {
             "spine.index" => self.spine_index(args),
             "spine.where" => self.spine_where(args),
             "scene.render" => self.scene_render(args),
+            "scene.probe" => self.scene_probe(args),
+            "session.probe" => self.with(args, Self::probe),
             _ => Err(internal(format!("{verb} is in the table but not wired"))),
         };
         r.unwrap_or_else(|a| a)
@@ -2243,6 +2259,40 @@ impl<'a> Server<'a> {
         Ok(a)
     }
 
+    fn probe_stack(args: &Value) -> Result<crate::probe::Stack, Answer> {
+        let packs: Vec<PathBuf> = l_arg(args, "pack").into_iter().map(PathBuf::from).collect();
+        crate::probe::Stack::open(&packs).map_err(|e| Answer::fail(Code::Missing, e))
+    }
+
+    fn probe(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
+        self.roms()?;
+        let rect = crate::probe::parse_rect(s_arg(args, "at").unwrap_or(""))?;
+        let stack = Self::probe_stack(args)?;
+        s.m.bus.geo.sync();
+        let frame = model2::capture::Frame::grab(&mut s.m.bus);
+        let rom = s.m.bus.texture_rom.clone();
+        let mut data = crate::probe::probe_frame(&frame, &rom, rect, &stack);
+        data["session"] = json!(s.id);
+        data["frame"] = json!(s.frame());
+        Ok(Answer::done(data))
+    }
+
+    fn scene_probe(&mut self, args: &Value) -> Result<Answer, Answer> {
+        let game = self.game;
+        let rs = crate::scene::recipes(game, None).map_err(bad)?;
+        let rect = crate::probe::parse_rect(s_arg(args, "at").unwrap_or(""))?;
+        let name = s_arg(args, "scene").unwrap_or("");
+        let Some(r) = rs.iter().find(|r| r.name == name) else {
+            let known: Vec<String> = rs.iter().map(|r| r.name.clone()).collect();
+            return Err(Answer::unknown("scene", name, &known));
+        };
+        let dir = crate::scene::scenes_dir(game).join(&r.name);
+        let stack = Self::probe_stack(args)?;
+        let mut data = crate::probe::probe_scene(&dir, rect, &stack)?;
+        data["scene"] = json!(r.name);
+        Ok(Answer::done(data))
+    }
+
     fn scene_render(&mut self, args: &Value) -> Result<Answer, Answer> {
         let game = self.game;
         let rs = crate::scene::recipes(game, None).map_err(bad)?;
@@ -2469,7 +2519,7 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), VERBS.len());
-        assert_eq!(VERBS.len(), 19);
+        assert_eq!(VERBS.len(), 21);
         for v in VERBS {
             let mut a: Vec<&str> = v.args.iter().map(|a| a.name).collect();
             a.sort();

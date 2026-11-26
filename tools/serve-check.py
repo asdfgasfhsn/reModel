@@ -133,7 +133,7 @@ if r["result"]["serverInfo"]["name"] != "remodel":
 rpc("notifications/initialized", notify=True)
 tools = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
 want = ["session.open", "session.input", "session.step", "session.mark", "session.restore", "session.forget",
-        "session.read", "session.watch", "session.disasm", "session.moves", "session.list", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "scene.render"]
+        "session.read", "session.watch", "session.disasm", "session.moves", "session.list", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "session.probe", "scene.probe", "scene.render"]
 if tools != want:
     fail(f"tools/list {tools}")
 if "error" not in rpc("tools/call", {"name": "session.nonesuch", "arguments": {}}):
@@ -217,6 +217,15 @@ if still["ok"]:
     print(f"scene.render: {still['data']['picture']} in {still['data']['ms']:.0f} ms")
 elif not (still["code"] == 4 and "GPU" in still["error"]):
     fail(f"scene.render: {still['error']}")
+# What draws a pixel: from the made scene, and from the live session's frame.
+pr = call("scene.probe", scene=name, at="0,0,496,384")
+if not pr["ok"] or not pr["data"]["sources"]:
+    fail(f"scene.probe: {pr}")
+live = call("session.probe", session=sid, at="0,0,16,16")
+if not live["ok"] or live["data"]["pixels_total"] != 256:
+    fail(f"session.probe: {live}")
+if call("scene.probe", scene=name, at="9999,0")["code"] != 2:
+    fail("a probe outside the frame is a bad request")
 e = call("scene.render", scene="nonesuch")
 if e["ok"] or e["code"] != 2:
     fail("an unknown scene is a bad request")

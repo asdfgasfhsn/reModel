@@ -125,6 +125,59 @@ pub fn cell_at(tiles: &[u8], plane: usize, x: usize, y: usize) -> Option<PixelCe
     Some(PixelCell { map, cx: cell & 63, cy: cell >> 6, entry: entry as u16, row, col })
 }
 
+/// One tile layer at a game pixel ([`probe_tiles`]).
+#[derive(Clone, Debug)]
+pub struct TileProbe {
+    /// 0 = plane A, 1 = plane B.
+    pub plane: usize,
+    /// The map (0-3) and the cell in it (0-63 each way).
+    pub map: usize,
+    pub cx: usize,
+    pub cy: usize,
+    /// The map entry's priority bit: drawn over the 3D layer.
+    pub high: bool,
+    /// The cell's tile pattern; None for a blank one (all pen 0).
+    pub info: Option<TileInfo>,
+    pub entry: u16,
+    pub row: usize,
+    pub col: usize,
+    /// The pixel's pen in the pattern.
+    pub pen: u8,
+    /// Whether this layer paints the pixel opaque (a high-priority tile or
+    /// plane A with pen 0 is transparent; plane B under the 3D layer is not).
+    pub opaque: bool,
+}
+
+/// Every tile layer that has a say at game pixel (`x`, `y`), top to bottom:
+/// high priority (plane A, then B), then low (A, then B), as [`compose`]
+/// stacks them (the 3D layer sits between the high and the low ones). Maps
+/// that are off give nothing.
+pub fn probe_tiles(tiles: &[u8], palette: &[u8], x: usize, y: usize) -> Vec<TileProbe> {
+    let mut all = Vec::new();
+    for plane in [0usize, 1] {
+        let Some(c) = cell_at(tiles, plane, x, y) else { continue };
+        let entry = c.entry as usize;
+        let p = pen(tiles, entry, c.row, c.col);
+        let high = entry & 0x8000 != 0;
+        let opaque = if high { p != 0 } else { plane == 1 || p != 0 };
+        all.push(TileProbe {
+            plane,
+            map: c.map,
+            cx: c.cx,
+            cy: c.cy,
+            high,
+            info: tile_info(tiles, palette, entry & 0x7fff),
+            entry: c.entry,
+            row: c.row,
+            col: c.col,
+            pen: p,
+            opaque,
+        });
+    }
+    all.sort_by_key(|t| (!t.high, t.plane));
+    all
+}
+
 /// The key of the tile pattern at cell (`cx`, `cy`) of `map` as regions
 /// name it ([`crate::regions::BLANK`] for a blank tile), and the entry's
 /// priority bit.

@@ -705,6 +705,35 @@ texture images, ignores `uses regions`, and refuses a pack that
 "Regions") cuts a region's layout out of a captured frame and writes the
 original for an artist to redraw at Nx.
 
+## Probing a pixel
+
+`remodel scene probe NAME --at X,Y[,W,H]` (`make scene-probe`) says what
+draws the game pixels of a scene (496x384, the hardware's own picture) and
+which pack file supplies each. It reads the capture and draws nothing, so it
+needs no GPU and no ROM and answers in a fraction of a second. The pack
+is `--pack DIR` (repeatable, highest first), else `--texture-pack`, else the
+`--project`'s `pack/`; with none the pack fields are null.
+
+Each pixel lists its layers top to bottom: the high-priority tile layers
+(plane A, then B), the 3D polygon that shows, then the low-priority tile
+layers. A layer has `opaque` (it paints this pixel) and `visible` (it is the
+one that shows: the first opaque layer). A tile layer carries `plane`, `map`,
+`cell` (the tile cell in the map, 0-63 each way), `tile` (`tile_KEY`, null
+for a blank pattern), `texel` and `pen`, and `region` when a region of the
+pack covers the cell. A 3D layer carries `texture` (`tex_KEY_WxH`), `key`,
+`variant` (the palette id a per-palette variant is named by), `size`, `uv`,
+`poly` (the polygon's place in draw order), `window` and `object` (the
+object block). Every layer's `pack` says whether the pack supplied it
+(`supplied`), by what (`kind`: `tile`, `region`, `texture` or `variant`),
+from which `layer` and `file`. `sources` sums the visible layers over the
+rectangle (pixels and bounding box, most first), the shortest way to find
+which tile keys draw a few wrong pixels; `pixels` lists at most 64 pixels.
+A region beats a tile image of the same pack layer; between stacked packs,
+the higher one that supplies anything wins. The pack check is by file name
+(it does not decode images), so an unreadable image still shows as supplied.
+The live server has the same as `scene.probe` and `session.probe` (the
+session's current frame).
+
 ## Live display
 
 The native player and the browser draw a pack on the GPU

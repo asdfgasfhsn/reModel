@@ -30,6 +30,9 @@ remodel [--game G] scene SUB [NAME] [options]   (docs/uplift-studio.md, \"Scenes
   render NAME [--pack DIR] [--crop X,Y,W,H] [--against original] [--overlay miss] [--view native|H[,A:B]] [--out DIR]
          [--camera SPEC]              draw a scene from its capture: no boot, no ROM, no emulator;
                                       --camera \"orbit=30,tilt=-8,z=1\" sees it from another camera (photo mode's words)
+  probe NAME --at X,Y[,W,H] [--pack DIR]
+         [--project DIR]              what draws each game pixel, top to bottom (2D plane, tile cell, tile_KEY, region;
+                                      3D texture key, palette variant, polygon) and which pack file supplies it
 common: --json (one object: ok, code, error, data, warnings, next), --project DIR (reads DIR/scenes.txt)
 exit codes: 0 done, 1 a check failed, 2 bad request, 3 something missing, 4 internal error
 ";
@@ -322,7 +325,7 @@ pub fn main(o: &crate::Opts) -> ExitCode {
     let json = rest.iter().any(|a| a == "--json");
     let Some(sub) = rest.iter().find(|a| !a.starts_with("--")).cloned() else {
         // No subcommand: the usage is the answer.
-        let a = Answer::fail(Code::BadRequest, "scene wants a subcommand: list, make, verify or render");
+        let a = Answer::fail(Code::BadRequest, "scene wants a subcommand: list, make, verify, render or probe");
         return a.emit(json, || USAGE.to_string());
     };
     let argv: Vec<String> = {
@@ -368,8 +371,13 @@ fn run_sub(o: &crate::Opts, sub: &str, argv: &[String]) -> Result<(Answer, Strin
                 Args::parse(argv, &["--json"], &["--pack", "--crop", "--against", "--view", "--project", "--camera"])?;
             render_cmd(o, game, &a)
         }
+        "probe" => {
+            let a = Args::parse(argv, &["--json"], &["--pack", "--at", "--project"])?;
+            probe_cmd(o, game, &a)
+        }
         _ => {
-            let known: Vec<String> = ["list", "make", "verify", "render"].iter().map(|s| s.to_string()).collect();
+            let known: Vec<String> =
+                ["list", "make", "verify", "render", "probe"].iter().map(|s| s.to_string()).collect();
             Err(Answer::unknown("scene subcommand", sub, &known).next("remodel scene --help"))
         }
     }
@@ -1181,6 +1189,55 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1e3;
         Ok((draw(game, dir, opts, &mut gpu)?, gpu_ms))
     })
+}
+
+/// The packs a probe reads: `--pack` (repeatable), else the global
+/// `--texture-pack`, else the project's `pack/`.
+fn probe_packs(o: &crate::Opts, a: &Args) -> Vec<PathBuf> {
+    let mut packs: Vec<PathBuf> =
+        a.vals.get("--pack").map(|v| v.iter().map(PathBuf::from).collect()).unwrap_or_default();
+    if packs.is_empty() {
+        packs.extend(o.pack_dir.clone());
+    }
+    if packs.is_empty() {
+        if let Some(p) = a.one("--project").map(|d| Path::new(d).join("pack")).filter(|p| p.is_dir()) {
+            packs.push(p);
+        }
+    }
+    packs
+}
+
+/// `scene probe NAME --at X,Y[,W,H]`: what draws those game pixels, and which pack file supplies it.
+fn probe_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer, String), Answer> {
+    let rs = load_recipes(game, a)?;
+    let usage = || {
+        Answer::fail(
+            Code::BadRequest,
+            "scene probe: which scene and pixels? NAME --at X,Y[,W,H] (game pixels, 496x384)",
+        )
+        .next("remodel scene probe NAME --at 100,100,8,8")
+    };
+    let (name, at) = match a.pos.as_slice() {
+        [n] => (n, a.one("--at")),
+        [n, r] if a.one("--at").is_none() => (n, Some(r.as_str())),
+        _ => return Err(usage()),
+    };
+    let rect = crate::probe::parse_rect(at.ok_or_else(usage)?)?;
+    let recipe = find_recipe(&rs, name)?;
+    let dir = scenes_dir(game).join(&recipe.name);
+    if state_of(&dir, Some(recipe)) == State::Missing {
+        return Err(Answer::fail(Code::Missing, format!("scene `{}` has no local copy", recipe.name))
+            .next(format!("remodel scene make {}   (needs the ROM)", recipe.name)));
+    }
+    let stack = crate::probe::Stack::open(&probe_packs(o, a)).map_err(|e| Answer::fail(Code::Missing, e))?;
+    let mut data = crate::probe::probe_scene(&dir, rect, &stack)?;
+    data["scene"] = json!(recipe.name);
+    let text = crate::probe::text_of(&data);
+    let mut ans = Answer::done(data);
+    if let State::Stale(why) = state_of(&dir, Some(recipe)) {
+        ans = ans.warn(format!("scene `{}` is stale ({why}); probed as made", recipe.name));
+    }
+    Ok((ans, text))
 }
 
 /// Draws a scene's capture: the GPU's start in ms with the picture.

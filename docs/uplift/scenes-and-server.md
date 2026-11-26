@@ -297,6 +297,7 @@ session has:
 | `session.camera` | Photo mode's camera: `back`, `orbit`, `tilt`, `yaw`, `pitch`, `x`/`y`/`z`, `fov`, `reset` (the words of `--photo`, `docs/photo-mode.md`) | camera now |
 | `session.render` | Draws the current frame: `view`, `pack`, `look`, `hud`, `against original`, `crop` | picture paths, the scene render answer's per-asset report |
 | `session.what` | The assets under a point or box of the current frame (`scene what`) | assets |
+| `session.probe` | What draws each game pixel of `at` (X,Y[,W,H]) in the current frame, and which `pack` file supplies it (`scene probe`; also `scene.probe` for a made scene) | layers per pixel, `sources` |
 | `session.export` | Writes the log as a tour line, optionally `scene: NAME` (a scene at the current frame) | tour line, file |
 | `session.close` | Frees the machine and its marks | |
 
