@@ -15,7 +15,9 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
-- Studio: `studio sharing` audits skin, hair and garments against the user's skater rule. `owners.txt` marks an owner's
+## 0.16.0 (2026-11-26): live game sessions, per-palette texture packs, sharing audit
+
+- Studio: `studio sharing` audits skin, hair and garments: skin and hair stay the original's, each garment one design. `owners.txt` marks an owner's
   parts by texture key: `NAME.skin` and `NAME.hair` are held to the original through the owner's palette (colour
   difference, flag `skin-off`, `--fixed-limit`), `NAME.GARMENT[=RRGGBB]` is one design whose parts must agree
   in lightness and hue and in the hues their drawings show (a mottled image that averages to the garment's colour is
