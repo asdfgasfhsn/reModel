@@ -102,7 +102,8 @@ impl Machine {
         let mut bus = Model2Bus::new(roms);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
-        let native = recomp::i960_blocks(program_hash(roms)).map(|blocks| {
+        let program_hash = program_hash(roms);
+        let native = recomp::i960_blocks(program_hash).map(|blocks| {
             let mut table = vec![None; (PROGRAM_END / 4) as usize];
             // Only word-aligned starts can be dispatched; a block at an
             // odd address (from a build before `remodel recomp` dropped
@@ -116,7 +117,7 @@ impl Machine {
             cpu,
             bus,
             frames: 0,
-            program_hash: program_hash(roms),
+            program_hash,
             game_id: roms.game.id,
             native,
             #[cfg(not(target_arch = "wasm32"))]
@@ -265,17 +266,15 @@ impl Machine {
     /// skips through the game's idle loops (`idle`).
     pub fn run_slice(&mut self, max: u64) -> Result<u64, Stop> {
         let (start, frames) = (self.cpu.icount, self.frames);
-        if self.native.is_none() && !self.jit_on() {
-            while self.cpu.icount - start < max && self.frames == frames {
-                if !self.idle_skip(max - (self.cpu.icount - start))? {
+        let native = self.is_native();
+        while self.cpu.icount - start < max && self.frames == frames {
+            let left = max - (self.cpu.icount - start);
+            if !self.idle_skip(left)? {
+                if native {
+                    self.dispatch(left)?;
+                } else {
                     self.step()?;
                 }
-            }
-            return Ok(self.cpu.icount - start);
-        }
-        while self.cpu.icount - start < max && self.frames == frames {
-            if !self.idle_skip(max - (self.cpu.icount - start))? {
-                self.dispatch(max - (self.cpu.icount - start))?;
             }
         }
         Ok(self.cpu.icount - start)
@@ -297,12 +296,7 @@ impl Machine {
         if let Some(j) = self.jit.as_deref_mut() {
             match j.run(&mut self.cpu, &mut self.bus) {
                 Some(r) => r?,
-                None => {
-                    self.bus.cur_ip = ip;
-                    let (ip, _) = self.cpu.step_insn(&mut self.bus)?;
-                    self.coverage.insert(ip);
-                    self.bus.retire_insn(&mut self.cpu);
-                }
+                None => self.interpret_one(ip)?,
             }
             self.frames = self.bus.frames;
             return Ok(());
@@ -310,14 +304,18 @@ impl Machine {
         let block = self.native.as_ref().and_then(|t| t.get((ip / 4) as usize).copied().flatten());
         match block {
             Some(block) if ip & 3 == 0 => block(&mut self.cpu, &mut self.bus)?,
-            _ => {
-                self.bus.cur_ip = ip;
-                let (ip, _) = self.cpu.step_insn(&mut self.bus)?;
-                self.coverage.insert(ip);
-                self.bus.retire_insn(&mut self.cpu);
-            }
+            _ => self.interpret_one(ip)?,
         }
         self.frames = self.bus.frames;
+        Ok(())
+    }
+
+    /// One interpreted instruction at `ip`, where no translated block starts.
+    fn interpret_one(&mut self, ip: u32) -> Result<(), Stop> {
+        self.bus.cur_ip = ip;
+        let (ip, _) = self.cpu.step_insn(&mut self.bus)?;
+        self.coverage.insert(ip);
+        self.bus.retire_insn(&mut self.cpu);
         Ok(())
     }
 
