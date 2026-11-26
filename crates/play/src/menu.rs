@@ -828,7 +828,8 @@ impl Menu {
                         if focus.menu_row(ui, "Save slots", &format!("{used} used ›")) {
                             go = Some((Page::SaveLoad, Tab::Display));
                         }
-                        if view.link.is_none() && focus.menu_row(ui, "Photo mode", "F8") {
+                        // Not in link play (one machine's picture) or a network game (the others would wait).
+                        if view.link.is_none() && !view.running && focus.menu_row(ui, "Photo mode", "F8") {
                             actions.push(Action::Photo);
                         }
                         // Who plays which seat, for a game with more than one (not a network game's).
@@ -1576,6 +1577,8 @@ mod tests {
         size: egui::Vec2,
         /// The text drawn in the last frame.
         texts: Vec<String>,
+        /// A network game's menu (the game runs on under it).
+        running: bool,
     }
 
     impl Rig {
@@ -1619,6 +1622,7 @@ mod tests {
                 dropped: false,
                 size: egui::vec2(1920.0, 1080.0),
                 texts: Vec::new(),
+                running: false,
             };
             // One frame to lay it out.
             rig.frame(&[], Vec::new());
@@ -1644,7 +1648,7 @@ mod tests {
                 look: None,
                 pad: Default::default(),
                 link: None,
-                running: false,
+                running: self.running,
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
                 keeps: Keeps { all_games: Preset::Sharp },
             };
@@ -1770,6 +1774,20 @@ mod tests {
         assert!(r.shows("Players"), "{:?}", r.texts);
         let r = Rig::new("topskatr");
         assert!(!r.shows("Players"), "{:?}", r.texts);
+    }
+
+    /// A network game's menu offers no photo mode (it would hold up the
+    /// others) and no Players screen.
+    #[test]
+    fn a_network_games_menu_has_no_photo_mode() {
+        let mut r = Rig::new("vf2");
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Photo mode"), "{:?}", r.texts);
+        r.running = true;
+        r.frame(&[], Vec::new());
+        assert!(!r.shows("Photo mode"), "{:?}", r.texts);
+        assert!(!r.shows("Players"), "{:?}", r.texts);
+        assert!(r.shows("Resume"), "{:?}", r.texts);
     }
 
     #[test]

@@ -2017,7 +2017,7 @@ Back, Esc Resume).
 
 The first page lists what to do: **Resume**, **Quick save** (F5), **Quick
 load** (F9), **Save slots** (how many are used), **Photo mode** (F8:
-`docs/photo-mode.md`), **Players** (for a game with more than one: the Players screen, to swap who is P1; not in a network game), **Reset game** (select it twice within four seconds:
+`docs/photo-mode.md`; not in link play or a network game), **Players** (for a game with more than one: the Players screen, to swap who is P1; not in a network game), **Reset game** (select it twice within four seconds:
 the game starts again from power-on, keeping its EEPROM) and **Back to
 games**. Under a small "SETTINGS" label come the settings, one level in,
 each showing its value: **Picture** (the style), **Controls**, **Sound**

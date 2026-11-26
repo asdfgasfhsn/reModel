@@ -13,6 +13,10 @@ ends on the same state hash as one without (`make photo-check`).
 It is native only; the browser build doesn't have it (below, "In the
 browser").
 
+It isn't offered in link play (a photo is one machine's picture) or in a
+network game: pausing one machine would hold up the other players, so F8
+says why and the pause menu leaves the row out.
+
 ## Using it
 
 F8 (or **Photo mode** in the Esc menu, or `--photo` for scripted runs)

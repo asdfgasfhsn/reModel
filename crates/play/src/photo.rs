@@ -795,6 +795,19 @@ pub fn picture_rect(origin: (u32, u32), view: &model2::video::View, ppp: f32) ->
 
 // ---- The player's side: opening and closing, controls, captures. ----
 
+/// Why photo mode won't open over this game, if it won't: link play draws
+/// several machines (a photo is one machine's picture), and a network game
+/// would hold up the other players while this machine stood still.
+fn refused(link: bool, net: bool) -> Option<&'static str> {
+    if link {
+        Some("not in link play (it is one machine's picture)")
+    } else if net {
+        Some("not in a network game (the other players would wait)")
+    } else {
+        None
+    }
+}
+
 impl crate::Play {
     /// A redraw in photo mode: the controls, then the photo drawn into the
     /// window with the dock over it (the game stays paused).
@@ -859,8 +872,8 @@ impl crate::Play {
             res: Res::H(2160),
         };
         let s = self.session.as_mut().filter(|s| !s.preview).ok_or("no game")?;
-        if s.link.is_some() {
-            return Err("not in link play (it is one machine's picture)".into());
+        if let Some(why) = refused(s.link.is_some(), s.net.is_some()) {
+            return Err(why.into());
         }
         let mut studio = match s.studio.take() {
             Some(st) => st,
@@ -1490,6 +1503,13 @@ mod tests {
             assert_eq!(l.last(), Some(&(1, 1)));
             assert!(l.windows(2).all(|p| p[0].0 >= p[1].0), "{l:?} gets no cheaper");
         }
+    }
+
+    #[test]
+    fn photo_mode_refuses_link_and_network_games() {
+        assert_eq!(refused(false, false), None);
+        assert!(refused(true, false).is_some_and(|w| w.contains("link play")));
+        assert!(refused(false, true).is_some_and(|w| w.contains("network game")));
     }
 
     #[test]
