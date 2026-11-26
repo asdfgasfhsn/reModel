@@ -617,7 +617,9 @@ mod tests {
             assert!(!t["description"].as_str().unwrap().is_empty());
         }
         let step = tools.iter().find(|t| t["name"] == "session.step").unwrap();
-        assert_eq!(step["inputSchema"]["required"], json!(["frames"]));
+        assert_eq!(step["inputSchema"]["required"], json!([]), "frames is needed unless a move gives the length");
+        let mark = tools.iter().find(|t| t["name"] == "session.mark").unwrap();
+        assert_eq!(mark["inputSchema"]["required"], json!(["name"]));
         assert_eq!(step["inputSchema"]["properties"]["frames"]["type"], "integer");
         assert_eq!(step["inputSchema"]["properties"]["inputs"]["type"], "array");
     }
@@ -653,14 +655,14 @@ mod tests {
         let mut s = server();
         let r = rpc(
             &mut s,
-            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "session.step", "arguments": {}}}),
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "session.mark", "arguments": {}}}),
         );
         assert_eq!(r["result"]["isError"], true);
         let env = &r["result"]["structuredContent"];
         assert_eq!(env["ok"], false);
         assert_eq!(env["code"], 2);
-        assert!(env["error"].as_str().unwrap().contains("`frames` is needed"));
-        assert!(env["next"].as_str().unwrap().contains("remodel call session.step"));
+        assert!(env["error"].as_str().unwrap().contains("`name` is needed"));
+        assert!(env["next"].as_str().unwrap().contains("remodel call session.mark"));
         // The text content is the same envelope.
         let text: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(&text, env);
