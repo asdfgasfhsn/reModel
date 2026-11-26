@@ -1849,47 +1849,17 @@ impl Play {
                 s.net = Some(np);
             }
             if let Some(lp) = linked {
-                let mut machines = Vec::new();
-                let mut sounds = Vec::new();
-                for i in 1..players {
-                    let (mut m, _) = self.new_machine(&roms, game, &values, false, true);
-                    let own = std::fs::read(link_dir.join(format!("eeprom-{i}.bin"))).ok().or(mine.clone());
-                    let base = lp.base_with_free_play(own.as_deref(), free_play);
-                    link::load_settings(&mut m.bus, lp, base.as_deref(), i, players);
-                    machines.push(m);
-                    sounds.push(if self.opts.sound && values.link_audio.gains(i, players).is_some() {
-                        Sound::new(&roms, (values.sfx_db, values.music_db)).ok()
-                    } else {
-                        None
-                    });
-                }
-                let mut set =
-                    link::LinkSet::new(machines, model2::link::LinkHub::for_game(players, 1, lp), sounds, link_dir);
-                set.audio = values.link_audio;
-                // `--link-keyboard off`: the keyboard takes no seat this session.
-                self.seats.set_keyboard(self.opts.link_keyboard);
-                set.sync(&self.seats);
-                for i in 1..players {
-                    let spec = self.opts.link_inputs.get(i).cloned().flatten().or_else(|| self.opts.input.clone());
-                    if let Some(spec) = spec {
-                        set.scripts[i - 1] = Some(
-                            model2::input::InputScript::parse(&spec, &game.controls)
-                                .map_err(|e| format!("--input{}: {e}", i + 1))?,
-                        );
-                    }
-                }
-                set.apply_audio(s.sound.as_ref());
-                println!(
-                    "link play     {players} cabinets of {}, one thread each; EEPROMs in {}; keyboard {}",
-                    game.title,
-                    set.dir.display(),
-                    if self.opts.link_keyboard {
-                        "in its seat (P1 at first), gamepads in theirs"
-                    } else {
-                        "off, gamepads play P1 up"
-                    }
-                );
-                s.link = Some(set);
+                s.link = Some(self.link_set(
+                    &roms,
+                    game,
+                    &values,
+                    lp,
+                    players,
+                    link_dir,
+                    mine.as_deref(),
+                    free_play,
+                    s.sound.as_ref(),
+                )?);
             }
             if values.catalogue {
                 let mut st = model2::catalogue::Settings::new(
@@ -1964,6 +1934,65 @@ impl Play {
                 self.launcher.open = true;
             }
         }
+    }
+
+    /// The other machines of a one-screen link game of `players` cabinets
+    /// (player 1's is the session's own), joined by a hub: each with its own
+    /// EEPROM from `link_dir` (else `mine`, the player's own settings), its
+    /// sound if the link audio setting gives it a share, and its `--input`.
+    #[allow(clippy::too_many_arguments)]
+    fn link_set(
+        &mut self,
+        roms: &romset::RomSet,
+        game: &'static romset::Game,
+        values: &GameSettings,
+        lp: &'static romset::LinkPlay,
+        players: usize,
+        link_dir: PathBuf,
+        mine: Option<&[u8]>,
+        free_play: bool,
+        sound: Option<&Sound>,
+    ) -> Result<link::LinkSet, String> {
+        let mut machines = Vec::new();
+        let mut sounds = Vec::new();
+        for i in 1..players {
+            let (mut m, _) = self.new_machine(roms, game, values, false, true);
+            let own = std::fs::read(link_dir.join(format!("eeprom-{i}.bin"))).ok().or(mine.map(<[u8]>::to_vec));
+            let base = lp.base_with_free_play(own.as_deref(), free_play);
+            link::load_settings(&mut m.bus, lp, base.as_deref(), i, players);
+            machines.push(m);
+            sounds.push(if self.opts.sound && values.link_audio.gains(i, players).is_some() {
+                Sound::new(roms, (values.sfx_db, values.music_db)).ok()
+            } else {
+                None
+            });
+        }
+        let mut set = link::LinkSet::new(machines, model2::link::LinkHub::for_game(players, 1, lp), sounds, link_dir);
+        set.audio = values.link_audio;
+        // `--link-keyboard off`: the keyboard takes no seat this session.
+        self.seats.set_keyboard(self.opts.link_keyboard);
+        set.sync(&self.seats);
+        for i in 1..players {
+            let spec = self.opts.link_inputs.get(i).cloned().flatten().or_else(|| self.opts.input.clone());
+            if let Some(spec) = spec {
+                set.scripts[i - 1] = Some(
+                    model2::input::InputScript::parse(&spec, &game.controls)
+                        .map_err(|e| format!("--input{}: {e}", i + 1))?,
+                );
+            }
+        }
+        set.apply_audio(sound);
+        println!(
+            "link play     {players} cabinets of {}, one thread each; EEPROMs in {}; keyboard {}",
+            game.title,
+            set.dir.display(),
+            if self.opts.link_keyboard {
+                "in its seat (P1 at first), gamepads in theirs"
+            } else {
+                "off, gamepads play P1 up"
+            }
+        );
+        Ok(set)
     }
 
     /// Start the launcher's preview from what a preview job got ready.
