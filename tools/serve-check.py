@@ -133,7 +133,7 @@ if r["result"]["serverInfo"]["name"] != "remodel":
 rpc("notifications/initialized", notify=True)
 tools = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
 want = ["session.open", "session.input", "session.step", "session.mark", "session.restore", "session.forget",
-        "session.read", "session.watch", "session.disasm", "session.list", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "scene.render"]
+        "session.read", "session.watch", "session.disasm", "session.moves", "session.list", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "scene.render"]
 if tools != want:
     fail(f"tools/list {tools}")
 if "error" not in rpc("tools/call", {"name": "session.nonesuch", "arguments": {}}):
@@ -245,6 +245,17 @@ if sid not in [s["session"] for s in lst["sessions"]]:
 need("session.mark", session=sid, name="chk")
 need("session.input", session=sid, inputs=[])
 plain = need("session.step", session=sid, frames=30)
+need("session.restore", session=sid, name="chk")
+need("session.input", session=sid, inputs=[])
+# Moves: the game's table lists, and a move steps like its raw inputs.
+mv = need("session.moves", session=sid, where="all")
+if mv["count"] < 5:
+    fail(f"session.moves: {mv}")
+need("session.restore", session=sid, name="chk")
+need("session.input", session=sid, inputs=[])
+by_move = need("session.step", session=sid, move=["wait-10", "steer-left-hi-5f"])
+if by_move["frames_run"] < 15:
+    fail(f"step by move: {by_move}")
 need("session.restore", session=sid, name="chk")
 need("session.input", session=sid, inputs=[])
 need("session.watch", session=sid, what=["0x500000:0x10000"], limit=50)
