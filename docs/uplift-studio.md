@@ -1382,6 +1382,7 @@ and the command line cannot drift; `remodel call --help` lists them):
 | `session.mark` / `restore` / `forget` | Named copies of the machine (at most `--marks`, default 16, each about 73 MB). `restore` returns the machine, the log and the held inputs |
 | `session.read` | Named values (the table of "Named values"), or raw `ADDR[:b\|w\|l][:signed\|:float]`, or a range `ADDR:LEN` / `ADDR..END` (a hex dump; with `:b\|w\|l` or `:signed\|:float` a list of values); no names: all of the table. `format`: `json` (default, a row a value), `compact` (one object, name to value) or `tsv` (a line a value, in `text`). `when: before_poke`: a value a poke of this frame covers reads as the previous frame left it ("Pokes") |
 | `session.poke` | Holds a value in RAM for some frames (a poke-table name or `ADDR:VALUE[:b\|w\|l]`); logged, and the exported tour is marked as a cheat run |
+| `session.moves` | The game's moves (see "Moves") with measured effects under the conditions asked for; `session.step move=NAME` plays them |
 | `session.watch` | Reports writes to named values or `ADDR[:LEN]` during the next steps: each with the frame being run, the i960 instruction (`ip`) that wrote, the size and the value, in the step's `watch` (up to `limit`, default 200, counting the rest). It never changes the emulation (the same state hashes with and without) and a session's own pokes are not shown; no `what` reads the watch, an empty list clears it. See "Watching writes" below |
 | `session.disasm` | The main CPU's (i960) code at `addr`, `count` instructions (default 16), optionally from `back` bytes before; as the machine holds it, so it reads ROM or RAM code. An answer, not a file: listings are not committed |
 | `session.list` | The open sessions: id, where each started, frame, marks, held inputs, watch and camera |
@@ -1509,6 +1510,84 @@ s, once), `session.open from: tour:novice-full@F`:
 The state hashes are the same both ways (28af51daa696e03a, 310bd44b43178233,
 d65955f4630b2a04). The cost left is stepping, about 290 frames a second on the
 race screen; `--every 300` halves the worst case for twice the disk.
+
+## Moves
+
+A **move** is a short input span that recurs in a person's play (a steer, a
+hop, a hop while steering) with the effect it was measured to have. `remodel
+moves learn` cuts recordings into moves and measures them; the result is a
+per-game table, `crates/romset/src/games/moves/GAME.txt`, that a session can
+list (`session.moves`) and play (`session.step move=NAME`). It is plain
+measurement of the person's own play: no model is trained, and the table is
+derived from recordings, not from the ROM, so it is committed. Design and
+numbers: [uplift/scenes-and-server.md](uplift/scenes-and-server.md), "Slice 5
+as built".
+
+```
+remodel --game topskatr --jit moves learn --tours out/topskatr/tours/novice-full.txt out/topskatr/tours/expert-full.txt --out out/topskatr/moves.txt
+make moves-learn MOVES_OPTS="--tours FILE... --out FILE"     # the same, through the memory cap
+remodel --game topskatr moves check --tours out/topskatr/tours/hidden.txt --label secret-park-ride
+```
+
+**Learning.** (1) *Segment*: the recordings' input terms become runs; runs that
+overlap in time are one cluster, the unit that recurs. A digital button is named
+by how long it was held (`tap` up to 6 frames, `short` to 14, `hold` to 40,
+`long`), an analog channel by direction, strength (`lo`, `mid`, `hi`: its share
+of the full swing from the game's input table) and a duration bucket (5, 10, 20,
+40, 80 or 160 frames): `steer-left-hi-20f`, `jumpfront-tap`,
+`steer-left-hi-5f+jumptail-tap`. A chain of overlapping inputs over 160 frames is
+driving, not a move. (2) *Measure*: one pass over the recording from the spine
+checkpoint before its race stretch (`--screen`, default the named screen
+`racing`). At each cluster's first frame the machine is copied and the copy runs
+a window (the move's frames plus `--tail`, 60) with the move's inputs removed and
+everything else as recorded; the recording's own run is the other half. The
+difference in the named values at the window's end is the effect. Windows that
+leave the race screen are dropped (the screen word reads 0 for a few frames now
+and then, which is allowed). (3) *Tag*: each sample with whether the skater was
+airborne, a speed band (terciles of the samples' own speeds, cutoffs in the
+table) and the screen. (4) *Aggregate*: per move, one row for all samples and one
+for each combination of conditions with at least `--min-samples` (3) samples of
+its own; moves with fewer samples are dropped and counted.
+
+Nothing in the code names a game: values are found by the names `screen`,
+`speed`, `heading-x`, `heading-z`, `airborne`, `pos-x`, `pos-y`, `pos-z`,
+`vel-x`, `vel-z` and `score` in the game's value table (a table without one just
+has no effect on it), and inputs come from the game's input table.
+
+**The table.** One row per move and conditions:
+`NAME|INPUTS over N frames|conditions|effects|samples`, for example
+
+```
+steer-right-hi-5f|curving=0x10@0-4 over 5 frames|airborne=0,speed=low|w=65;dspeed=0[-0.01..0.15];dlat=-18.4[-45.5..8.5];...|11
+```
+
+INPUTS are tour terms with frames counted from the move's first frame;
+conditions are `any` or `airborne=0|1`, `speed=low|mid|high`, `screen=NAME`;
+effects are `NAME=median[min..max]` over the window `w` frames from the move's
+start: `dspeed` (speed), `dyaw` (heading, degrees), `dpath` (direction of travel,
+from `vel-x`/`vel-z`), `dair` (frames in the air), `dheight` (highest point),
+`dscore`, and `dfwd`/`dlat` (where the skater ended along and across its
+direction of travel at the start; `dlat` is towards +x when travelling along -z,
+the skater's left). Each is the recording's own run less the run without the
+move, so a steer that avoids a wall shows as a gain in speed; the effect is
+relative to doing nothing, in the situations the person used it. `@speed-bands A
+B` holds the band cutoffs. The table parses in `moves::parse_table`.
+
+**In a session.** `session.moves` lists the moves with the row for the
+conditions asked for: `where` is `current` (default: the session's airborne,
+speed band and screen now, falling back to the overall row), `all`, or explicit
+(`airborne=0,speed=mid`); `sort` orders by an effect (`-dlat` highest first).
+`session.step move=NAME` (repeatable: a sequence) applies the moves' inputs in
+place of held inputs, one after the other, and runs their frames. `wait-N` is N
+frames of no input. Without `until` the sequence runs once. With `until` it
+repeats until the condition holds or `frames` (default `--max-step`) are run, so
+`step move=steer-right-hi-80f move=wait-30 until="distance pos-x,pos-z to X,Z lt
+40"` is a search for a point; the condition is checked every frame, so a move can
+stop half-way. Repeating a move with nothing between is that input held, so put
+a `wait-N` between. The held inputs return after the step. The log records what
+was applied, so `session.export` replays to the same hash. A step that begins on
+the frame the session opened on runs one frame more (that frame keeps its start's
+inputs). `serve --moves FILE` uses another table than the game's.
 
 ## What is built, what comes later
 

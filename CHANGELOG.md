@@ -15,6 +15,20 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Moves (docs/uplift-studio.md, "Moves"): `remodel moves learn GAME --tours FILE...
+  [--out FILE]` (`make moves-learn`) cuts recordings' race stretches into the input
+  spans that recur (button taps and holds, analog steers by strength and duration,
+  and such inputs that overlap), measures each by replaying a window from a spine
+  checkpoint with and without it, tags each sample (airborne, speed band, screen)
+  and writes a move table; `remodel moves check` compares a table's predictions
+  with other recordings. Top Skater's table, learned from the Novice and Expert
+  recordings (18 moves, 95 rows; 65 s to learn with the spines made), is
+  `crates/romset/src/games/moves/topskatr.txt`. In a session, `session.moves`
+  lists the moves and their measured effects under the current conditions, and
+  `session.step move=NAME` (repeatable, with `wait-N`) plays them, repeating under
+  `until`; `serve --moves FILE` uses another table. Predictions on a held-out
+  course are honest: sideways movement and a hop's airtime carry over, speed does
+  not (docs/uplift/scenes-and-server.md, "Slice 5 as built").
 - Live sessions, from the first real use (docs/uplift/session-field-notes.md):
   `session.watch` reports the writes to named values or `ADDR[:LEN]` during a
   step, each with the frame, the size, the value and the i960 instruction that

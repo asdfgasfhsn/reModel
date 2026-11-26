@@ -406,7 +406,8 @@ it draws. The browser build has no session, so its check is unaffected
    built (the screen word does not name every screen).
 4. Spines from the person's recordings, and the `coverage` report counting
    the branches. **Built** (2026-11-26): "Slice 4 as built" below.
-5. `moves learn` and steps by move.
+5. `moves learn` and steps by move. **Built** (2026-11-26): "Slice 5 as
+   built" below.
 
 ### Slice 2 as built (2026-11-26)
 
@@ -624,6 +625,123 @@ lines of the game's value table.
 - **Not built:** `spine.where --refine` (re-stepping around the best rows),
   `remodel call --batch`, an append mode for `session.export file=` (the shared
   tours file the notes lost lines in), and the `ip` of writes the copro makes.
+### Slice 5 as built (2026-11-26)
+
+`crates/cli/src/moves.rs` (segmenting, measuring, the table, `moves learn` and
+`moves check`), the verb `session.moves` and the `move` argument of
+`session.step` in `session.rs`, `romset::games::moves` (the shipped table), `make
+moves-learn`. How to use it, and the table's format: [../uplift-studio.md](../uplift-studio.md),
+"Moves".
+
+**Deviations and choices.**
+
+- **One pass, forks.** The design says to replay from a spine checkpoint just
+  before each occurrence. The build replays once from the checkpoint before the
+  race stretch and, at each occurrence's first frame, copies the machine
+  (`Machine::copy_from`) and runs the window without the move's inputs; the
+  recording's own run is read from the same pass. The same two runs, for the cost of
+  one pass and a window each (a replay per occurrence would cost about 300 frames
+  more each).
+- **Clusters, not single presses.** Runs that overlap are one move (a jump while
+  steering is `steer-left-hi-5f+jumptail-tap`). The move is measured as recorded;
+  the table's inputs are the median of its samples (an analog's strength and
+  digital hold lengths, each part's offset). Steering in the recordings is almost
+  always full (the keyboard sets 0x10 or 0xf0), so every steer is `hi`; `lo`/`mid`
+  exist for a pad's analog stick and in `secret-park-ride` (0xc0).
+- **The effect is against doing nothing.** Removing a steer in a corridor often
+  means a wall, so `steer-left-hi-20f` shows a median speed gain of about 1.6 on the
+  ground: that is what the steer did in the situations the person used it, not
+  what any steer does. `dlat` (sideways) is the effect the table gets right.
+- **Heading.** `heading-x`/`heading-z` (`dyaw`) barely move under steering (the
+  skater turns its path, not its matrix: median 0 to 3 degrees); the direction of
+  travel from `vel-x`/`vel-z` (`dpath`) and the position change along and across
+  the old direction (`dfwd`, `dlat`) were added. Trick points have no value of
+  their own; `dscore` (the score) carries them (a hop with the tail is about 3,500).
+- **Window and screens.** The window is the move's frames plus 60 (at most 240).
+  The race screen's word reads 0 for a few frames now and then and for 30 to 60
+  frames while a section loads; a window may hold up to a tenth of such frames and
+  no other screen. 7 of 356 clusters were dropped as off the race.
+- **Waits.** `step move=wait-N` (not in the table) is N frames of nothing: a move
+  repeated under `until` is otherwise that input held.
+- **`until`** is checked every frame, so a sequence stops mid-move. `frames`
+  becomes the cap (default `--max-step`).
+- **The shipped table is derived from play, not the ROM** (the recordings are the
+  user's, not committed; the table keeps no frames or listings).
+- **The option `--out`** is the table's file for `moves` (elsewhere it is the output
+  folder); `main.rs` leaves it alone for `moves`.
+
+**Measured** (2026-11-26, release, `--jit`, this machine; learning twice from
+the same recordings gave a byte-identical table).
+
+| | |
+|---|---|
+| Learning, Novice (19,368 frames) and Expert (13,602) | 65 s with the spines cached (33 s and 31 s; 10,290 and 9,330 race frames replayed), 275 s cold under load (it also builds the two spines, on the interpreter, while other builds ran) |
+| Clusters | 356 (8 too long, 7 off the race), 292 measured |
+| Moves | 70 seen, 18 kept (at least 3 samples), 52 dropped (61 samples); 95 table rows (a row for all samples and for each condition combination with at least 3) |
+| Top moves (samples) | steer-left-hi-20f 27, steer-right-hi-5f 26, steer-left-hi-5f 23, steer-left-hi-10f 21, steer-right-hi-10f 18, steer-right-hi-20f 18, steer-left-hi-40f 16, jumpfront-tap 12 |
+
+**Prediction** (`remodel moves check`: measure the moves in recordings the table
+was not made from, predict each from the best matching row (most conditions that
+hold, else the overall row), compare). "Skill" is 1 less the table's mean absolute
+error over the error of predicting no effect; "in range" is how often the measured
+effect lay inside the row's min..max. `secret-park-ride` (held out; 81 clusters, 58
+measured; 46 of them moves the table has, 12 not) is another course, a bowl:
+
+| effect | mean abs actual | MAE table | skill | in range |
+|---|---|---|---|---|
+| dspeed | 0.218 | 0.636 | -1.92 | 76% |
+| dyaw (deg) | 14.0 | 14.0 | 0.00 | 65% |
+| dpath (deg) | 25.1 | 21.6 | 0.14 | 68% |
+| dair (frames) | 3.0 | 2.7 | 0.10 | 87% |
+| dheight | 2.88 | 3.00 | -0.04 | 59% |
+| dfwd | 21.1 | 27.5 | -0.31 | 71% |
+| dlat | 63.6 | 28.9 | 0.55 | 76% |
+
+Learning from Novice alone and predicting Expert (133 measured, 86 predicted):
+dspeed -0.71, dyaw -0.14, dpath -0.19, dair -0.06, dheight 0.18, dscore 0.57
+(the hop's trick points), dfwd -0.58, dlat -0.10; in range 61 to 97%.
+
+Honestly: the table tells an agent which way a move moves the skater (the sign
+and rough size of `dlat`, the airtime and score of a hop) well on a new course in
+the same recordings' style, and nothing reliable about speed or forward distance,
+where it does worse than assuming no effect. Effects depend on the situation
+(a wall, a slope, the stage of a jump) far more than on the move; the airborne and
+speed conditions do not capture that. More recordings would help the rare moves
+(52 dropped); a state-dependent model (the effect given the skater's heading and
+the walls near) is where it would have to go, beyond measurement of this kind.
+
+**Demo** (a session on the Novice course, the shipped table): from
+`tour:novice-full@4230` (skater at -2187, -2105, speed 4.1) to the point (-2465,
+-2659): 620 units from the start and 208 from the polyline of the recording's own path
+(212 from its nearest sample), which the run never visited. The search was
+`session.step move=M move=wait-W until="distance pos-x,pos-z to -2465,-2659 lt 40"
+frames=600` for six steer moves and two waits (12 sequences): two reached it,
+`steer-right-hi-40f` + `wait-10` in 205 frames and `steer-right-hi-80f` +
+`wait-30` in 219 (ending 39.9 from the point, frame 4449, state hash
+`c46556e97ffd6b24`). `session.export` wrote `moves-demo|4449f|from=novice-full@4230,
+curving=0x10@4231-4310,curving=0x10@4341-4420`, and `tour run` replayed it to the
+same hash on the interpreter and on `--jit`. What did not work: a greedy
+controller that picked the move whose table effect pointed at the target each
+step never arrived (the skater runs past; the table's forward effects are not
+reliable), a start at frame 3600 (the skater is almost stopped there, steering
+does nothing), and repeating a move with no wait (that is holding the input).
+
+**Tests.** Without ROMs: the table's parser and its refusals and round trip, the
+shipped tables' inputs against the game's input table, segmenting synthetic input
+streams (clusters, long chains, naming, shifted in time), bucketing (holds,
+durations, analog strengths, speed terciles), aggregation (medians, ranges,
+condition rows, dropped moves), the effects arithmetic, the command line. With the ROM
+(skipped without it): measuring is deterministic, a hop's measured effect is airtime
+and height and a steer's is sideways; `step move=` equals the raw inputs
+(same state hash and exported line), including a move with a gap and `wait-N`;
+`until` repeats a move, stops mid-move, on a distance after two repeats, at the
+`frames` cap and at `--max-step`; refusals; `session.moves` and its filters.
+
+**Not built:** a state-dependent effect model; moves from pad recordings with
+real analog strengths (none was available); `moves learn` over several games at
+once; `session.moves` ranking by a goal; a stop that waits for the end of the move
+(`until` checks every frame).
+
 ### Open questions (session)
 
 - **Step speed.** Unthrottled stepping with no drawing should run well

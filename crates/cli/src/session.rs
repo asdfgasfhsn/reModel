@@ -95,11 +95,12 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "session.step",
-        about: "Run frames, and only these. Optionally with inputs for just those frames, following a recording's inputs (`follow`, with `inputs` as an overlay held on top), and stopping early at a condition. Writes watched by session.watch during the step are reported in `watch`. Never more than the server's --max-step frames.",
+        about: "Run frames, and only these. Optionally with moves (`move`), with inputs for just those frames, following a recording's inputs (`follow`, with `inputs` as an overlay held on top), and stopping early at a condition. Writes watched by session.watch during the step are reported in `watch`. Never more than the server's --max-step frames.",
         args: &[
             SESSION,
-            arg("frames", Ty::Int, true, "how many frames to run (at most --max-step)"),
+            arg("frames", Ty::Int, false, "how many frames to run (at most --max-step); needed unless `move` is given (with `move` and `until`, the most frames the repeats run: default --max-step)"),
             arg("inputs", Ty::List, false, "inputs held for just this step (as session.input); with follow, an overlay added on top of the recording's"),
+            arg("move", Ty::List, false, "moves from the game's move table (session.moves), run in sequence in place of held inputs: each move's inputs for its frames. Without `until` the sequence runs once; with `until` it repeats until the condition holds or `frames` (default --max-step) are run. `wait-N` is N frames of no input (`wait-20`), to space moves out. Not with `follow` or `inputs`"),
             arg("follow", Ty::Str, false, "tour:LABEL (or LABEL): apply that tour's inputs, frame by frame, for the frames stepped (the held inputs are not used; `inputs` is added on top). A tour with pokes is followed with its pokes (a cheat run)"),
             arg("until", Ty::Str, false, "stop early: `value NAME OP V` (OP gt ge lt le eq ne), `distance NX,NY[,NZ] to X,Y[,Z] OP D` (names from the game's value table), `changes NAME` (differs from the step's start), `screen NAME|N` (the table's named screens), or `frames N`"),
         ],
@@ -146,6 +147,16 @@ pub static VERBS: &[Verb] = &[
             arg("addr", Ty::Str, true, "the address (hex with 0x, or decimal)"),
             arg("count", Ty::Int, false, "instructions (default 16, at most 256)"),
             arg("back", Ty::Int, false, "start this many bytes before the address (rounded to a word; the listing marks the address with =>; going back can start inside an instruction)"),
+        ],
+    },
+    Verb {
+        name: "session.moves",
+        about: "The game's moves (learned from a person's recordings, `remodel moves learn`), each with its inputs and frames and the measured effect (median and range of speed, heading, airtime, height, score over a window) under the conditions asked for: `current` (default; the session's airborne, speed band and screen now), `all` (each move's overall row) or explicit ones like `airborne=0,speed=mid`. Play one with session.step move=NAME.",
+        args: &[
+            SESSION,
+            arg("where", Ty::Str, false, "current (default), all, or conditions NAME=VALUE,... (airborne=0|1, speed=low|mid|high, screen=NAME)"),
+            arg("sort", Ty::Str, false, "an effect to order by, lowest first (dspeed, dyaw, dair, dheight, dscore), `-` before it for highest first; default most samples first"),
+            arg("limit", Ty::Int, false, "most moves listed (default 40)"),
         ],
     },
     Verb { name: "session.list", about: "The open sessions: id, where each started, its frame, marks, held inputs and watch.", args: &[] },
@@ -480,7 +491,7 @@ const DISPLAY_LEAD: u64 = 3;
 const DEFAULT_WATCH_LIMIT: usize = 200;
 
 /// A tour's whole input as terms, named pokes resolved.
-fn tour_items(game: &Game, tours: &[tour::Tour], label: &str) -> Result<Vec<String>, String> {
+pub(crate) fn tour_items(game: &Game, tours: &[tour::Tour], label: &str) -> Result<Vec<String>, String> {
     let table = tour::poke_table(romset::games::pokes(game)).map_err(|e| format!("{} {e}", game.id))?;
     tour::resolve_pokes(tour::inputs(tours, label, game.controls.coin_start)?, &table)
 }
@@ -948,6 +959,14 @@ impl Until {
     }
 }
 
+/// A move's term (`curving=0xf0@0-19`, frames counted from the move's first
+/// frame) with its frames moved to start at `at`.
+fn shift_term(term: &str, at: u64) -> Result<String, String> {
+    let (what, _) = term.rsplit_once('@').ok_or_else(|| format!("move term `{term}` has no frames"))?;
+    let (a, b) = tour::item_range(term).ok_or_else(|| format!("move term `{term}`: bad frames"))?;
+    Ok(if a == b { format!("{what}@{}", at + a) } else { format!("{what}@{}-{}", at + a, at + b) })
+}
+
 /// `item` is a held input: a name, `name=VALUE` or `gun=X:Y`, with no frames.
 fn check_held(items: &[String], game: &Game) -> Result<(), Answer> {
     for it in items {
@@ -980,6 +999,8 @@ pub struct Config {
     pub index_every: u64,
     /// Pictures and exported tours go here.
     pub out: PathBuf,
+    /// A move table to use in place of the game's own.
+    pub moves: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -993,6 +1014,7 @@ impl Default for Config {
             checkpoint_every: crate::spine::CHECKPOINT_EVERY,
             index_every: crate::spine::INDEX_EVERY,
             out: PathBuf::from("out/serve"),
+            moves: None,
         }
     }
 }
@@ -1010,6 +1032,8 @@ pub struct Server<'a> {
     spare: Vec<Box<Machine>>,
     table: Vec<ValueDef>,
     states: Vec<tour::StateDef>,
+    /// The game's moves (or why they did not load).
+    moves: Result<crate::moves::Table, String>,
 }
 
 fn rss_bytes() -> u64 {
@@ -1023,6 +1047,7 @@ impl<'a> Server<'a> {
     pub fn new(game: &'static Game, roms: Option<&'a RomSet>, cfg: Config) -> Server<'a> {
         let table = tour::value_table(romset::games::values(game)).unwrap_or_default();
         let states = tour::state_table(romset::games::values(game)).unwrap_or_default();
+        let moves = crate::moves::load(game, cfg.moves.as_deref());
         Server {
             game,
             roms,
@@ -1034,6 +1059,19 @@ impl<'a> Server<'a> {
             spare: Vec::new(),
             table,
             states,
+            moves,
+        }
+    }
+
+    /// The move table, or the answer that says there is none.
+    fn moves_table(&self) -> Result<&crate::moves::Table, Answer> {
+        match &self.moves {
+            Err(e) => Err(internal(format!("the move table does not load: {e}"))),
+            Ok(t) if t.rows.is_empty() => {
+                Err(Answer::fail(Code::Missing, format!("{} has no move table", self.game.id))
+                    .next("remodel moves learn --tours FILE   (learns moves from a recording; needs the ROM)"))
+            }
+            Ok(t) => Ok(t),
         }
     }
 
@@ -1058,6 +1096,7 @@ impl<'a> Server<'a> {
             "session.watch" => self.with(args, Self::watch),
             "session.disasm" => self.with(args, Self::disasm),
             "session.list" => self.list(),
+            "session.moves" => self.with(args, Self::moves),
             "session.camera" => self.with(args, Self::camera),
             "session.render" => self.with(args, Self::render),
             "session.export" => self.with(args, Self::export),
@@ -1404,11 +1443,60 @@ impl<'a> Server<'a> {
         Ok((label.to_string(), items))
     }
 
+    /// The moves a step plays: their names, inputs and frames, from the table.
+    fn step_moves(&self, names: &[String]) -> Result<Vec<(String, Vec<String>, u64)>, Answer> {
+        // `wait-N` is N frames of no input, so moves can be spaced out.
+        let wait = |n: &str| n.strip_prefix("wait-").and_then(|w| w.trim_end_matches('f').parse::<u64>().ok());
+        if names.iter().all(|n| wait(n).is_some_and(|w| w > 0)) {
+            return Err(bad("step: `move` names only waits; give a move from session.moves too"));
+        }
+        let table = self.moves_table()?;
+        names
+            .iter()
+            .map(|n| {
+                if let Some(w) = wait(n).filter(|w| *w > 0) {
+                    return Ok((n.clone(), Vec::new(), w));
+                }
+                table.find(n).map(|r| (r.name.clone(), r.terms.clone(), r.frames)).ok_or_else(|| {
+                    let known: Vec<String> = table.names().iter().map(|s| s.to_string()).collect();
+                    Answer::unknown("move", n, &known).next("session.moves")
+                })
+            })
+            .collect()
+    }
+
     fn step(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
         let game = self.game;
-        let frames = n_arg(args, "frames").unwrap_or(0);
+        let move_names = l_arg(args, "move");
+        let moves = if move_names.is_empty() { Vec::new() } else { self.step_moves(&move_names)? };
+        let seq: u64 = moves.iter().map(|m| m.2).sum();
+        let until_given = s_arg(args, "until").is_some();
+        if !moves.is_empty() {
+            if args.get("follow").is_some() || args.get("inputs").is_some() {
+                return Err(bad(
+                    "step: `move` is not combined with `follow` or `inputs` (a move is the step's inputs)",
+                ));
+            }
+            if !until_given {
+                if let Some(f) = n_arg(args, "frames").filter(|f| *f != seq) {
+                    return Err(bad(format!(
+                        "step: the moves are {seq} frames; `frames` ({f}) would cut them or leave frames over (leave it out, or add an `until` to repeat them)"
+                    )));
+                }
+            }
+        }
+        // Moves with no `until` run once. A step that starts on the frame the
+        // session opened on runs one more, as that frame keeps its start's inputs.
+        let lead = u64::from(s.frame() <= s.start);
+        let frames = if moves.is_empty() {
+            n_arg(args, "frames").unwrap_or(0)
+        } else if until_given {
+            n_arg(args, "frames").unwrap_or(self.cfg.max_step)
+        } else {
+            seq + lead
+        };
         if frames == 0 {
-            return Err(bad("step: `frames` is at least 1"));
+            return Err(bad("step: `frames` is at least 1 (or give `move`)"));
         }
         if frames > self.cfg.max_step {
             return Err(bad(format!(
@@ -1422,7 +1510,9 @@ impl<'a> Server<'a> {
         let following = s_arg(args, "follow").map(|f| self.follow_items(f)).transpose()?;
         // Held: the step's own inputs, else the session's; following a
         // recording, only what the step is given (an overlay on top of it).
-        let held = if args.get("inputs").is_some() {
+        let held = if !moves.is_empty() {
+            Vec::new()
+        } else if args.get("inputs").is_some() {
             let items = l_arg(args, "inputs");
             check_held(&items, game)?;
             items
@@ -1460,6 +1550,33 @@ impl<'a> Server<'a> {
             script = Some(
                 InputScript::parse(&terms.join(","), &game.controls)
                     .map_err(|e| bad(format!("follow {label}: {e}")))?,
+            );
+        }
+        // Moves: each one's terms from where the last ended, repeated while
+        // `until` has frames left; the session's held inputs return after.
+        if !moves.is_empty() {
+            let mut terms: Vec<String> = Vec::new();
+            let mut pos = first;
+            let limit = s.frame() + frames;
+            'seq: while pos < limit {
+                for (_, mt, mf) in &moves {
+                    for t in mt {
+                        terms.push(shift_term(t, pos).map_err(internal)?);
+                    }
+                    pos += mf;
+                    if pos >= limit {
+                        break 'seq;
+                    }
+                }
+                if !until_given {
+                    break;
+                }
+            }
+            terms.extend(s.held.iter().map(|h| format!("{h}@{limit}")));
+            terms.extend(s.pokes.iter().map(|p| format!("{}@{}-{}", p.term, p.from, p.to)));
+            script = Some(
+                InputScript::parse(&terms.join(","), &game.controls)
+                    .map_err(|e| internal(format!("a move's inputs do not parse: {e}")))?,
             );
         }
         if let Some(u) = &mut until {
@@ -1516,6 +1633,11 @@ impl<'a> Server<'a> {
         if let Some((label, _)) = &following {
             data["followed"] = json!(label);
         }
+        if !moves.is_empty() {
+            data["moves"] = json!(moves.iter().map(|m| m.0.as_str()).collect::<Vec<_>>());
+            data["sequence_frames"] = json!(seq);
+            data["repeats"] = json!(ran.div_ceil(seq.max(1)).max(1));
+        }
         if let Some(u) = until.as_ref().filter(|u| !matches!(u, Until::Frames(_))) {
             data["until_reading"] = u.reading(&s.m);
         }
@@ -1530,6 +1652,96 @@ impl<'a> Server<'a> {
             }
         }
         Ok(a.with_data(data))
+    }
+
+    /// The conditions the session is in now, as the move table words them:
+    /// `airborne`, `speed` (a band of the table's cutoffs) and `screen`.
+    fn conditions(&self, s: &Session, bands: &[f64]) -> Vec<(String, String)> {
+        let val = |name: &str| {
+            let def = self.table.iter().find(|d| d.name == name)?;
+            read_def(&s.m, def).and_then(|(_, v)| v.as_f64())
+        };
+        let screen = val(crate::moves::V_SCREEN);
+        let name = screen.and_then(|n| {
+            self.states
+                .iter()
+                .find(|st| st.value == crate::moves::V_SCREEN && st.number as f64 == n)
+                .map(|st| st.name.clone())
+        });
+        crate::moves::cond_of(
+            &crate::moves::Cond {
+                airborne: val(crate::moves::V_AIRBORNE).map(|a| a > 0.0),
+                speed: val(crate::moves::V_SPEED),
+                screen: name.unwrap_or_default(),
+            },
+            bands,
+        )
+    }
+
+    fn moves(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
+        let table = self.moves_table()?;
+        let have = self.conditions(s, &table.speed_bands);
+        let mode = s_arg(args, "where").unwrap_or("current");
+        let want: Option<Vec<(String, String)>> = match mode {
+            "all" => None,
+            "current" => Some(have.clone()),
+            other => Some(
+                other
+                    .split(',')
+                    .map(|c| c.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| {
+                        bad(format!("where `{other}`: want current, all, or NAME=VALUE,... (airborne=0, speed=mid)"))
+                    })?,
+            ),
+        };
+        let mut rows: Vec<&crate::moves::MoveRow> = Vec::new();
+        for name in table.names() {
+            let row = match &want {
+                None => table.best(name, &[]),
+                Some(w) => table.best(name, w),
+            };
+            rows.extend(row);
+        }
+        match s_arg(args, "sort") {
+            None => rows.sort_by_key(|r| std::cmp::Reverse(r.samples)),
+            Some(k) => {
+                let (desc, name) = match k.strip_prefix('-') {
+                    Some(n) => (true, n),
+                    None => (false, k),
+                };
+                if !crate::moves::EFFECTS.contains(&name) {
+                    let all: Vec<String> = crate::moves::EFFECTS.iter().map(|e| e.to_string()).collect();
+                    return Err(Answer::unknown("effect", name, &all));
+                }
+                let key = |r: &crate::moves::MoveRow| {
+                    r.effect(name).map_or(f64::INFINITY, |e| if desc { -e.median } else { e.median })
+                };
+                rows.sort_by(|a, b| key(a).total_cmp(&key(b)));
+            }
+        }
+        let total = rows.len();
+        rows.truncate(n_arg(args, "limit").unwrap_or(40) as usize);
+        let list: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                let fx: serde_json::Map<String, Value> = r
+                    .effects
+                    .iter()
+                    .map(|e| (e.name.clone(), json!({"median": e.median, "min": e.lo, "max": e.hi})))
+                    .collect();
+                json!({
+                    "move": r.name, "inputs": r.terms, "frames": r.frames, "conditions": r.cond_text(),
+                    "conditional": !r.cond.is_empty(), "window": r.window, "effects": fx, "samples": r.samples,
+                })
+            })
+            .collect();
+        let cond: Vec<String> = have.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        Ok(Answer::done(json!({
+            "session": s.id, "frame": s.frame(), "current": cond, "where": mode, "count": total, "moves": list,
+            "speed_bands": table.speed_bands,
+        }))
+        .next("session.step move=NAME"))
     }
 
     // ---------------------------------------------------------------- marks
@@ -2257,7 +2469,7 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), VERBS.len());
-        assert_eq!(VERBS.len(), 18);
+        assert_eq!(VERBS.len(), 19);
         for v in VERBS {
             let mut a: Vec<&str> = v.args.iter().map(|a| a.name).collect();
             a.sort();
@@ -2286,7 +2498,9 @@ mod tests {
     #[test]
     fn arguments_are_checked_by_the_table() {
         let v = find_verb("session.step").unwrap();
-        assert!(validate(v, &json!({})).unwrap_err().error.as_ref().unwrap().contains("`frames` is needed"));
+        // `frames` is needed unless a move gives the length: the step itself says so.
+        assert!(validate(v, &json!({"move": ["a"]})).is_ok());
+        assert!(validate(v, &json!({"move": "a"})).is_err(), "a move is a list");
         assert!(validate(v, &json!({"frames": "ten"})).unwrap_err().error.as_ref().unwrap().contains("a whole number"));
         assert!(validate(v, &json!({"frames": 1, "inputs": [1]})).is_err());
         assert!(validate(v, &json!({"frames": 1, "bogus": 1}))
@@ -3229,5 +3443,145 @@ mod tests {
         };
         assert_eq!(tasks(&mut srv, &a), tasks(&mut srv, &b));
         let _ = std::fs::remove_dir_all(&out);
+    }
+
+    const TEST_MOVES: &str = "# a test table\n@speed-bands 2 4\n\
+        steer-l|curving=0xf0@0-9 over 10 frames|any|w=70;dspeed=0.5[0..1]|5\n\
+        steer-l|curving=0xf0@0-9 over 10 frames|airborne=0|w=70;dspeed=0.7[0.2..1]|3\n\
+        hop|jumpfront@2-5 over 8 frames|any|w=60;dair=20[10..30];dheight=9[5..12]|4\n";
+
+    /// Moves in a session (skipped without the ROM): `step move=` is the
+    /// move's raw inputs frame for frame (same hash, same exported line), a
+    /// move repeats under `until` and stops where it should, the cap and the
+    /// refusals, and `session.moves` lists and filters.
+    #[test]
+    fn moves_are_steps_that_equal_their_raw_inputs() {
+        let Some((game, roms, out)) = rom_env("moves") else { return };
+        let cs = out.join("cs.tours");
+        std::fs::write(&cs, "cs|4000f|coin-start\n").unwrap();
+        let table = out.join("moves.txt");
+        std::fs::write(&table, TEST_MOVES).unwrap();
+        let cfg = Config { tours: vec![cs.clone()], out: out.clone(), moves: Some(table), ..Config::default() };
+        let mut srv = Server::new(game, Some(&roms), cfg);
+        ok(srv.call("session.open", &json!({})));
+        ok(srv.call("session.step", &json!({"frames": 3600, "follow": "cs", "until": "screen racing"})));
+        ok(srv.call("session.step", &json!({"frames": 200, "follow": "cs"})));
+        ok(srv.call("session.mark", &json!({"name": "m"})));
+        let export = |srv: &mut Server| ok(srv.call("session.export", &json!({"label": "x"}))).data.clone();
+        let line = |srv: &mut Server| export(srv)["line"].clone();
+        let hash = |srv: &mut Server| export(srv)["state_hash"].clone();
+
+        // A one-input move is that input held for its frames: the same state and the same log.
+        let a = ok(srv.call("session.step", &json!({"move": ["steer-l"]})));
+        assert_eq!((a.data["frames_run"].clone(), a.data["repeats"].clone()), (json!(10), json!(1)), "{a:?}");
+        let (hash_move, line_move) = (hash(&mut srv), line(&mut srv));
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        ok(srv.call("session.input", &json!({"inputs": ["curving=0xf0"]})));
+        let r = ok(srv.call("session.step", &json!({"frames": 10})));
+        assert_eq!(r.data["frame"], a.data["frame"]);
+        // The frame after the move takes the held inputs again (none).
+        ok(srv.call("session.input", &json!({"inputs": []})));
+        assert_eq!(hash(&mut srv), hash_move, "the move leaves the machine as its raw inputs do");
+        assert_eq!(line(&mut srv), line_move, "the same log, so the same exported tour");
+
+        // A move with a gap: nothing for two frames, a button for four, two more of nothing.
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let hop = ok(srv.call("session.step", &json!({"move": ["hop"]})));
+        assert_eq!(hop.data["frames_run"], 8);
+        let hop_hash = hash(&mut srv);
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        ok(srv.call("session.step", &json!({"frames": 2, "inputs": []})));
+        ok(srv.call("session.step", &json!({"frames": 4, "inputs": ["jumpfront"]})));
+        ok(srv.call("session.step", &json!({"frames": 2, "inputs": []})));
+        ok(srv.call("session.input", &json!({"inputs": []})));
+        assert_eq!(hash(&mut srv), hop_hash);
+
+        // A sequence is the moves one after the other.
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let seq = ok(srv.call("session.step", &json!({"move": ["steer-l", "hop"]})));
+        assert_eq!(seq.data["frames_run"], 18);
+        assert_eq!(seq.data["moves"], json!(["steer-l", "hop"]));
+
+        // wait-N is frames of nothing: the same as stepping them with no inputs.
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let w = ok(srv.call("session.step", &json!({"move": ["wait-3", "hop"]})));
+        assert_eq!(w.data["frames_run"], 11);
+        let w_hash = hash(&mut srv);
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        ok(srv.call("session.step", &json!({"frames": 5, "inputs": []})));
+        ok(srv.call("session.step", &json!({"frames": 4, "inputs": ["jumpfront"]})));
+        ok(srv.call("session.step", &json!({"frames": 2, "inputs": []})));
+        ok(srv.call("session.input", &json!({"inputs": []})));
+        assert_eq!(hash(&mut srv), w_hash);
+        assert_eq!(srv.call("session.step", &json!({"move": ["wait-3"]})).code, Code::BadRequest);
+
+        // until: a frame count stops mid-move; the cap stops a condition never met; the default cap is --max-step.
+        let got = |a: &Answer| (a.data["stopped"].clone(), a.data["frames_run"].clone(), a.data["repeats"].clone());
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let u = ok(srv.call("session.step", &json!({"move": ["steer-l"], "until": "frames 35"})));
+        assert_eq!(got(&u), (json!("until"), json!(35), json!(4)), "{u:?}");
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let never = "value speed lt 0.0001";
+        let u = ok(srv.call("session.step", &json!({"move": ["steer-l"], "until": never, "frames": 25})));
+        assert_eq!(got(&u), (json!("frames"), json!(25), json!(3)), "{u:?}");
+        srv.cfg.max_step = 50;
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let u = ok(srv.call("session.step", &json!({"move": ["steer-l"], "until": never})));
+        assert_eq!(got(&u), (json!("frames"), json!(50), json!(5)), "the default cap is --max-step: {u:?}");
+        srv.cfg.max_step = 3600;
+        // A point reached after two repeats stops there, not before.
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        ok(srv.call("session.step", &json!({"move": ["steer-l", "steer-l"]})));
+        let p = ok(srv.call("session.read", &json!({"names": ["pos-x", "pos-z"], "format": "compact"})));
+        let (x, z) = (p.data["values"]["pos-x"].clone(), p.data["values"]["pos-z"].clone());
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let until = format!("distance pos-x,pos-z to {x},{z} lt 0.001");
+        let d = ok(srv.call("session.step", &json!({"move": ["steer-l"], "until": until})));
+        assert_eq!(got(&d), (json!("until"), json!(20), json!(2)), "{d:?}");
+
+        // Refusals: an unknown move names the near ones; moves are not mixed with inputs; frames that disagree.
+        let e = srv.call("session.step", &json!({"move": ["steer-r"]}));
+        assert_eq!(e.code, Code::BadRequest);
+        assert!(e.message().contains("steer-l"), "{}", e.message());
+        for bad in [
+            json!({"move": ["hop"], "inputs": ["start"]}),
+            json!({"move": ["hop"], "follow": "cs"}),
+            json!({"move": ["hop"], "frames": 3}),
+            json!({}),
+        ] {
+            assert_eq!(srv.call("session.step", &bad).code, Code::BadRequest, "{bad}");
+        }
+
+        // session.moves: all of them, the conditions given, the current ones, an effect to sort by.
+        let l = ok(srv.call("session.moves", &json!({"where": "all"})));
+        assert_eq!(l.data["count"], 2);
+        let names: Vec<&str> =
+            l.data["moves"].as_array().unwrap().iter().map(|m| m["move"].as_str().unwrap()).collect();
+        assert_eq!(names, ["steer-l", "hop"], "most samples first");
+        assert_eq!(l.data["moves"][0]["inputs"], json!(["curving=0xf0@0-9"]));
+        assert_eq!(l.data["moves"][1]["effects"]["dair"]["median"], 20.0);
+        let l = ok(srv.call("session.moves", &json!({"where": "airborne=0", "sort": "-dspeed"})));
+        assert_eq!(l.data["moves"][0]["move"], "steer-l");
+        assert_eq!(l.data["moves"][0]["conditions"], "airborne=0", "the row for these conditions, not the overall");
+        assert_eq!(l.data["moves"][0]["effects"]["dspeed"]["median"], 0.7);
+        let l = ok(srv.call("session.moves", &json!({})));
+        let cur: Vec<&str> = l.data["current"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+        assert!(cur.contains(&"screen=racing"), "{cur:?}");
+        assert_eq!(srv.call("session.moves", &json!({"sort": "dspeeed"})).code, Code::BadRequest);
+        assert_eq!(srv.call("session.moves", &json!({"where": "airborne"})).code, Code::BadRequest);
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// A move table that does not load, or a game with none, is a plain answer.
+    #[test]
+    fn no_moves_is_a_plain_answer() {
+        let cfg = Config { moves: Some(PathBuf::from("/nonexistent/moves.txt")), ..Config::default() };
+        let srv = Server::new(romset::games::find("topskatr").unwrap(), None, cfg);
+        let e = srv.moves_table().err().unwrap();
+        assert!(e.message().contains("move table does not load"), "{}", e.message());
+        let srv = Server::new(romset::games::find("vf2").unwrap(), None, Config::default());
+        let e = srv.moves_table().err().unwrap();
+        assert_eq!(e.code, Code::Missing);
+        assert!(e.message().contains("no move table"), "{}", e.message());
     }
 }

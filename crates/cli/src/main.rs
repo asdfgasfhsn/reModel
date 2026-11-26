@@ -16,6 +16,8 @@ mod lighting_check;
 mod link_net;
 mod link_run;
 mod look_render;
+#[cfg(all(feature = "serve", unix))]
+mod moves;
 mod music;
 mod pack_check;
 mod pack_gates;
@@ -709,7 +711,7 @@ pub static OVERLAY_MISS: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 fn parse_opts() -> Result<Opts, ExitCode> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // `call VERB --help` and `spine --help` have help of their own.
-    let own_help = args.iter().any(|a| a == "call" || a == "session" || a == "spine");
+    let own_help = args.iter().any(|a| a == "call" || a == "session" || a == "spine" || a == "moves");
     if !own_help && args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
         return Err(ExitCode::SUCCESS);
@@ -726,6 +728,8 @@ fn parse_opts() -> Result<Opts, ExitCode> {
         args.remove(i);
         FRESH_EEPROM.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    // `moves learn --out FILE` names its table, not the output folder.
+    let moves = args.iter().any(|a| a == "moves");
     let mut opt = |flag: &str| -> Result<Option<String>, ()> {
         let Some(i) = args.iter().position(|a| a == flag) else { return Ok(None) };
         if i + 1 >= args.len() {
@@ -769,7 +773,7 @@ fn parse_opts() -> Result<Opts, ExitCode> {
         };
         let _ = AA.set(n);
     }
-    let Ok(out_dir) = opt("--out") else {
+    let Ok(out_dir) = (if moves { Ok(None) } else { opt("--out") }) else {
         eprint!("{USAGE}");
         return Err(ExitCode::FAILURE);
     };
@@ -1154,6 +1158,8 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "call" | "session" => serve::call(o),
         #[cfg(all(feature = "serve", unix))]
         "spine" => serve::spine_main(o),
+        #[cfg(all(feature = "serve", unix))]
+        "moves" => moves::main(o),
         "asset" => studio::asset_main(o),
         "pack" => pack_gates::main(o),
         "project" => studio::project_main(o),

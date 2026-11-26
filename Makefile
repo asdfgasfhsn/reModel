@@ -675,6 +675,10 @@ spine-index: release ## Replay a recording once (SPINE=LABEL, a tour from power-
 spine-where: release ## Ask a spine's index (SPINE=LABEL; SPINE_OPTS="--near pos-x=12 --near pos-z=-4000 --where screen=7 --limit N --gap F --tours FILE --json"): the frames nearest a point, or the stretches that match; each says the `tour:LABEL@F` to open (needs the ROM only if the index is not made yet)
 	@test -n "$(SPINE)" || { echo "SPINE=LABEL is needed"; exit 2; }
 	$(RUN) spine where $(SPINE) $(SPINE_OPTS)
+MOVES_OPTS ?=
+moves-learn: release ## Learn GAME's moves from recordings (MOVES_OPTS="--tours FILE... [--label L] [--skip L] [--out FILE] [--samples FILE] [--min-samples N] [--screen NAME] [--tail N] --json"; --jit speeds it): cuts their race stretches into the input spans that recur, measures each by replaying a window with and without it, and writes the move table (default out/GAME/moves.txt; the shipped one is crates/romset/src/games/moves/GAME.txt); `remodel moves check` compares a table's predictions with other recordings (docs/uplift-studio.md, "Moves")
+	@test -n "$(MOVES_OPTS)" || { echo "MOVES_OPTS=\"--tours FILE...\" is needed (tours from power-on with a length in frames)"; exit 2; }
+	$(RUN) moves learn $(MOVES_OPTS)
 serve-check: release ## The server acceptance test on GAME (needs the ROM; a GPU for the render): a real MCP client over stdin/stdout and the socket opens a session at power-on, steps a scene recipe's inputs to its frame (the scene's hash), opens from the scene, marks/steps/restores (the mark's hash), exports a tour that `tour run` replays to the same hash, reads, renders a PNG, calls over the socket and closes; MEASURE=1 also prints the speeds and memory
 	@rm -rf $(SERVE_CHECK_OUT)
 	python3 tools/serve-check.py "$(CAP) $(REMODEL)" $(GAME) $(ROM) $(SERVE_CHECK_OUT) $(if $(MEASURE),--measure)

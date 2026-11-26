@@ -115,6 +115,18 @@ pub fn values(game: &Game) -> &'static str {
     }
 }
 
+/// The set's move table (`remodel moves learn`, docs/uplift-studio.md,
+/// "Moves"): lines of `NAME|INPUTS over N frames|conditions|effects|samples`,
+/// short input spans learned from a person's recordings and the effect each
+/// had on the named values. Derived from play, not from the ROM. Empty where
+/// there is none.
+pub fn moves(game: &Game) -> &'static str {
+    match game.id {
+        "topskatr" => include_str!("moves/topskatr.txt"),
+        _ => "",
+    }
+}
+
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &SGT24H, &DYNABB97, &DOA, &INDY500,
     &FVIPERS, &SCHAMP, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2, &SKYTARGT, &MANXTT,

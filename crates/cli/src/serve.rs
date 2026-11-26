@@ -155,12 +155,13 @@ impl Drop for SocketFile {
 
 pub const SERVE_USAGE: &str = "\
 remodel --game G serve [--socket [PATH]] [--marks N] [--max-step N] [--sessions N] [--tours FILE]... [--no-stdio]
-                       [--checkpoint-every N] [--index-every K]
+                       [--moves FILE] [--checkpoint-every N] [--index-every K]
   MCP (JSON-RPC, a message a line) on standard input and output, and with --socket on a Unix
   socket (default out/serve/GAME.sock, mode 0600). No network port is ever opened.
   --marks N       marks a session keeps (default 16)         --max-step N   frames one step runs (default 3600)
   --sessions N    sessions open at once (default 4)           --tours FILE   a project's tours, for `from: tour:..`
   --no-stdio      serve the socket only (stop with SIGTERM)
+  --moves FILE    a move table to use in place of the game's own (`remodel moves learn --out`)
   --checkpoint-every N / --index-every K   when an open makes a recording's spine: a checkpoint every N
                   frames (default 600), a row of values every K (default 30); `session.open` and
                   `spine.index` can also say it per call (`every`, `index_every`)
@@ -224,6 +225,12 @@ pub fn parse_serve(mut args: Vec<String>, game_id: &str) -> Result<ServeOpts, St
         cfg.sessions = number(&mut args, "--sessions", cfg.sessions as u64, 1)? as usize;
         cfg.checkpoint_every = number(&mut args, "--checkpoint-every", cfg.checkpoint_every, 1)?;
         cfg.index_every = number(&mut args, "--index-every", cfg.index_every, 1)?;
+        if let Some(m) = take(&mut args, "--moves")?.map(PathBuf::from) {
+            if !m.is_file() {
+                return Err(format!("--moves {}: no such file", m.display()));
+            }
+            cfg.moves = Some(m);
+        }
         while let Some(t) = take(&mut args, "--tours")?.map(PathBuf::from) {
             if !t.is_file() {
                 return Err(format!("--tours {}: no such file", t.display()));
