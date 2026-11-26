@@ -641,7 +641,7 @@ missing original makes them `info`. `project approve` calls
 | `known` | Every `tex_` and `tile_` file is a name of the project's texture map (`map/`), and every `art_` file an artwork of it (by surface key and size); the files that are not are listed | warn |
 | `selected` | Every selected row has an approved image, its own or its artwork's `art_` image | warn; error with `--release` |
 | `coverage` | Per scene with a local copy (`scene make`; a GPU, no ROM): at least 10% of the native view's pixels differ from the original once the pack is drawn | warn; error with `--release` |
-| `sharing` | Optional, with an `owners.txt` in the project: per named owner, at most 0 flags of `studio sharing` (parts off their owner's tone, parts the pack leaves as the original, plain images where the key's palettes differ: "Sharing and owners"); the scenes made, no GPU, no ROM | warn; error with `--release` |
+| `sharing` | Optional, with an `owners.txt` in the project: per named owner, at most 0 flags of `studio sharing` (parts off their owner's tone, marked skin and hair off the original, garments of more than one design, parts the pack leaves as the original, plain images where the key's palettes differ: "Sharing and owners"); the scenes made, no GPU, no ROM | warn; error with `--release` |
 
 `coverage` counts changed pixels (`scene render --against original`'s
 `changed_share`), which is a lower bound of "drawn from replaced
@@ -689,8 +689,8 @@ skin ("Skater skin" in docs/games/topskatr.md) were missing.
 
 ```sh
 remodel --game topskatr studio sharing STUDIO [--owners FILE] [--pack DIR] [--scene A,B] \
-        [--sheets DIR] [--tsv FILE] [--fix DIR] [--write-map] [--refresh] [--all-rows] \
-        [--skin-limit X] [--other-limit X] [--variant-limit X] [--json]
+        [--sheets DIR] [--tsv FILE] [--fix DIR] [--recipe FILE] [--suggest FILE] [--write-map] [--refresh] [--all-rows] \
+        [--skin-limit X] [--other-limit X] [--variant-limit X] [--fixed-limit X] [--garment-light X] [--garment-hue X] [--json]
 make studio-sharing STUDIO=out/topskatr/studio/cel-pack5 STUDIO_ARGS="--sheets DIR"
 ```
 
@@ -734,21 +734,54 @@ a set of palettes: the signatures that belong together.
 **Consistency, per owner.** The tone of a part is the mean colour of the opaque texels of
 the image the pack draws for it, against the original's through the palette (`texture_look`'s
 ramp: what the game draws). The look and the lighting multiply both the same way, so neither
-is applied; what is compared is the ratio of the two. For each part the tool takes where
-the owner's other parts put it: the weighted median (by 1 + log10 of pixels) of the others'
-pack/original ratios, per channel from the other skin parts (two or more), else one brightness
-ratio from the other parts, and compares the part's tone with the original times that
-(`dev`). Skin is "warm hue, mid-light, not saturated" in the original's tone and the
-pack's (`skin_like`: a rule of thumb, so blond hair and red trunks are not skin). A skin part
-is held to the colour (CIE76 colour difference, `--skin-limit` 8), any other part to its
-brightness only (L*, `--other-limit` 15), because a comic look recolours clothes on purpose.
-Parts with near-black originals leave the median out. Flags:
+is applied; what is compared is the ratio of the two. Parts of an owner that `owners.txt`
+does not mark (below) are held against where the owner's other parts put them: the weighted
+median (by 1 + log10 of pixels) of the others' pack/original ratios, per channel from the other
+skin parts (two or more), else one brightness ratio from the other parts (`dev`). Skin is "warm
+hue, mid-light, not saturated" in the original's tone and the pack's (`skin_like`: a rule of
+thumb, so blond hair and red trunks are not skin). A skin part is held to the colour (CIE76
+colour difference, `--skin-limit` 8), any other part to its brightness only (L*, `--other-limit`
+15), because a comic look recolours clothes on purpose. Parts with near-black originals leave
+the median out. Flags:
 
 | Flag | Raised when | Limit |
 |---|---|---|
-| `outlier` | the part's `dev` is over the limit | `--skin-limit` 8 (skin), `--other-limit` 15 (the rest) |
+| `outlier` | an unmarked part's `dev` is over the limit | `--skin-limit` 8 (skin), `--other-limit` 15 (the rest) |
 | `original` | a **character's** part is drawn by the pack as the original (no image) | none |
 | `needs-variant:PAL` | the part draws the key's plain image, PAL draws it too, and the tones the two should have differ by more than the limit | `--variant-limit` 10 |
+| `skin-off` | a part marked skin or hair is off the original through its owner's palette | colour difference over `--fixed-limit` 9 |
+| `garment:NAME` | a part of garment NAME differs from the garment's typical part in lightness or hue, or shows hardly any hue the garment's other parts show | `--garment-light` 15 L*, `--garment-hue` 30 degrees, hue overlap 0.3 |
+| `garment-select:NAME` | the garment as the select screen draws it differs from the races' | the same two limits |
+
+**Marks: skin, hair and garments.** The user's rule for the Top Skater pack (2026-11-26) is that
+skin, face, hands, neck and hair keep the original's colour for each skater, and that every garment
+is one design everywhere it appears. A comparison with the owner's other parts cannot say that
+(a pack wrong in every part is consistent), so `owners.txt` marks parts by hand, after the owner's
+line, with 8 or 16 hex digits of the texture key (8 digits name the texture in every colour-table
+address, whatever palette it is drawn through):
+
+```
+Keith|29fd8e3c,...                         # the owner and its palettes
+Keith.skin|9702375f,0e466684,dc567154      # held to the ORIGINAL through Keith's palette (skin-off)
+Keith.hair|fb0e0b44                        # the same
+Keith.hoodie=D2701E|b84b3b3d,698dd6ce,...  # a garment, optionally with its design tone (RRGGBB)
+@select|select,-sel-,alex-01               # scene names (substrings) of the select screen
+```
+
+`skin` and `hair` are fixed parts: for an owner with a `skin` or `hair` line, they are checked
+against the original's tone (`dev` is the colour difference, `--fix` repaints to it), not to the owner's
+median. Any other name is a garment: its parts (every palette of every key listed) must match each
+other. The garment's typical part is the member the others are nearest to (by pixels), or its design
+tone when it has one; each part is checked for lightness, hue and (the mean of a striped or mottled
+image can look like one colour that no pixel has) the share of its hues, the 24-bin chroma-weighted histogram
+of the image, that the garment's other parts also show. The tool also pools the garment's parts
+as the select screen draws them and as every other scene does (`@select`, default `select,-sel-`)
+and compares the two. A garment with a design tone has all its parts rebuilt by `--recipe FILE`:
+style recipes (`studio style --recipe`, the project's `recipes.txt` first) that redraw each part from the
+original in three tones of the design. `--suggest FILE` writes a first draft of the marks from the
+original's colours (`NAME.skin` for the skin-like, `NAME.auto-HUE-LIGHT` for clusters of the rest) to
+be renamed and split by eye; a quick way to see which key is which is a throwaway pack with each group
+one flat colour, rendered on a select and a race scene.
 
 A named owner takes a run only when it holds at least two of the owner's own palettes (those
 at most two owners list: a board or shoe palette everyone draws does not count), so the
@@ -762,7 +795,10 @@ palette, draw (`v`, `p`, `o`) and `dev` under each, flagged ones in red.
 (the plain name for a key the scenes draw through one palette) repainted to the tone the owner's
 others put it at, moved only halfway into the limit (`target`; a non-skin part keeps its hue): the pack's
 image for that palette, or the original through the palette when the pack has none; a starting point to look
-at, `studio import`, `approve` and `pack`.
+at, `studio import`, `approve` and `pack`. A marked skin or hair part goes all the way to the original's tone
+and a garment's part to the garment's, with the drawing kept: lightness bent so that black and white stay
+put, the hue turned by the difference of the two means and the chroma scaled (an ink line stays an ink
+line); a few rounds correct what clipping takes off the mean.
 
 **`--write-map`** writes `STUDIO/map/sharing/`, a texture map (inventory and `textures/`) with a
 row per (key, palette) for every key the scenes draw through more than one palette
@@ -774,14 +810,17 @@ seen through a single palette had no variant row to select).
 
 **The gate.** With an `owners.txt` in the project, `pack check` (level `scene`, which also
 needs the scenes) runs `sharing`: one result per named owner, its flags against the limit
-(`sharing` in `gates.txt`, default 0 flags: a warning, an error with `--release`).
+(`sharing` in `gates.txt`, default 0 flags: a warning, an error with `--release`); skin, hair and garment
+marks and `@select` are read from the same `owners.txt`, so the gate counts `skin-off` and `garment` flags too.
 Without `owners.txt` the gate is not run.
 
 **Limits.** An owner is found among objects drawn together, so two skaters in one window and
 run are one owner (it happens when the rival and the player are neighbours in the block
 numbers; the run gap is `RUN_GAP`). The tone is a mean, so a part whose pattern changed but
-whose mean did not is not flagged, and an ink-heavy image (a logo) cannot reach a white original's mean; the look is a common factor, not applied. Skin is found
-by colour. The pack's `art_` images are not read (a key an artwork draws counts as
+whose mean did not is not flagged (a garment's hue histogram catches a mottled part, not a different pattern in the same
+colours), and an ink-heavy image (a logo) cannot reach a white original's mean; the look is a common factor, not applied,
+so a pack part drawn at the original's tone reads a little darker than the original in the pictures. Unmarked skin is found
+by colour; marks are by hand, and a key no mark names is judged by the owner's others only. The pack's `art_` images are not read (a key an artwork draws counts as
 `original`). Only the project's own `pack/` is read, not a stack.
 
 ## Regions

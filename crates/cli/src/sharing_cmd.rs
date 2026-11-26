@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "\
 remodel studio sharing PROJECT [--owners FILE] [--pack DIR] [--scene NAME,..] [--sheets DIR] [--tsv FILE]
-         [--fix DIR] [--skin-limit X] [--other-limit X] [--variant-limit X] [--refresh] [--write-map] [--all-rows] [--json]
+         [--fix DIR] [--skin-limit X] [--other-limit X] [--variant-limit X] [--fixed-limit X]
+         [--garment-light X] [--garment-hue X] [--suggest FILE] [--recipe FILE] [--refresh] [--write-map] [--all-rows] [--json]
   Who shares which texture, and is the pack consistent for each? Reads every scene of the project that has a
   local copy (no ROM, no GPU; the first run draws each capture, later runs read PROJECT/sharing/), groups the
   palettes drawn together on one object into owners, and compares what the pack draws for each (key, palette)
@@ -38,6 +39,15 @@ remodel studio sharing PROJECT [--owners FILE] [--pack DIR] [--scene NAME,..] [-
   `tex_KEY_WxH.png` for a key the scenes draw through one palette) at the tone its owner's other parts put it at (the pack's image for that palette, or the original through it when
   the pack has none, each colour scaled so the mean is the target): a starting point to look at, import and
   approve.
+  Marks (owners.txt): `NAME.skin|key,..` and `NAME.hair|key,..` name an owner's fixed parts (skin, face, hands, neck, hair:
+  keys as 8 or 16 hex digits): held to the ORIGINAL through the owner's palette (skin-off: a colour difference over
+  --fixed-limit, 9). Any other `NAME.GARMENT|key,..` is a garment: its parts must match in hue (--garment-hue, 30
+  degrees) and lightness (--garment-light, 15 L*) one another (garment:NAME) and between the select screen and the
+  races (garment-select:NAME; the select scenes are `@select|text,text` in owners.txt, default `select,-sel-`).
+  --suggest FILE writes a first draft of these groups from the original's colours. A garment may name its design,
+  `NAME.GARMENT=RRGGBB|keys`: its parts are then held to that tone, and --recipe FILE writes style recipes that
+  redraw every part of it from the original in three tones of it (one design on every key; the project's recipes.txt
+  gives the rest of the look).
   Exit 1 when a character has a flag. Also an optional gate, `sharing`, in `pack check`.
 ";
 
@@ -90,15 +100,21 @@ pub fn run_project(q: &Request) -> Result<Run, String> {
     if scenes.is_empty() {
         return Err("no scene of the project has a local copy (`remodel scene make --all`; needs the ROM)".into());
     }
+    let mut limits = q.limits.clone();
     let owners_path = q.owners_file.map(Path::to_path_buf).unwrap_or_else(|| q.project.join("owners.txt"));
     let (named, owners_file) = match std::fs::read_to_string(&owners_path) {
-        Ok(t) => (parse_owners(&t)?, true),
+        Ok(t) => {
+            if let Some(p) = parse_select(&t) {
+                limits.select = p;
+            }
+            (parse_owners(&t)?, true)
+        }
         Err(_) if q.owners_file.is_none() => (Vec::new(), false),
         Err(e) => return Err(format!("{}: {e}", owners_path.display())),
     };
     let collected = crate::sharing_collect::collect(game, q.project, &scenes, q.refresh, q.progress)?;
     let pack = PackIndex::load(&q.pack_dir.map(Path::to_path_buf).unwrap_or_else(|| q.project.join("pack")));
-    let report = analyse(&collected.sights, &collected.parts, &named, &|i| pack.side(i), q.limits);
+    let report = analyse(&collected.sights, &collected.parts, &named, &|i| pack.side(i), &limits);
     Ok(Run { collected, report, pack, scenes: scenes.len(), owners_file })
 }
 
@@ -210,7 +226,10 @@ fn write_fixes(run: &Run, store: &Path, dir: &Path, lim: &Limits) -> Result<Vec<
         // Only as far as it takes to read as consistent: halfway into the limit, not all the way to the
         // expected tone (a part drawn on purpose in another hue or a shade lighter keeps that).
         let limit = if r.skin { lim.skin } else { lim.other };
-        let target = if r.draw != crate::sharing::Draw::Original && r.dev > 0.5 * limit {
+        // A marked skin or hair part and a garment's part go all the way to the target.
+        let target = if r.fixed || r.group.is_some() {
+            target
+        } else if r.draw != crate::sharing::Draw::Original && r.dev > 0.5 * limit {
             let k = 1.0 - 0.5 * limit / r.dev;
             [
                 r.pack[0] + (target[0] - r.pack[0]) * k,
@@ -225,7 +244,8 @@ fn write_fixes(run: &Run, store: &Path, dir: &Path, lim: &Limits) -> Result<Vec<
         let src = run.pack.file(r.key, r.pal).map(|(_, p)| p.clone());
         let src = src.unwrap_or_else(|| store.join("orig").join(format!("{}.png", r.name())));
         let Ok(im) = crate::studio_img::load(&src) else { continue };
-        let fixed = repaint(&im, target);
+        // A part with a definite target keeps its drawing (hue turned, lightness bent); the rest is scaled.
+        let fixed = if r.fixed || r.group.is_some() { recolour(&im, target) } else { repaint(&im, target) };
         crate::studio_img::save(&dir.join(format!("{name}.png")), &fixed)?;
         let _ = writeln!(
             tsv,
@@ -239,6 +259,43 @@ fn write_fixes(run: &Run, store: &Path, dir: &Path, lim: &Limits) -> Result<Vec<
     }
     std::fs::write(dir.join("fixes.tsv"), tsv).map_err(|e| e.to_string())?;
     Ok(done)
+}
+
+/// Style recipes (`studio style --recipe`, after the project's own `recipes.txt`) for every part of every
+/// garment that has a design tone: the part's original through its palette in three tones of the design
+/// (dark, the design, light), inked and cleaned as the project's default recipe says. One `[key NAME]` each.
+fn write_recipe(run: &Run, file: &Path) -> Result<usize, String> {
+    let mut pals: HashMap<u64, usize> = HashMap::new();
+    for &(k, _) in run.collected.parts.keys() {
+        *pals.entry(k).or_insert(0) += 1;
+    }
+    let hex = |t: [f32; 3], k: f32| {
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            (t[0] * k).min(255.0) as u8,
+            (t[1] * k).min(255.0) as u8,
+            (t[2] * k).min(255.0) as u8
+        )
+    };
+    let mut seen = BTreeSet::new();
+    let mut out =
+        String::from("# written by `studio sharing --recipe`: garments with a design tone, three tones of it\n");
+    for r in run.report.rows.iter().filter(|r| r.character && r.designed) {
+        let Some(t) = r.target else { continue };
+        let name = if pals.get(&r.key) == Some(&1) { format!("tex_{:016x}_{}x{}", r.key, r.w, r.h) } else { r.name() };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "\n[key {name}]\npalette = {} {} {}\ntones = 3\ndespeckle = 12",
+            hex(t, 0.62),
+            hex(t, 1.0),
+            hex(t, 1.25)
+        );
+    }
+    std::fs::write(file, out).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(seen.len())
 }
 
 pub fn main(o: &crate::Opts) -> std::process::ExitCode {
@@ -258,6 +315,11 @@ pub fn main(o: &crate::Opts) -> std::process::ExitCode {
                 "--skin-limit",
                 "--other-limit",
                 "--variant-limit",
+                "--fixed-limit",
+                "--garment-light",
+                "--garment-hue",
+                "--suggest",
+                "--recipe",
             ],
         )?;
         if a.has("--help") {
@@ -285,6 +347,9 @@ pub fn main(o: &crate::Opts) -> std::process::ExitCode {
             skin: num("--skin-limit", dl.skin)?,
             other: num("--other-limit", dl.other)?,
             variant: num("--variant-limit", dl.variant)?,
+            fixed: num("--fixed-limit", dl.fixed)?,
+            garment_light: num("--garment-light", dl.garment_light)?,
+            garment_hue: num("--garment-hue", dl.garment_hue)?,
             ..dl
         };
         let only: Vec<String> =
@@ -309,6 +374,14 @@ pub fn main(o: &crate::Opts) -> std::process::ExitCode {
         let tsv = a.one("--tsv").map(PathBuf::from).unwrap_or_else(|| store.join("sharing.tsv"));
         std::fs::write(&tsv, rows_tsv(&run.report))
             .map_err(|e| Answer::fail(Code::Internal, format!("{}: {e}", tsv.display())))?;
+        if let Some(f) = a.one("--suggest") {
+            std::fs::write(f, suggest(&run.report.rows, 200))
+                .map_err(|e| Answer::fail(Code::Internal, format!("{f}: {e}")))?;
+        }
+        let mut recipes = None;
+        if let Some(f) = a.one("--recipe") {
+            recipes = Some(write_recipe(&run, Path::new(f)).map_err(|e| Answer::fail(Code::Internal, e))?);
+        }
         let mut sheets = Vec::new();
         if let Some(dir) = a.one("--sheets") {
             std::fs::create_dir_all(dir).map_err(|e| Answer::fail(Code::Internal, format!("{dir}: {e}")))?;
@@ -359,7 +432,7 @@ pub fn main(o: &crate::Opts) -> std::process::ExitCode {
                 x.owner,
                 x.draw.name(),
                 x.name(),
-                if x.skin { "skin" } else { "other" },
+                x.kind(),
                 x.dev,
                 x.flags.iter().map(Flag::text).collect::<Vec<_>>().join(" ")
             );
@@ -375,6 +448,12 @@ pub fn main(o: &crate::Opts) -> std::process::ExitCode {
         for s in &sheets {
             let _ = writeln!(text, "sheet         {s}");
         }
+        if let (Some(n), Some(f)) = (recipes, a.one("--recipe")) {
+            let _ = writeln!(
+                text,
+                "recipe        {n} garment parts in {f} (append to recipes.txt, `studio style --from original`)"
+            );
+        }
         if let Some(n) = mapped {
             let _ = writeln!(text, "map           {}/map/sharing ({n} rows)", project.display());
         }
@@ -388,12 +467,13 @@ pub fn main(o: &crate::Opts) -> std::process::ExitCode {
                 "skin_ratio": o.skin_ratio,
             })).collect::<Vec<_>>(),
             "flags": {"characters": cf, "elsewhere": of},
-            "limits": {"skin": lim.skin, "other": lim.other, "variant": lim.variant},
+            "limits": {"skin": lim.skin, "other": lim.other, "variant": lim.variant, "fixed": lim.fixed,
+                "garment_light": lim.garment_light, "garment_hue": lim.garment_hue},
             "rows": flagged.iter().take(400).map(|x| json!({
                 "owner": x.owner, "character": x.character, "name": x.name(),
                 "key": format!("{:016x}", x.key), "pal": format!("{:08x}", x.pal),
                 "scenes": x.scenes, "groups": x.groups, "pixels": x.pixels, "share": x.share,
-                "draw": x.draw.name(), "kind": if x.skin { "skin" } else { "other" },
+                "draw": x.draw.name(), "kind": x.kind(),
                 "orig": x.orig, "pack": x.pack, "ratio": x.ratio, "dev": x.dev,
                 "flags": x.flags.iter().map(Flag::text).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
@@ -443,8 +523,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&proj);
         let c = crate::sharing_collect::collect(game, &proj, &scenes, false, false).unwrap();
         assert!(c.failed.is_empty(), "{:?}", c.failed);
-        let r =
-            analyse(&c.sights, &c.parts, &[], &|i| PackSide { draw: Draw::Plain, tone: i.orig }, &Limits::default());
+        let r = analyse(
+            &c.sights,
+            &c.parts,
+            &[],
+            &|i| PackSide { draw: Draw::Plain, tone: i.orig, hue: None },
+            &Limits::default(),
+        );
         // The hand 3d5cfef2: J's tan, Alex's pale peach, P-Nut's pink, one key.
         let hand: Vec<_> = r.rows.iter().filter(|x| x.key >> 32 == 0x3d5cfef2).collect();
         let pals: std::collections::BTreeSet<u32> = hand.iter().map(|x| x.pal).collect();

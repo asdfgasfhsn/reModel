@@ -15,6 +15,15 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Studio: `studio sharing` audits skin, hair and garments against the user's skater rule. `owners.txt` marks an owner's
+  parts by texture key: `NAME.skin` and `NAME.hair` are held to the original through the owner's palette (colour
+  difference, flag `skin-off`, `--fixed-limit`), `NAME.GARMENT[=RRGGBB]` is one design whose parts must agree
+  in lightness and hue and in the hues their drawings show (a mottled image that averages to the garment's colour is
+  caught: `garment:NAME`, `--garment-light`, `--garment-hue`), and between the select screen and the races
+  (`garment-select:NAME`, scenes named by `@select|text,..`). `--fix` repaints marked parts all the way,
+  keeping the drawing (hue turned, lightness bent); `--recipe FILE` writes style recipes that redraw a garment's
+  parts from the original in three tones of its design; `--suggest FILE` drafts the marks from the original's
+  colours. The `sharing` gate counts the new flags. Synthetic skin and garment cases are in the tests.
 - Studio: `remodel studio sharing STUDIO` (`make studio-sharing`) audits which textures
   share and whether the pack draws their owners consistently (docs/uplift-studio.md,
   "Sharing and owners"). From the project's scenes (their captures, no ROM and no GPU;
