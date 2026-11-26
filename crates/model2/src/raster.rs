@@ -443,9 +443,9 @@ pub const DEPTH_SCALE: f32 = 0.1;
 /// be and still win the test ([`depth_test_value`]), whatever the number of
 /// polygons between: the game's order is kept for a decal laid on a
 /// faceted surface of its model (segawski's jersey text and logo lie up to
-/// 0.3% behind the jersey's facets). What is written is the polygon's own
+/// 0.6% behind the jersey's facets). What is written is the polygon's own
 /// depth.
-pub const DEPTH_TOLERANCE: f32 = 0.005;
+pub const DEPTH_TOLERANCE: f32 = 0.01;
 
 /// The depth buffer's value for a fragment of 1/z `iz` and draw order
 /// `rank` in its window: larger is nearer. Monotonic, and finest where 1/z

@@ -166,7 +166,7 @@ games with it off and on:
 - **Decals and layers:** a later polygon wins a tie, and by up to 1e-5
   of its depth per polygon between (`DEPTH_BIAS`), which covers rounding
   between a road marking and the road; and it is *tested* with its 1/z
-  raised by 0.5% (`DEPTH_TOLERANCE`, `raster::depth_test_value`) while
+  raised by 1% (`DEPTH_TOLERANCE`, `raster::depth_test_value`) while
   it *writes* its own depth. That keeps the game's order for a decal
   laid on a faceted surface of its model, which can lie a little behind
   the facets (measured: segawski's jersey text and logo 0.03-0.27%
@@ -284,11 +284,31 @@ games with it off and on:
   `stcc` 0.01-0.03%, `dynabb97`, `indy500`, `overrevb`, `overrev`,
   `lastbrnx` 0.04-0.07%, `schamp`, `topskatr`, `waverunr`, `hotd`,
   `segawski` 0.1-0.17%, `bel` 0.5%, `skisuprg` 0.7%.
+- **Loose ends, 2026-11-27** (`depth-check --probe`, `segawski` and
+  `sgt24h` coin-start captures, depth-on frames before and after):
+  - `segawski`'s jersey logo lost its left tail and right edge, and a
+    row of the "HEAVEN" lettering in places, with the buffer on: the
+    logo quad lies 0.56% behind the jersey facet it is sewn on when the
+    skier's back turns (frame 3600, pixel 710,700: nearer by 5.56e-3,
+    over the 0.5% tolerance), so the facet won. `DEPTH_TOLERANCE` is now
+    1%; at that, the logo and the lettering equal depth off in every
+    frame checked, and `sgt24h`'s depth-on frames moved towards depth
+    off (3 to 351 pixels a frame changed, the differences from off
+    fell in each).
+  - `sgt24h`'s bonnet stripe: not reproduced. In a coin-start capture
+    with the camera cycled through four views (the chase view, the cockpit
+    and two others, `view@3500-3504,...`), the windscreen, rear window and
+    the "AUTO MAX" stripe equal depth off, apart from single pixels at the
+    bonnet's edge in the cockpit view. Unconfirmed for other courses and
+    cars.
+  - `depth-check` has no environment probes: `--probe X,Y@FRAME`
+    (`make depth-check PROBE=...`) and `--against DIR` (`AGAINST=`) are
+    its only probes, documented below and in `docs/usage.md`.
 - **Not verified:** against a real machine, any of it; and the
-  trade-off of the tolerance: surfaces that cross within 0.5% of 1/z
+  trade-off of the tolerance: surfaces that cross within 1% of 1/z
   of each other keep the game's order there, so an intersection line
   can move by a pixel or two. The depth buffer isn't z-fight free: a
-  decal more than 0.5% behind its surface, not sorted with it, still
+  decal more than 1% behind its surface, not sorted with it, still
   loses.
 
 **Probing a pixel.** `make depth-check PROBE="X,Y@FRAME ..."` (`remodel
