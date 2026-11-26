@@ -1,0 +1,15 @@
+# The House of the Dead's tours: LABEL|LENGTH|INPUT (docs/uplift-studio.md,
+# "Tours"). Inputs only; nothing taken from the ROMs.
+#
+# bench: what `make bench` runs (BENCH_STEPS, coin-start).
+bench|600000000|coin-start
+# Attract, two coins, start, chapter 1 with the gun shooting.
+coin-start|6000f|coin-start
+# Chapter 1 with the gun held still and never fired: enemies reach player 1.
+idle|12000f|coin1@1100-1104,coin1@1120-1124,start@1250-1254,gun1=248:170@2200-12000
+# Chapter 1 firing every 20 frames at the middle, never reloading.
+fire|7000f|coin1@1100-1104,coin1@1120-1124,start@1250-1254,gun1=248:170@2200-7000,trigger1@2260-7000/20
+# Cheat checks (pokes, docs/games/hotd.md, "Cheats"): the idle tour with life held from power-on.
+life-held|12000f|coin1@1100-1104,coin1@1120-1124,start@1250-1254,gun1=248:170@2200-12000,poke=hold-life-p1@0-12000
+# The fire tour with the bullets held.
+ammo-held|7000f|coin1@1100-1104,coin1@1120-1124,start@1250-1254,gun1=248:170@2200-7000,trigger1@2260-7000/20,poke=hold-ammo-p1@0-7000,poke=hold-life-p1@0-7000

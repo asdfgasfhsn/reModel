@@ -118,3 +118,11 @@ recorded as better); smooth motion; run-ahead 0 (input lag 0, once 1).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 76.4%
   of its instructions through it, and the state hash is unchanged.
+
+## Cheats
+
+Found by running the game (`make ram-search GAME=hotd TOUR=idle`/`fire`, tours in `crates/romset/src/games/tours/hotd.txt`), listed in `crates/romset/src/games/pokes/hotd.txt`:
+
+- *Confirmed:* **player 1 life**, byte `0x51ec10`, 3 at the start of a credit, one less per hit, 0 is game over. Searched in the `idle` tour (coin, start, gun held still, never fired): torches drawn 3 at frame 2300, 1 at 2700; the byte read 3, 3, 3, 2, 2, 1, 0 over frames 2250-2800. Poke `hold-life-p1` writes 3; tour `life-held` holds it from power-on: the attract loop and chapter 1 run as usual, RAM still reads 3 at frame 12000, and a rendered frame at 4000 and one near 9000 show 3 torches with a zombie in front of the player for thousands of frames (unpoked, game over by frame 3000). `0x51ec14` (also 3 to 1) follows it a little behind (likely what the HUD draws); `0x51ee12` counts 7 down to 0 under attack and is not held (*unconfirmed* meaning). Only meaningful in play.
+- *Confirmed:* **player 1 bullets**, byte `0x51ec41`, 6 when full. In the `fire` tour (a shot every 20 frames, on screen) the only byte reading 6, 4, 2, 0 at frames 2250, 2290, 2330, 2370. Poke `hold-ammo-p1` writes 6; tour `ammo-held` (with life held too) shows 6 bullets and 3 torches at frame 3000 and later, shots landing and the game advancing to the street, with no reload. Only meaningful in play.
+- Player 2's counterparts were not looked for.
