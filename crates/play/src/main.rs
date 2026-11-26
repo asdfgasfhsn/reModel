@@ -983,6 +983,32 @@ fn resume_path(set: &str) -> PathBuf {
 }
 
 impl Session {
+    /// A session of `game` on `machine` with everything else off: the
+    /// starting points of a game and of a launcher preview.
+    fn new(game: &'static romset::Game, machine: model2::Machine, sound: Option<Sound>, geo_chip: bool) -> Session {
+        Session {
+            game,
+            machine,
+            sound,
+            script: None,
+            bindings: settings::load_bindings(game),
+            preview: false,
+            run_ahead: None,
+            run_ahead_dropped: false,
+            drew_ahead: false,
+            geo_chip,
+            history: None,
+            studio: None,
+            perf: None,
+            jit_list: None,
+            jit_saved: Instant::now(),
+            catalogue: None,
+            link: None,
+            free_play: false,
+            net: None,
+        }
+    }
+
     fn dir(&self) -> PathBuf {
         settings::data_dir().join(self.game.id)
     }
@@ -1808,27 +1834,11 @@ impl Play {
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
             println!("settings      {}", settings::describe(game.id, &values, &self.sources));
-            let bindings = settings::load_bindings(game);
             let mut s = Session {
-                game,
-                machine,
-                sound,
                 script,
-                bindings,
-                preview: false,
-                run_ahead: None,
-                run_ahead_dropped: false,
-                drew_ahead: false,
-                geo_chip: values.geo_chip,
-                history: None,
-                studio: None,
-                perf: None,
                 jit_list,
-                jit_saved: Instant::now(),
-                catalogue: None,
-                link: None,
                 free_play: free_play && net_play.is_none() && linked.is_none(),
-                net: None,
+                ..Session::new(game, machine, sound, values.geo_chip)
             };
             if let Some((sess, params)) = net {
                 let np = netplay::NetPlay::new(sess, &params, net_play.unwrap());
@@ -2007,29 +2017,8 @@ impl Play {
             let core = g.drawer.core();
             core.forget_frame();
         }
-        let bindings = settings::load_bindings(game);
         self.epoch = Instant::now() - Duration::from_secs_f64(machine.frames as f64 / FPS);
-        self.session = Some(Session {
-            game,
-            machine,
-            sound,
-            script: None,
-            bindings,
-            preview: true,
-            run_ahead: None,
-            run_ahead_dropped: false,
-            drew_ahead: false,
-            geo_chip: self.values.geo_chip,
-            history: None,
-            studio: None,
-            perf: None,
-            jit_list: None,
-            jit_saved: Instant::now(),
-            catalogue: None,
-            link: None,
-            free_play: false,
-            net: None,
-        });
+        self.session = Some(Session { preview: true, ..Session::new(game, machine, sound, self.values.geo_chip) });
         self.preview.shown = None;
         self.preview.leaving = None;
         self.sync.reset();
