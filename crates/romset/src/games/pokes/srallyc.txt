@@ -1,0 +1,2 @@
+# Sega Rally Championship pokes: NAME|ADDR:VALUE[:b|:w|:l]|note|cheat: label
+hold-clock|0x20b0b0:0x0e10:l|The stage clock, a 32-bit big-endian count of frames (60 a second), held at 60 s so the stage never times out. Found by search: in a coin start that drives the first stage with the gas down it was the only long that fell by exactly 60 a 60 frames (0xd3e at frame 3000, 0xd02 at 3060, 0xcc6 at 3120). Race only; see docs/games/srallyc.md, Cheats.|cheat: Time never runs out

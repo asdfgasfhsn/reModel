@@ -391,3 +391,35 @@ two-machine spike:
   with one thread) and a save of both machines **and the hub** resumes
   exactly. The board's flags are part of the state: save the machines
   without them and the link drops.
+
+## Cheats
+
+Pokes (`crates/romset/src/games/pokes/srallyc.txt`; `make ram-pokes
+GAME=srallyc`), held by a tour with `poke=NAME@FROM-TO`, never applied
+otherwise. Tours: `crates/romset/src/games/tours/srallyc.txt`.
+
+- **Time never runs out** (`hold-clock`): work RAM `0x20b0b0`, a 32-bit
+  big-endian long, held at `0x0e10` (3,600 frames, the 60 s the HUD shows).
+  *Confirmed.* It is the stage clock in frames. Found with `make ram-search`
+  on the `drive` tour (coin start, gas down, three scripted turns): across
+  frames 3000, 3060, 3120, 3180 it is the only long that falls by exactly 60
+  each 60 frames (`0xd3e`, `0xd02`, `0xcc6`, `0xc8a`). Two byte-wide
+  counters beside it (`0x20aeb8`, `0x20d604`) fall by 1 a second and are
+  probably the seconds the HUD draws (unconfirmed, not poked). The race
+  starts the clock at `0xe10` (read `0xe06` at frame 2800), and checkpoints
+  add to it (it climbed back to `0x31d` at frame 8500).
+  - Without the poke, the `drive` tour's clock reaches 0 before frame 10000
+    and the rendered frame at 10000 is GAME OVER.
+  - With it (`clock-held`, held from power-on to frame 15000; the word read
+    back as `0xe10` at frames 1000, 2000, 2800 and the later ones sampled),
+    the same drive shows the HUD countdown at 60 and the race goes on: at
+    frame 10000 the car is still on the stage, at 14000 the "FOREST STAGE
+    CLEAR! TRY NEXT STAGE!" screen. Checked on rendered frames (`make run`
+    with `poke=0x20b0b0:0xe10:l@0-15000` in `INPUT`, `SNAP=1000`) as well
+    as by RAM. Holding it from power-on does not stop attract, the coins,
+    car select or the countdown: the run reaches and drives the stage.
+  - Only meaningful in a race: outside one the word is 0 (frames 1000 and
+    2000 of the unpoked run); the poke writes it anyway, harmlessly.
+  - Not tried: later stages (the scripted driving ends at the first
+    stage's clear), and whether the clear time or rank screen changes
+    (the HUD's total time still runs).

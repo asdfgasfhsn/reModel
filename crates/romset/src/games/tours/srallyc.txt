@@ -1,0 +1,13 @@
+# Sega Rally Championship's tours: LABEL|LENGTH|INPUT (docs/uplift-studio.md,
+# "Tours"). Inputs only; nothing taken from the ROMs.
+#
+# bench: what `make bench` runs (BENCH_STEPS, coin-start).
+bench|600000000|coin-start
+# Attract, two coins, car select, the start line and the race with the gas down.
+coin-start|6000f|coin-start
+# The same, with the gas held from the countdown and three scripted turns.
+drive|15000f|coin-start,gas=0xff@2300-15000,wheel=0xa0@3085-3165,wheel=0x70@3360-3420,wheel=0xb0@3590-3640
+# The same drive with the stage clock held from power-on (pokes,
+# docs/uplift/content-coverage.md): the game must still run attract and the
+# race, and TIME UP never comes.
+clock-held|15000f|coin-start,gas=0xff@2300-15000,wheel=0xa0@3085-3165,wheel=0x70@3360-3420,wheel=0xb0@3590-3640,poke=hold-clock@0-15000

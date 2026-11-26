@@ -1189,7 +1189,7 @@ A tour is a named input script from power-on: one line of `LABEL|LENGTH|INPUT`.
 
 A game's own tours are in `crates/romset/src/games/tours/GAME.txt`: input
 scripts and frame numbers, nothing taken from a ROM. A project adds its own
-with `--tours FILE`. Top Skater, `vf2` and `daytona` have tours today; every
+with `--tours FILE`. Top Skater, `vf2`, `daytona` and `srallyc` have tours today; every
 game has a `bench` tour (the bench's steps and input) so a tour run can be
 checked against `tools/expected-hashes.txt`.
 
