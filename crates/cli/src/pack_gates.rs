@@ -346,7 +346,11 @@ fn pack_level(
     let covered = |n: &String| {
         in_pack.contains(n)
             || p.selection().iter().find(|r| &r.name == n).is_some_and(|r| {
-                let Ok(model2::pack::FileKind::Image { width, height, .. }) = model2::pack::parse_name(n) else {
+                let Ok(
+                    model2::pack::FileKind::Image { width, height, .. }
+                    | model2::pack::FileKind::Variant { width, height, .. },
+                ) = model2::pack::parse_name(n)
+                else {
                     return false;
                 };
                 r.surface.len() == 16 && in_pack.contains(&format!("art_{}_{width}x{height}", r.surface))

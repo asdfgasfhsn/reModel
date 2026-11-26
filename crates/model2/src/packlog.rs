@@ -95,6 +95,10 @@ pub struct TexRec {
     pub sx: f64,
     pub sy: f64,
     pub rect: [u32; 3],
+    /// The palette id (`enhance::palette_id`) of the per-palette variant
+    /// this record is for; 0 for a plain `tex_` image. Written as a last
+    /// field `pal=XXXXXXXX` only when set.
+    pub pal: u32,
 }
 
 /// One distinct tile pattern (map entry) drawn in a frame.
@@ -139,9 +143,10 @@ impl PackLog {
 
     pub fn tex(&mut self, r: &TexRec) {
         let n = r.pixels.max(1.0);
+        let pal = if r.pal != 0 { format!("\tpal={:08x}", r.pal) } else { String::new() };
         let _ = writeln!(
             self.out,
-            "t\t{:016x}\t{:016x}\t{}x{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{}:{}:{}",
+            "t\t{:016x}\t{:016x}\t{}x{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{}:{}:{}{pal}",
             r.key,
             r.surface,
             r.width,

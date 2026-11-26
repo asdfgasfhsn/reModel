@@ -1314,6 +1314,9 @@ impl Renderer {
                 Ok(FileKind::Image { key, .. }) => {
                     self.reload.insert(key, (stem, at));
                 }
+                Ok(FileKind::Variant { key, pal, .. }) => {
+                    self.reload.insert(model2::enhance::image_key(key, pal), (stem, at));
+                }
                 Ok(FileKind::Art { surface, .. }) => {
                     for (&key, _) in self.key_surface.iter().filter(|(_, s)| **s == surface) {
                         self.reload.insert(key, (stem.clone(), at));
@@ -1979,6 +1982,10 @@ impl Renderer {
             let Some(t) = &p.texture else { continue };
             stats.textured += 1;
             let Some(info) = tex_info(p, t, src, &mut self.keys) else { continue };
+            // A per-palette variant of this key the pack has for the palette
+            // it is drawn with: its image is held under its own key.
+            let info = model2::raster::with_variant(info, src, |i, pal| pack.variant(i, pal));
+            let ikey = info.image_key();
             // As the software renderer: only a polygon with a lamp and a
             // tangent frame has a material to draw.
             let material = if materials && p.lamp.as_ref().is_some_and(|l| l.tangent.is_some()) {
@@ -1994,15 +2001,15 @@ impl Renderer {
             // The pack's image for this key, if it has one (and why not).
             let mut miss = None;
             let mut uploaded_now = false;
-            match self.pack_tex.entry(info.key) {
+            match self.pack_tex.entry(ikey) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     // An image changed on disk: the one held stays until the
                     // new one has decoded.
-                    if self.reload.contains_key(&info.key) {
+                    if self.reload.contains_key(&ikey) {
                         match pack.find(&info) {
                             Found::Pending => {}
                             found => {
-                                let (stem, at) = self.reload.remove(&info.key).expect("a reload");
+                                let (stem, at) = self.reload.remove(&ikey).expect("a reload");
                                 let tex = match found {
                                     Found::Image(img)
                                         if img.width > 0 && img.height > 0 && img.width <= max && img.height <= max =>
@@ -2013,7 +2020,7 @@ impl Renderer {
                                     }
                                     _ => None,
                                 };
-                                self.materials.forget_image(info.key);
+                                self.materials.forget_image(ikey);
                                 e.insert(tex);
                                 let ms = at.elapsed().map_or(0.0, |d| d.as_secs_f32() * 1e3);
                                 self.reloaded.push((stem, ms));
@@ -2026,17 +2033,17 @@ impl Renderer {
                 }
                 std::collections::hash_map::Entry::Vacant(e) => match pack.find(&info) {
                     Found::Pending => {
-                        miss = Some(if self.stable.evicted.contains(&info.key) { "evicted" } else { "pending" })
+                        miss = Some(if self.stable.evicted.contains(&ikey) { "evicted" } else { "pending" })
                     }
                     Found::Missing => {
                         e.insert(None);
-                        self.key_surface.insert(info.key, info.surface);
-                        self.reload.remove(&info.key);
+                        self.key_surface.insert(ikey, info.surface);
+                        self.reload.remove(&ikey);
                         miss = Some("not-in-pack");
                     }
                     Found::Image(img) => {
-                        self.key_surface.insert(info.key, info.surface);
-                        self.reload.remove(&info.key);
+                        self.key_surface.insert(ikey, info.surface);
+                        self.reload.remove(&ikey);
                         let tex = if img.width == 0 || img.height == 0 || img.width > max || img.height > max {
                             if !self.pack_warned {
                                 self.pack_warned = true;
@@ -2052,7 +2059,7 @@ impl Renderer {
                         } else {
                             stats.uploaded += 1;
                             uploaded_now = true;
-                            self.stable.evicted.remove(&info.key);
+                            self.stable.evicted.remove(&ikey);
                             Some(upload_pack(&self.device, &self.queue, &img, mip))
                         };
                         e.insert(tex);
@@ -2065,7 +2072,7 @@ impl Renderer {
             // the same surface that has one, or the image the sheet
             // rectangle drew a moment ago (its texels or colour changed
             // under it).
-            let mut draw_key = miss.is_none().then_some(info.key);
+            let mut draw_key = miss.is_none().then_some(ikey);
             let mut stand_in = false;
             if let Some(why) = miss {
                 let allowed = match why {
@@ -2085,18 +2092,18 @@ impl Renderer {
             }
             if remember {
                 let own = miss.is_none();
-                if own {
+                if own && info.pal == 0 {
                     let kept = self.stable.surface_image.get(&info.surface).copied();
                     if !kept.is_some_and(|k| resident(&self.pack_tex, k)) {
-                        self.stable.surface_image.insert(info.surface, info.key);
+                        self.stable.surface_image.insert(info.surface, ikey);
                     }
                 }
                 self.stable.rects.insert(
                     rect,
                     RectLast {
-                        key: info.key,
+                        key: ikey,
                         surface: info.surface,
-                        image: if own { Some(info.key) } else { prev.and_then(|l| l.image) },
+                        image: if own { Some(ikey) } else { prev.and_then(|l| l.image) },
                         hit_frame: if own { frame } else { prev.map_or(0, |l| l.hit_frame) },
                     },
                 );
@@ -2117,7 +2124,7 @@ impl Renderer {
                             "pending" | "evicted" | "oversize" => why,
                             _ => match prev {
                                 Some(l)
-                                    if l.key != info.key
+                                    if l.key != ikey
                                         && l.image.is_some()
                                         && frame - l.hit_frame <= 4 * model2::packlog::HOLD_FRAMES =>
                                 {
@@ -2144,13 +2151,14 @@ impl Renderer {
                 }
                 let n = pts.len().max(1) as f64;
                 let area = (a / 2.0).abs();
-                let r = log_recs.entry(info.key).or_insert_with(|| model2::packlog::TexRec {
+                let r = log_recs.entry(ikey).or_insert_with(|| model2::packlog::TexRec {
                     key: info.key,
                     surface: info.surface,
                     width: info.width,
                     height: info.height,
                     outcome: outcome.clone(),
                     rect: [t.bank, t.x0, t.y0],
+                    pal: info.pal,
                     ..Default::default()
                 });
                 r.polys += 1;
@@ -2166,7 +2174,7 @@ impl Renderer {
                 Some(k)
             });
             // `selflit`, asked once per texture key.
-            self.selflit_keys.entry(info.key).or_insert_with(|| pack.image_selflit(&info) == Some(true));
+            self.selflit_keys.entry(ikey).or_insert_with(|| pack.image_selflit(&info) == Some(true));
             // The `miss` overlay: what is still without an image is drawn
             // in the overlay's colour.
             let (image, miss_drawn) = match image {
@@ -3702,3 +3710,7 @@ mod selflit_tests;
 #[cfg(test)]
 #[path = "reload_tests.rs"]
 mod reload_tests;
+
+#[cfg(test)]
+#[path = "variant_tests.rs"]
+mod variant_tests;

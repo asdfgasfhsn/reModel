@@ -48,6 +48,10 @@ pub struct Entry {
     pub h: u32,
     /// The surface key (textures; 0 for tiles).
     pub surface: u64,
+    /// The id (`enhance::palette_id`) of the ramp this entry was seen
+    /// through (textures; 0 for tiles): one texture key drawn through two
+    /// palettes is two entries.
+    pub pal: u32,
     /// Where it came from, for the inventory: `bank=.. x=.. y=.. luma=..
     /// colour=..` (textures), `tile=.. bank=..` (tiles).
     pub detail: String,
@@ -67,20 +71,61 @@ impl Entry {
 /// The run's IDs.
 #[derive(Default)]
 pub struct Registry {
-    by_key: HashMap<Key, u32>,
+    by_key: HashMap<(Key, u32), u32>,
     pub entries: Vec<Entry>,
 }
 
 impl Registry {
     /// The ID of `key`, made (from `make`) at first sight.
     pub fn intern(&mut self, key: Key, make: impl FnOnce() -> Entry) -> u32 {
-        if let Some(&id) = self.by_key.get(&key) {
+        self.intern_pal(key, 0, make)
+    }
+
+    /// The ID of `key` seen through the palette `pal` (`enhance::palette_id`;
+    /// 0 where there is none), made at first sight: a key drawn through two
+    /// palettes has two IDs.
+    pub fn intern_pal(&mut self, key: Key, pal: u32, make: impl FnOnce() -> Entry) -> u32 {
+        if let Some(&id) = self.by_key.get(&(key, pal)) {
             return id;
         }
         self.entries.push(make());
         let id = FIRST_ID + self.entries.len() as u32 - 1;
-        self.by_key.insert(key, id);
+        self.by_key.insert((key, pal), id);
         id
+    }
+
+    /// Name the entries of a texture key seen through more than one palette:
+    /// each gets its variant's name (`tex_<key>~<pal>_<w>x<h>`,
+    /// docs/texture-packs.md, "Per-palette variants"), and the plain pack
+    /// name (`tex_<key>_<w>x<h>`, the image every palette without a variant
+    /// draws) goes to a new entry that copies the one that drew the most
+    /// (`pixels` by ID; ties go to the earliest), marked `fallback` in its
+    /// detail. Returns (that entry's ID, the new entry's ID) for each such
+    /// key: the caller gives the new one the same totals. Called when the
+    /// run is over.
+    pub fn name_variants(&mut self, pixels: impl Fn(u32) -> usize) -> Vec<(u32, u32)> {
+        let mut by_tex: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, e) in self.entries.iter().enumerate() {
+            if let Key::Tex(k) = e.key {
+                by_tex.entry(k).or_default().push(i);
+            }
+        }
+        let mut keys: Vec<(u64, Vec<usize>)> = by_tex.into_iter().filter(|(_, ix)| ix.len() > 1).collect();
+        keys.sort();
+        let mut made = Vec::new();
+        for (k, mut ix) in keys {
+            ix.sort_by(|&a, &b| pixels(FIRST_ID + b as u32).cmp(&pixels(FIRST_ID + a as u32)).then(a.cmp(&b)));
+            let mut plain = self.entries[ix[0]].clone();
+            plain.detail.push_str(" fallback");
+            for &i in &ix {
+                let e = &mut self.entries[i];
+                e.name = crate::enhance::variant_name(k, e.pal, e.w, e.h);
+            }
+            let id = FIRST_ID + self.entries.len() as u32;
+            self.entries.push(plain);
+            made.push((FIRST_ID + ix[0] as u32, id));
+        }
+        made
     }
 
     pub fn entry(&self, id: u32) -> Option<&Entry> {
@@ -157,23 +202,25 @@ pub fn ramp_of_detail(detail: &str) -> Option<[[u8; 3]; 16]> {
     detail.split(' ').find_map(|t| t.strip_prefix("ramp=")).and_then(parse_ramp)
 }
 
-/// Name an entry's 3D texture.
-fn tex_entry(info: &TexInfo, src: &Sources) -> Entry {
+/// Name an entry's 3D texture, seen through `ramp` (`raster::texture_look`).
+fn tex_entry(info: &TexInfo, src: &Sources, ramp: &[[u8; 3]; 16]) -> Entry {
+    let pal = crate::enhance::palette_id(ramp);
     Entry {
         key: Key::Tex(info.key),
         name: info.name(),
         w: info.width,
         h: info.height,
         surface: info.surface,
+        pal,
         detail: format!(
-            "bank={} x={} y={} luma={} colour={:04x}{} ramp={}",
+            "bank={} x={} y={} luma={} colour={:04x}{} pal={pal:08x} ramp={}",
             info.bank,
             info.x0,
             info.y0,
             info.luma_table,
             info.colour,
             if info.translucent { " translucent" } else { "" },
-            ramp_text(&raster::texture_look(src, info))
+            ramp_text(ramp)
         ),
         image: raster::texture_image(src, info),
     }
@@ -236,6 +283,7 @@ pub fn identify(
                         w: 8,
                         h: 8,
                         surface: 0,
+                        pal: 0,
                         detail: format!("tile={} bank={}", info.tile, info.bank),
                         image: info.image(),
                     })
@@ -260,7 +308,9 @@ pub fn identify(
                 let (id, mirror, tex) = *poly_id[k].get_or_insert_with(|| {
                     match p.texture.as_ref().and_then(|t| raster::tex_info(p, t, src, &mut keys).map(|i| (t, i))) {
                         Some((t, info)) => {
-                            let id = reg.intern(Key::Tex(info.key), || tex_entry(&info, src));
+                            let ramp = raster::texture_look(src, &info);
+                            let pal = crate::enhance::palette_id(&ramp);
+                            let id = reg.intern_pal(Key::Tex(info.key), pal, || tex_entry(&info, src, &ramp));
                             (id, t.mirror_x as u8 | (t.mirror_y as u8) << 1, Some((t.w, t.h, t.mirror_x, t.mirror_y)))
                         }
                         None => (FLAT_ID, 0, None),
@@ -446,5 +496,53 @@ impl Edges {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(key: u64, pal: u32) -> Entry {
+        Entry {
+            key: Key::Tex(key),
+            name: format!("tex_{key:016x}_8x8"),
+            w: 8,
+            h: 8,
+            surface: 1,
+            pal,
+            detail: String::new(),
+            image: Rgba { width: 1, height: 1, data: vec![0; 4] },
+        }
+    }
+
+    #[test]
+    fn a_key_through_two_palettes_is_two_ids_each_named_as_a_variant_beside_a_plain_row() {
+        let mut reg = Registry::default();
+        let a = reg.intern_pal(Key::Tex(7), 0x11, || entry(7, 0x11));
+        let b = reg.intern_pal(Key::Tex(7), 0x22, || entry(7, 0x22));
+        let c = reg.intern_pal(Key::Tex(8), 0x11, || entry(8, 0x11));
+        assert!(a != b && a != c);
+        assert_eq!(reg.intern_pal(Key::Tex(7), 0x22, || unreachable!()), b, "the same palette is the same id");
+        // `intern` is palette 0: a tile, or a texture with no palette.
+        let t = reg.intern(Key::Tex(9), || entry(9, 0));
+        assert_eq!(reg.intern(Key::Tex(9), || unreachable!()), t);
+        let made = reg.name_variants(|id| if id == b { 500 } else { 10 });
+        let name = |id| reg.entry(id).unwrap().name.clone();
+        assert_eq!(name(b), "tex_0000000000000007~00000022_8x8", "every palette is a variant");
+        assert_eq!(name(a), "tex_0000000000000007~00000011_8x8");
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].0, b, "the plain row copies the most drawn");
+        assert_eq!(name(made[0].1), "tex_0000000000000007_8x8");
+        assert!(reg.entry(made[0].1).unwrap().detail.ends_with(" fallback"));
+        assert_eq!(name(c), "tex_0000000000000008_8x8", "one palette: the plain name");
+        // A tie goes to the earlier.
+        let mut reg = Registry::default();
+        let a = reg.intern_pal(Key::Tex(7), 0x11, || entry(7, 0x11));
+        let b = reg.intern_pal(Key::Tex(7), 0x22, || entry(7, 0x22));
+        let made = reg.name_variants(|_| 5);
+        assert_eq!(made[0].0, a);
+        assert_eq!(reg.entry(a).unwrap().name, "tex_0000000000000007~00000011_8x8");
+        assert_eq!(reg.entry(b).unwrap().name, "tex_0000000000000007~00000022_8x8");
     }
 }

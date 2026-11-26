@@ -1547,6 +1547,7 @@ pub fn tex_info(p: &Poly, t: &Texture, src: &Sources, keys: &mut TexKeys) -> Opt
         y0: t.y0,
         luma_table: t.luma_table,
         translucent: t.translucent,
+        pal: 0,
     })
 }
 
@@ -1581,6 +1582,24 @@ pub fn texture_look(src: &Sources, info: &TexInfo) -> [[u8; 3]; 16] {
         let lum = (src.luma(info.luma_table, t as u32 * 17 / 2) * FULL_LUMA / 256).min(63);
         [0, 1, 2].map(|ch| src.translate(ch, c[ch], lum))
     })
+}
+
+/// The palette id (`enhance::palette_id`) of the ramp `info` is drawn through
+/// now: what a per-palette variant's name carries.
+pub fn texture_palette(src: &Sources, info: &TexInfo) -> u32 {
+    crate::enhance::palette_id(&texture_look(src, info))
+}
+
+/// `info` with `pal` set to the palette of a variant the pack has for it, if
+/// any (`TexturePack::variant`, `Enhance::variant`; `ask` is the pack's
+/// answer). One call returning 0 for a pack without variants.
+pub fn with_variant(
+    mut info: TexInfo,
+    src: &Sources,
+    ask: impl FnOnce(&TexInfo, &mut dyn FnMut() -> u32) -> u32,
+) -> TexInfo {
+    info.pal = ask(&info, &mut || texture_palette(src, &info));
+    info
 }
 
 /// Lighting for a replaced texture: the replacement stands for the texture
@@ -2114,6 +2133,7 @@ fn draw_impl(
         let rank = pl.rank;
         let hooked = match (hooks.as_deref_mut(), &p.texture) {
             (Some(hk), Some(t)) => tex_info(p, t, src, &mut keys).map(|info| {
+                let info = with_variant(info, src, |i, pal| hk.variant(i, pal));
                 let img = if filter.mipmapped() {
                     hk.texture_mips(&info).map(Replacement::Mips)
                 } else {
@@ -2529,7 +2549,12 @@ pub fn identity_split(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mu
     for (k, pl) in placed.iter().enumerate() {
         let p = &polys[pl.poly];
         let own = PxLuma::own(p);
-        let img = p.texture.as_ref().and_then(|t| tex_info(p, t, src, &mut keys)).and_then(|i| hooks.texture(&i));
+        let img = p
+            .texture
+            .as_ref()
+            .and_then(|t| tex_info(p, t, src, &mut keys))
+            .map(|i| with_variant(i, src, |i, pal| hooks.variant(i, pal)))
+            .and_then(|i| hooks.texture(&i));
         let light = Light::new(p, own, src);
         fill(&pl.points, pl.clip, w, h, |x, y, iz, uz, vz| {
             let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);

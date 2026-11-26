@@ -546,7 +546,7 @@ pack worker (`pack-worker.js`) fetch and decode it with the module's
 `decode_png`, the decoder the native player uses (at most four requests at
 once; a 1024x1024 PNG takes 10-50 ms), and hands over at most one decoded
 image a frame (`pack_image`; `pack_missing` for one that failed, which then
-keeps its original) so uploads don't pile up in one frame: a frame uploading
+keeps its original) so uploads don't pile up in one frame (a per-palette variant, `tex_<key>~<pal>_<w>x<h>.png`, is fetched like any image when the index lists it; the module reads the variants' names from the index and works the palette out for those keys only: docs/texture-packs.md, "Per-palette variants"): a frame uploading
 a 1024x1024 image with its mipmaps measured up to 13 ms of draw against about
 3 ms normally. Until an image arrives the original is drawn. The renderer
 keeps images up to 192 MB (the least recently drawn are dropped, and

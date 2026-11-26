@@ -872,6 +872,7 @@ mod tests {
                 w,
                 h: w,
                 surface: key + 100,
+                pal: 0,
                 detail: format!("bank=0 x={} y=0 luma=0 colour=0001", key * 64),
                 image: Rgba { width: w as usize, height: w as usize, data: vec![255; (w * w * 4) as usize] },
             });

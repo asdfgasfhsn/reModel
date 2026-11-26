@@ -402,7 +402,7 @@ impl Run {
             let (e, t) = (self.reg.entry(id).unwrap(), &self.totals[&id]);
             let _ = write!(
                 s,
-                "{}{{\"id\":{},\"name\":{},\"kind\":{},\"w\":{},\"h\":{},\"surface\":{},\"frames\":{},\"pixels\":{},\"polys\":{},\"wrap\":{},\"group\":{},\"detail\":{}}}",
+                "{}{{\"id\":{},\"name\":{},\"kind\":{},\"w\":{},\"h\":{},\"surface\":{},\"pal\":{},\"frames\":{},\"pixels\":{},\"polys\":{},\"wrap\":{},\"group\":{},\"detail\":{}}}",
                 if i > 0 { "," } else { "" },
                 id,
                 json_str(&e.name),
@@ -410,6 +410,7 @@ impl Run {
                 e.w,
                 e.h,
                 if e.surface != 0 { json_str(&format!("{:016x}", e.surface)) } else { "null".into() },
+                if e.pal != 0 { json_str(&format!("{:08x}", e.pal)) } else { "null".into() },
                 t.frames,
                 t.pixels,
                 t.polys,
@@ -483,6 +484,16 @@ pub fn run(root: &Path, out_dir: &Path, game: &str, o: &Options) -> Result<(), S
     }
     if outs.is_empty() {
         return Err(format!("{}: no captured frames", root.display()));
+    }
+    let pixels: HashMap<u32, usize> =
+        totals.iter().filter(|(&id, _)| id >= FIRST_ID).map(|(&id, t)| (id, t.pixels)).collect();
+    // A key drawn through more than one palette: each palette's entry gets its
+    // variant name and a plain-named row copies the most drawn
+    // (`Registry::name_variants`).
+    let plain = reg.name_variants(|id| pixels.get(&id).copied().unwrap_or(0));
+    for (of, id) in &plain {
+        let t = totals[of].clone();
+        totals.insert(*id, t);
     }
     let pixels: HashMap<u32, usize> =
         totals.iter().filter(|(&id, _)| id >= FIRST_ID).map(|(&id, t)| (id, t.pixels)).collect();

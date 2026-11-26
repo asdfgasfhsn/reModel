@@ -527,6 +527,11 @@ pub const RESERVED_PREFIXES: [&str; 2] = ["mdl_", "img_"];
 pub enum FileKind {
     /// `tex_<key>_<w>x<h>`: a replacement image for a 3D texture.
     Image { key: u64, width: u32, height: u32 },
+    /// `tex_<key>~<pal>_<w>x<h>`: the replacement for this key when it is
+    /// drawn through the 16-colour palette whose id is `pal`
+    /// (`enhance::palette_id`); wins over the plain `tex_` image
+    /// (docs/texture-packs.md, "Per-palette variants").
+    Variant { key: u64, pal: u32, width: u32, height: u32 },
     /// `tile_<key>`: a replacement 8x8 tile pattern.
     Tile { key: u64 },
     /// `tex_<key>_<w>x<h>.<k>` (one image key, `surface` false) or
@@ -604,6 +609,20 @@ pub fn parse_name(stem: &str) -> Result<FileKind, String> {
     };
     let bad = || format!("a {prefix}_ name is {prefix}_<16 lowercase hex digits>_<w>x<h>");
     let (key, wh) = rest.split_once('_').ok_or_else(bad)?;
+    if let Some((key, pal)) = key.split_once('~').filter(|_| !surface) {
+        let bad = || "a variant name is tex_<16 hex digits>~<8 hex digits>_<w>x<h>".to_string();
+        if suffix.is_some() {
+            return Err("a variant has no material maps of its own: name the maps by tex_ or surf_".into());
+        }
+        let key = hex_key(key).ok_or_else(bad)?;
+        let pal = (pal.len() == 8 && pal.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+            .then(|| u32::from_str_radix(pal, 16).ok())
+            .flatten()
+            .filter(|&p| p != 0)
+            .ok_or_else(bad)?;
+        let (w, h) = wh.split_once('x').ok_or_else(bad)?;
+        return Ok(FileKind::Variant { key, pal, width: size(w).ok_or_else(bad)?, height: size(h).ok_or_else(bad)? });
+    }
     let key = hex_key(key).ok_or_else(bad)?;
     let (w, h) = wh.split_once('x').ok_or_else(bad)?;
     let (width, height) = (size(w).ok_or_else(bad)?, size(h).ok_or_else(bad)?);
@@ -838,6 +857,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         assert_eq!(info.art_name(), "art_00000000000000ff_8x4");
         assert!(matches!(parse_name(&info.art_name()), Ok(FileKind::Art { surface: 0xff, .. })));
@@ -857,6 +877,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         assert_eq!(info.surface_name(), "surf_00000000000000ff_128x8");
         assert_eq!(parse_name(&info.name()), Ok(FileKind::Image { key: info.key, width: 128, height: 8 }));
@@ -867,6 +888,47 @@ mod tests {
             parse_name(&shared),
             Ok(FileKind::Map { surface: true, key: 0xff, width: 128, height: 8, kind: MapKind::Spec })
         );
+    }
+
+    #[test]
+    fn variant_names_parse_and_round_trip() {
+        let info = TexInfo {
+            key: 0xfedc_ba98_7654_3210,
+            surface: 0xff,
+            width: 64,
+            height: 32,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+            pal: 0x00ab_cdef,
+        };
+        assert_eq!(info.variant_name(), "tex_fedcba9876543210~00abcdef_64x32");
+        assert_eq!(
+            parse_name(&info.variant_name()),
+            Ok(FileKind::Variant { key: info.key, pal: 0x00ab_cdef, width: 64, height: 32 })
+        );
+        // The plain image is a different name, and the image keys differ.
+        assert_eq!(parse_name(&info.name()), Ok(FileKind::Image { key: info.key, width: 64, height: 32 }));
+        assert_ne!(info.image_key(), TexInfo { pal: 0, ..info.clone() }.image_key());
+        assert_eq!(TexInfo { pal: 0, ..info.clone() }.image_key(), info.key);
+        // What is not a variant: a short or upper-case or zero palette, a
+        // surface key with one, a map of one, a missing size.
+        for bad in [
+            "tex_fedcba9876543210~abcdef_64x32",
+            "tex_fedcba9876543210~00ABCDEF_64x32",
+            "tex_fedcba9876543210~00000000_64x32",
+            "tex_fedcba9876543210~00abcdef_64",
+            "tex_fedcba9876543210~00abcdef_64x32.n",
+            "tex_fedcba9876543210~_64x32",
+            "surf_fedcba9876543210~00abcdef_64x32.n",
+            "tile_fedcba9876543210~00abcdef",
+        ] {
+            assert!(parse_name(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -883,6 +945,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         // Per kind: the image's own normal map wins over the surface's; the
         // specular map exists only by surface; no gloss map.

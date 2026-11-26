@@ -716,6 +716,9 @@ pub struct Drawn {
     /// from a pack image: by identity, so a replacement that looks like the
     /// original counts. None without a pack.
     pub drawn_share: Option<f64>,
+    /// The textures drawn, from the pack's lookups, biggest first
+    /// (`assets_of`); empty without a pack.
+    pub assets: Vec<serde_json::Value>,
     /// With the `miss` overlay: the share of the picture's pixels in the
     /// overlay's colour (a pixel of the game's own that is exactly that
     /// magenta counts too). None without the overlay.
@@ -962,10 +965,12 @@ pub fn draw_frame(
         layers
     };
     let rgb = gpu.frame(&polys, &placed, &src, &view, &layers);
+    let mut assets = Vec::new();
     let drawn_share = log_path.map(|path| {
         gpu.set_pack_log(None);
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = std::fs::remove_file(&path);
+        assets = assets_of(&text);
         drawn_share_of(&text)
     });
     let changed_share = original.as_ref().map(|orig| {
@@ -992,6 +997,7 @@ pub fn draw_frame(
         original,
         changed_share,
         drawn_share: drawn_share.flatten(),
+        assets,
         miss_pixels,
         polygons: polys.len(),
         warnings,
@@ -1013,6 +1019,40 @@ pub fn drawn_share_of(log: &str) -> Option<f64> {
         }
     }
     (all > 0.0).then_some(drawn / all)
+}
+
+/// Each texture a pack log (`t` lines) says was drawn, biggest first: its
+/// pack name (`tex_<key>_<w>x<h>`, or for a per-palette variant that drew,
+/// `tex_<key>~<pal>_<w>x<h>`), `variant` (the palette id, else null),
+/// the lookup's `outcome` (`hit`, `up`, `held`, `miss:REASON`), polygons and
+/// the area drawn in pixels. A key drawn through two palettes is two rows.
+pub fn assets_of(log: &str) -> Vec<serde_json::Value> {
+    let mut rows: Vec<(f64, serde_json::Value)> = Vec::new();
+    for l in log.lines().filter(|l| l.starts_with("t\t")) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 10 {
+            continue;
+        }
+        let (Ok(key), Ok(px), Ok(polys)) = (u64::from_str_radix(f[1], 16), f[6].parse::<f64>(), f[5].parse::<u64>())
+        else {
+            continue;
+        };
+        let pal = f.get(10).and_then(|v| v.strip_prefix("pal=")).and_then(|v| u32::from_str_radix(v, 16).ok());
+        let (w, h) = f[3].split_once('x').map_or((0, 0), |(w, h)| (w.parse().unwrap_or(0), h.parse().unwrap_or(0)));
+        let name = match pal {
+            Some(p) => model2::enhance::variant_name(key, p, w, h),
+            None => format!("tex_{key:016x}_{w}x{h}"),
+        };
+        rows.push((
+            px,
+            json!({
+                "name": name, "key": f[1], "surface": f[2], "outcome": f[4], "polys": polys,
+                "pixels": px.round(), "variant": pal.map(|p| format!("{p:08x}")),
+            }),
+        ));
+    }
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    rows.into_iter().map(|r| r.1).collect()
 }
 
 /// `pack_coverage`'s answer: the share of changed pixels by scene, and the scenes skipped.
@@ -1244,6 +1284,8 @@ pub fn render_scene(
         "width": d.picture.width, "height": d.picture.height, "polygons": d.polygons,
         "changed_share": d.changed_share.map(|c| (c * 1e6).round() / 1e6),
         "drawn_share": d.drawn_share.map(|c| (c * 1e6).round() / 1e6),
+        "variants_drawn": d.assets.iter().filter(|a| !a["variant"].is_null()).count(),
+        "assets": d.assets,
         "overlay": overlay,
         "miss_share": overlay.and(d.drawn_share).map(|c| ((1.0 - c) * 1e6).round() / 1e6),
         "miss_pixels": d.miss_pixels.map(|c| (c * 1e6).round() / 1e6),
@@ -1273,6 +1315,10 @@ pub fn render_scene(
             "drawn         {:.2}% of the textured polygon area from pack images (by identity, overlaps counted)\n",
             c * 100.0
         );
+    }
+    let variants = d.assets.iter().filter(|a| !a["variant"].is_null()).count();
+    if variants > 0 {
+        text += &format!("variants      {variants} per-palette variants drew (`assets` in --json names them)\n");
     }
     if let (Some(share), Some(px)) = (d.drawn_share.filter(|_| overlay.is_some()), d.miss_pixels) {
         text += &format!(
@@ -1587,5 +1633,95 @@ mod tests {
         let e = find_recipe(&rs, "course-star").unwrap_err();
         assert_eq!(e.code, Code::BadRequest);
         assert!(e.message().contains("course-start"));
+    }
+
+    #[test]
+    fn assets_say_which_variant_drew() {
+        let log = "# log\nF\t0\n\
+            t\t00000000000000aa\t00000000000000bb\t32x16\thit\t2\t900\t10\t20\t0:0:0\n\
+            t\t00000000000000aa\t00000000000000bb\t32x16\tup\t1\t1500\t10\t20\t0:0:0\tpal=00c0ffee\n\
+            k\t00000001\t00000000000000cc\thit\t64\t1\t1\n";
+        let a = assets_of(log);
+        assert_eq!(a.len(), 2, "a tile is not an asset");
+        assert_eq!(a[0]["name"], "tex_00000000000000aa~00c0ffee_32x16");
+        assert_eq!(a[0]["variant"], "00c0ffee");
+        assert_eq!(a[0]["pixels"], 1500.0);
+        assert_eq!(a[1]["name"], "tex_00000000000000aa_32x16");
+        assert!(a[1]["variant"].is_null());
+        assert_eq!(a[1]["outcome"], "hit");
+    }
+
+    /// Top Skater's skaters share skin textures and the game colours them per
+    /// skater through the colour table (docs/games/topskatr.md, "Skater
+    /// skin"): a key J and P-Nut both draw has two palettes, and a pack with
+    /// a variant for each draws each skater's own. Needs the `p13-sel-j` and
+    /// `pnut-01300` scene copies and a GPU (skipped without).
+    #[test]
+    fn skaters_sharing_a_key_draw_their_own_variants() {
+        let root = scenes_dir(game());
+        let (j, pn) = (root.join("p13-sel-j"), root.join("pnut-01300"));
+        let (Some(fj), Some(fp)) = (capture_frame_dir(&j.join("capture")), capture_frame_dir(&pn.join("capture")))
+        else {
+            return;
+        };
+        let Ok(mut gpu) = gpu::Renderer::new() else { return };
+        // Each scene's textures by key, with the palettes they are drawn through.
+        let pals = |scene: &Path, frame_dir: &Path| {
+            let rom = capture::load_texture_rom(&scene.join("capture")).unwrap();
+            let f = Frame::load(frame_dir).unwrap();
+            let src = f.sources(&rom);
+            let polys = raster::build_shaded(&f.stream, &src, None);
+            let mut out: BTreeMap<u64, (u32, u32, u32)> = BTreeMap::new();
+            for p in &polys {
+                let Some(info) = p.texture.as_ref().and_then(|t| raster::tex_info(p, t, &src, &mut Default::default()))
+                else {
+                    continue;
+                };
+                out.insert(info.key, (raster::texture_palette(&src, &info), info.width, info.height));
+            }
+            out
+        };
+        let (pj, pp) = (pals(&j, &fj), pals(&pn, &fp));
+        let shared: Vec<(u64, u32, u32, u32, u32)> =
+            pj.iter().filter_map(|(k, a)| pp.get(k).filter(|b| b.0 != a.0).map(|b| (*k, a.0, b.0, a.1, a.2))).collect();
+        assert!(!shared.is_empty(), "J and P-Nut share a key drawn through two palettes");
+        let &(key, pal_j, pal_p, w, h) = shared.first().unwrap();
+        let dir = Path::new(&std::env::var("REMODEL_SCRATCH").unwrap_or_else(|_| "out/scratch".into()))
+            .join(format!("scene-variant-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let solid = |c: [u8; 3]| {
+            let px: Vec<u8> = (0..w * h).flat_map(|_| [c[0], c[1], c[2], 255]).collect();
+            png::encode_rgba(w as usize, h as usize, &px)
+        };
+        let name = |pal| model2::enhance::variant_name(key, pal, w, h);
+        std::fs::write(dir.join(format!("tex_{key:016x}_{w}x{h}.png")), solid([20, 200, 20])).unwrap();
+        std::fs::write(dir.join(format!("{}.png", name(pal_j))), solid([220, 20, 20])).unwrap();
+        std::fs::write(dir.join(format!("{}.png", name(pal_p))), solid([20, 20, 220])).unwrap();
+        let opts = DrawOpts {
+            pack: vec![dir.clone()],
+            crop: None,
+            against: false,
+            view: View::native(),
+            camera: None,
+            look: None,
+        };
+        let asset_of = |d: &Drawn, stem: &str| d.assets.iter().find(|a| a["name"] == stem).cloned();
+        let dj = draw(game(), &j, &opts, &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+        let dp = draw(game(), &pn, &opts, &mut gpu).unwrap_or_else(|e| panic!("{e:?}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(asset_of(&dj, &name(pal_j)).is_some(), "J draws his variant: {:?}", dj.assets);
+        assert!(asset_of(&dj, &name(pal_p)).is_none() && asset_of(&dj, &format!("tex_{key:016x}_{w}x{h}")).is_none());
+        assert!(asset_of(&dp, &name(pal_p)).is_some(), "P-Nut draws hers: {:?}", dp.assets);
+        assert!(asset_of(&dp, &name(pal_j)).is_none());
+        // Lit by the game's own brightness, so by hue: red-dominant against blue-dominant pixels.
+        let hue = |d: &Drawn| {
+            let px = d.picture.rgb.chunks(3);
+            let red = px.clone().filter(|p| p[0] as i32 > p[2] as i32 + 60 && p[0] as i32 > p[1] as i32 + 60).count();
+            let blue = px.filter(|p| p[2] as i32 > p[0] as i32 + 60 && p[2] as i32 > p[1] as i32 + 60).count();
+            (red, blue)
+        };
+        let ((jr, jb), (pr, pb)) = (hue(&dj), hue(&dp));
+        assert!(jr > pr + 50 && jb < pb, "J's picture has the red variant: {jr} red {jb} blue, against {pr} {pb}");
+        assert!(pb > jb + 50 && pr < jr, "P-Nut's has the blue one");
     }
 }

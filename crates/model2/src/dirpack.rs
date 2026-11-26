@@ -31,6 +31,10 @@ const PRELOAD_AHEAD: usize = 6;
 pub struct DirPack {
     /// File stems of the PNGs in the directory.
     names: HashSet<String>,
+    /// The per-palette variants (`tex_<key>~<pal>_<w>x<h>`): the palettes
+    /// each key has one for. Empty for a pack without any, which is then
+    /// asked nothing more per draw (`TexturePack::variant`).
+    variants: HashMap<u64, HashSet<u32>>,
     /// File stems of the material maps (none unless the manifest
     /// `reads_maps`).
     maps: HashSet<String>,
@@ -169,9 +173,11 @@ enum Done {
 /// The texture and tile images in `dir` by file stem, and the material maps
 /// if `maps` (other files are left alone), and the images by key for
 /// preloading (textures, tiles).
-type Listing = (HashSet<String>, HashSet<String>, [Vec<(u64, String)>; 2]);
+type Variants = HashMap<u64, HashSet<u32>>;
+type Listing = (HashSet<String>, HashSet<String>, [Vec<(u64, String)>; 2], Variants);
 fn list(dir: &Path, maps: bool) -> std::io::Result<Listing> {
     let (mut names, mut map_names) = (HashSet::new(), HashSet::new());
+    let mut variants = Variants::new();
     let mut by_key: [Vec<(u64, String)>; 2] = Default::default();
     for e in std::fs::read_dir(dir)? {
         let name = e?.file_name();
@@ -184,6 +190,12 @@ fn list(dir: &Path, maps: bool) -> std::io::Result<Listing> {
             Ok(FileKind::Art { .. }) => {
                 // Found by surface, asked for on demand: not preloaded.
                 names.insert(stem.to_string());
+            }
+            Ok(FileKind::Variant { key, pal, .. }) => {
+                // Found by key and palette, asked for on demand: not
+                // preloaded (which palette is drawn is known only when it is).
+                names.insert(stem.to_string());
+                variants.entry(key).or_default().insert(pal);
             }
             Ok(FileKind::Tile { key }) => {
                 names.insert(stem.to_string());
@@ -198,7 +210,7 @@ fn list(dir: &Path, maps: bool) -> std::io::Result<Listing> {
     for l in &mut by_key {
         l.sort_by(|a, b| a.1.cmp(&b.1));
     }
-    Ok((names, map_names, by_key))
+    Ok((names, map_names, by_key, variants))
 }
 
 /// A material from its files in `dir` (None: none of them decoded).
@@ -233,7 +245,7 @@ impl DirPack {
         if let Some(n) = manifest.notice() {
             println!("texture pack  {}: {n}", dir.display());
         }
-        let (names, maps, preload_list) =
+        let (names, maps, preload_list, variants) =
             list(dir, manifest.reads_maps()).map_err(|e| format!("{}: {e}", dir.display()))?;
         let regions = if manifest.reads_regions() {
             match crate::regions::RegionSet::load_dir(dir, &mut |p| decode(p)) {
@@ -280,6 +292,7 @@ impl DirPack {
             from_watch,
             _alive: alive,
             names,
+            variants,
             maps,
             manifest,
             regions,
@@ -373,6 +386,17 @@ impl TexturePack for DirPack {
                 Ok(FileKind::Image { key, .. }) => Some((0, key)),
                 Ok(FileKind::Tile { key }) => Some((1, key)),
                 Ok(FileKind::Art { .. }) => None,
+                Ok(FileKind::Variant { key, pal, .. }) => {
+                    if c.exists {
+                        self.variants.entry(key).or_default().insert(pal);
+                    } else if let Some(v) = self.variants.get_mut(&key) {
+                        v.remove(&pal);
+                        if v.is_empty() {
+                            self.variants.remove(&key);
+                        }
+                    }
+                    None
+                }
                 Ok(FileKind::Map { .. }) if reads_maps => {
                     if c.exists {
                         self.maps.insert(stem.to_string());
@@ -418,9 +442,17 @@ impl TexturePack for DirPack {
         out
     }
 
-    /// The image of this colouring, else the artwork's (`art_`), which
+    /// This colouring's variant for the palette it is drawn with
+    /// (`tex_<key>~<pal>_..`), else its own image, else the artwork's
+    /// (`art_`), which
     /// every colouring without an image of its own is drawn with.
     fn find(&mut self, info: &TexInfo) -> Found {
+        if info.pal != 0 {
+            let name = info.variant_name();
+            if self.names.contains(&name) {
+                return self.get(name);
+            }
+        }
         let own = info.name();
         if self.names.contains(&own) {
             return self.get(own);
@@ -517,8 +549,19 @@ impl TexturePack for DirPack {
         FoundMaterial::Pending
     }
 
+    fn variant(&mut self, info: &TexInfo, palette: &mut dyn FnMut() -> u32) -> u32 {
+        if self.variants.is_empty() {
+            return 0;
+        }
+        match self.variants.get(&info.key) {
+            Some(pals) => Some(palette()).filter(|p| pals.contains(p)).unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// A variant is `selflit` as its key's `material` line says.
     fn image_selflit(&mut self, info: &TexInfo) -> Option<bool> {
-        let own = self.names.contains(&info.name());
+        let own = self.names.contains(&info.name()) || (info.pal != 0 && self.names.contains(&info.variant_name()));
         (own || self.names.contains(&info.art_name())).then(|| self.manifest.image_selflit(info, own))
     }
 
@@ -548,6 +591,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         let data = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 9, 9, 9, 255];
         std::fs::write(dir.join(format!("{}.png", info.name())), png::encode_rgba(4, 1, &data)).unwrap();
@@ -625,6 +669,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         let path = dir.join(format!("{}.png", info.name()));
         let px = |c: u8| png::encode_rgba(1, 1, &[c, c, c, 255]);
@@ -693,6 +738,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         let (art, own) = ([1u8, 2, 3, 255, 4, 5, 6, 255], [9u8, 9, 9, 255, 8, 8, 8, 255]);
         std::fs::write(dir.join(format!("{}.png", info(1).art_name())), png::encode_rgba(2, 1, &art)).unwrap();
@@ -720,5 +766,87 @@ mod tests {
         other.surface = 0xbb;
         assert!(matches!(pack.find(&other), Found::Missing));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Per-palette variants on disk: listed from the names, asked for the
+    /// palette only for a key that has one, drawn in preference to the plain
+    /// image, kept out of the preload list, and followed by the watch.
+    #[test]
+    fn variants_win_over_the_plain_image_and_follow_the_watch() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/dirpack-variant-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut info = TexInfo {
+            key: 0x55,
+            surface: 5,
+            width: 1,
+            height: 1,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+            pal: 0,
+        };
+        let px = |c: u8| png::encode_rgba(1, 1, &[c, c, c, 255]);
+        let with_pal = |pal: u32| TexInfo { pal, ..info.clone() };
+        std::fs::write(dir.join(format!("{}.png", info.name())), px(10)).unwrap();
+        std::fs::write(dir.join(format!("{}.png", with_pal(7).variant_name())), px(70)).unwrap();
+        let mut pack = DirPack::open(&dir).unwrap();
+        let asked = std::cell::Cell::new(0);
+        let ask = |pack: &mut DirPack, key: u64, pal: u32| {
+            let i = TexInfo { key, ..info.clone() };
+            TexturePack::variant(pack, &i, &mut || {
+                asked.set(asked.get() + 1);
+                pal
+            })
+        };
+        assert_eq!(ask(&mut pack, 0x55, 7), 7);
+        assert_eq!(ask(&mut pack, 0x55, 8), 0, "a palette with no variant");
+        assert_eq!(asked.get(), 2);
+        assert_eq!(ask(&mut pack, 0x66, 7), 0, "a key with none");
+        assert_eq!(asked.get(), 2, "the palette is not worked out for it");
+        let image = |pack: &mut DirPack, i: &TexInfo| {
+            let start = Instant::now();
+            loop {
+                match pack.find(i) {
+                    Found::Image(img) => return Some(img.data[0]),
+                    Found::Missing => return None,
+                    Found::Pending => assert!(start.elapsed().as_secs() < 10, "never decoded"),
+                }
+                std::thread::yield_now();
+            }
+        };
+        assert_eq!(image(&mut pack, &with_pal(7)), Some(70));
+        assert_eq!(image(&mut pack, &with_pal(0)), Some(10), "no palette asked: the plain image");
+        assert_eq!(image(&mut pack, &with_pal(9)), Some(10), "a palette with no file: the plain image");
+        // Variants are not preloaded: only the plain image is on the list.
+        assert_eq!(pack.preload_list[0].len(), 1);
+        // The watch: a variant added, then removed.
+        let wait = |pack: &mut DirPack| {
+            let start = Instant::now();
+            loop {
+                let c = pack.take_changes();
+                if !c.is_empty() {
+                    return c;
+                }
+                assert!(start.elapsed().as_secs() < 10, "no change reported");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let path9 = dir.join(format!("{}.png", with_pal(9).variant_name()));
+        std::fs::write(&path9, px(90)).unwrap();
+        assert_eq!(wait(&mut pack).stems.len(), 1);
+        assert_eq!(ask(&mut pack, 0x55, 9), 9);
+        assert_eq!(image(&mut pack, &with_pal(9)), Some(90));
+        std::fs::remove_file(&path9).unwrap();
+        assert_eq!(wait(&mut pack).stems.len(), 1);
+        assert_eq!(ask(&mut pack, 0x55, 9), 0);
+        info.pal = 0;
+        let _ = info;
+        drop(pack);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

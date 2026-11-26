@@ -895,6 +895,9 @@ struct PackState {
     /// reads (`Manifest::reads_maps`).
     manifest: Arc<model2::pack::Manifest>,
     maps: bool,
+    /// The palettes each key has a per-palette variant for in the index
+    /// (`tex_<key>~<pal>_<w>x<h>`).
+    variants: HashMap<u64, HashSet<u32>>,
 }
 
 /// The pack, and its manifest (also in the state) for `TexturePack::manifest`.
@@ -927,7 +930,21 @@ impl WebPack {
 
 impl TexturePack for WebPack {
     fn find(&mut self, info: &TexInfo) -> Found {
+        if info.pal != 0 {
+            let name = info.variant_name();
+            if self.0.lock().unwrap().index.contains(&name) {
+                return self.get(name);
+            }
+        }
         self.get(info.name())
+    }
+
+    fn variant(&mut self, info: &TexInfo, palette: &mut dyn FnMut() -> u32) -> u32 {
+        let s = self.0.lock().unwrap();
+        match s.variants.get(&info.key) {
+            Some(pals) => Some(palette()).filter(|p| pals.contains(p)).unwrap_or(0),
+            None => 0,
+        }
     }
 
     fn has_tiles(&self) -> bool {
@@ -1019,11 +1036,19 @@ pub fn set_pack(index: Option<String>, manifest: Option<String>) -> Result<u32, 
             .collect();
         let tiles = index.iter().any(|n| matches!(parse_name(n), Ok(FileKind::Tile { .. })));
         let maps = manifest.reads_maps() && index.iter().any(|n| matches!(parse_name(n), Ok(FileKind::Map { .. })));
+        let mut variants: HashMap<u64, HashSet<u32>> = HashMap::new();
+        for n in &index {
+            if let Ok(FileKind::Variant { key, pal, .. }) = parse_name(n) {
+                variants.entry(key).or_default().insert(pal);
+            }
+        }
         let manifest = Arc::new(manifest);
-        Arc::new(Mutex::new(PackState { index, tiles, manifest, maps, ..Default::default() }))
+        Arc::new(Mutex::new(PackState { index, tiles, manifest, maps, variants, ..Default::default() }))
     });
     let names = state.as_ref().map_or(0, |s| {
-        let image = |n: &&String| matches!(parse_name(n), Ok(FileKind::Image { .. } | FileKind::Tile { .. }));
+        let image = |n: &&String| {
+            matches!(parse_name(n), Ok(FileKind::Image { .. } | FileKind::Variant { .. } | FileKind::Tile { .. }))
+        };
         s.lock().unwrap().index.iter().filter(image).count() as u32
     });
     PACK.with(|p| *p.borrow_mut() = state.clone());

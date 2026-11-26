@@ -216,6 +216,10 @@ pub fn observe<'a>(
     let mut obs = Observation { frame: f.frame, ..Default::default() };
     let stats = idmap::stats(&ids, reg);
     let mut by_id: HashMap<u32, Ident> = HashMap::new();
+    // A texture key drawn through several palettes has an ID for each
+    // (`idmap::Registry::intern_pal`); the catalogue's entry is the key, so
+    // its sightings are added up and the palettes listed (`pals=`).
+    let mut at: HashMap<Ident, usize> = HashMap::new();
     for s in stats.iter().filter(|s| s.id >= FIRST_ID) {
         let Some(e) = reg.entry(s.id) else { continue };
         let id = match e.key {
@@ -223,13 +227,31 @@ pub fn observe<'a>(
             Key::Tile(k) => Ident(Kind::Tile, k),
         };
         by_id.insert(s.id, id);
-        obs.seen.push(Seen {
-            id,
-            pixels: s.pixels as u32,
-            bbox: [s.bbox[0] as u16, s.bbox[1] as u16, s.bbox[2] as u16, s.bbox[3] as u16],
-            count: s.polys as u32,
-            wraps: s.wraps,
-        });
+        let bbox = [s.bbox[0] as u16, s.bbox[1] as u16, s.bbox[2] as u16, s.bbox[3] as u16];
+        if let Some(&i) = at.get(&id) {
+            let seen = &mut obs.seen[i];
+            seen.pixels += s.pixels as u32;
+            seen.count += s.polys as u32;
+            seen.wraps |= s.wraps;
+            seen.bbox = [
+                seen.bbox[0].min(bbox[0]),
+                seen.bbox[1].min(bbox[1]),
+                seen.bbox[2].max(bbox[2]),
+                seen.bbox[3].max(bbox[3]),
+            ];
+            let info = &mut obs.infos[i];
+            if let Some(pal) = e.detail.split(' ').find_map(|t| t.strip_prefix("pal=")) {
+                if info.detail.split(' ').any(|t| t.starts_with("pals=")) {
+                    info.detail.push_str(&format!(",{pal}"));
+                } else {
+                    let first = info.detail.split(' ').find_map(|t| t.strip_prefix("pal=")).unwrap_or("").to_string();
+                    info.detail.push_str(&format!(" pals={first},{pal}"));
+                }
+            }
+            continue;
+        }
+        at.insert(id, obs.seen.len());
+        obs.seen.push(Seen { id, pixels: s.pixels as u32, bbox, count: s.polys as u32, wraps: s.wraps });
         obs.infos.push(Info {
             id,
             name: e.name.clone(),
@@ -438,6 +460,31 @@ struct Row {
     /// Largest `Seen::count` (polygons of an object, tiles of a layout).
     count: u32,
     with: BTreeSet<u64>,
+    /// Texture palette ids (`pal=`, `pals=` of the detail) seen over the
+    /// samples: the key drawn through each (`enhance::palette_id`).
+    pals: BTreeSet<String>,
+}
+
+/// The palette ids a texture detail names (`pal=` and `pals=`).
+fn detail_pals(detail: &str) -> impl Iterator<Item = &str> {
+    detail
+        .split(' ')
+        .filter_map(|t| t.strip_prefix("pals=").or_else(|| t.strip_prefix("pal=")))
+        .flat_map(|v| v.split(','))
+        .filter(|p| !p.is_empty())
+}
+
+/// A texture detail as `entries.tsv` writes it: the first sighting's `pal=`
+/// and `ramp=` stay, and `pals=` lists every palette the key was drawn
+/// through when it was more than one.
+fn detail_with_pals(detail: &str, pals: &BTreeSet<String>) -> String {
+    let mut out: Vec<&str> = detail.split(' ').filter(|t| !t.starts_with("pals=")).collect();
+    let list;
+    if pals.len() > 1 {
+        list = format!("pals={}", pals.iter().cloned().collect::<Vec<_>>().join(","));
+        out.push(&list);
+    }
+    out.join(" ")
 }
 
 #[derive(Clone, Debug, Default)]
@@ -731,10 +778,20 @@ impl Session {
             let row = self.entries.entry(s.id).or_insert_with(|| {
                 new += 1;
                 new_ids.push(s.id);
-                Row { info: (*i).clone(), loaded: None, loads: 0, count: 0, with: BTreeSet::new() }
+                Row {
+                    info: (*i).clone(),
+                    loaded: None,
+                    loads: 0,
+                    count: 0,
+                    with: BTreeSet::new(),
+                    pals: BTreeSet::new(),
+                }
             });
             row.count = row.count.max(s.count);
             row.with.extend(i.with.iter().copied());
+            if s.id.0 == Kind::Tex {
+                row.pals.extend(detail_pals(&i.detail).map(str::to_string));
+            }
             if let Some(p) = i.place.filter(|_| s.id.0 == Kind::Tex) {
                 let (mut at, mut n) = (0, 0);
                 for page in texwatch::rect_pages(p[0], p[1], p[2], p[3], p[4]) {
@@ -916,7 +973,7 @@ impl Session {
                 r.count,
                 r.loaded.map_or("-".into(), |f| f.to_string()),
                 r.loads,
-                i.detail,
+                if id.0 == Kind::Tex { detail_with_pals(&i.detail, &r.pals) } else { i.detail.clone() },
                 r.with.iter().map(|k| format!("{k:016x}")).collect::<Vec<_>>().join(",")
             );
         }

@@ -666,7 +666,11 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
     for f in &files {
         let Some(size) = f.size else { continue };
         let (w, h) = match f.kind {
-            Ok(FileKind::Image { width, height, .. } | FileKind::Art { width, height, .. }) => (width, height),
+            Ok(
+                FileKind::Image { width, height, .. }
+                | FileKind::Variant { width, height, .. }
+                | FileKind::Art { width, height, .. },
+            ) => (width, height),
             Ok(FileKind::Map { width, height, .. }) => {
                 maps_by_base.entry(base(&f.stem)).or_default().push(f);
                 (width, height)
@@ -690,6 +694,34 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
                 'e',
                 "proportions differ from the texture's w x h (stretched when drawn)",
                 format!("{} ({}x{})", f.stem, size.0, size.1),
+            );
+        }
+    }
+    // v: per-palette variants (`tex_<key>~<pal>_<w>x<h>`): the plain image of
+    // the key is what every other palette draws; a variant's size is its own.
+    let plain: BTreeSet<(u64, u32, u32)> = files
+        .iter()
+        .filter_map(|f| match f.kind {
+            Ok(FileKind::Image { key, width, height }) => Some((key, width, height)),
+            _ => None,
+        })
+        .collect();
+    let mut variant_keys: BTreeMap<(u64, u32, u32), usize> = BTreeMap::new();
+    for f in &files {
+        if let Ok(FileKind::Variant { key, width, height, .. }) = f.kind {
+            *variant_keys.entry((key, width, height)).or_default() += 1;
+        }
+    }
+    for (&(key, w, h), n) in &variant_keys {
+        if !plain.contains(&(key, w, h)) {
+            r.add(
+                Level::Note,
+                'v',
+                format!(
+                    "{n} palette variant{} but no plain tex_ image: a palette with no variant draws the original (or the art_ image)",
+                    if *n == 1 { "" } else { "s" }
+                ),
+                format!("tex_{key:016x}_{w}x{h}"),
             );
         }
     }
@@ -751,10 +783,21 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
             }
             for f in &files {
                 let b = base(&f.stem);
-                let known = match f.kind {
-                    Ok(FileKind::Image { .. } | FileKind::Tile { .. } | FileKind::Map { surface: false, .. }) => {
-                        d.names.contains(b)
+                let plain;
+                let b = match f.kind {
+                    Ok(FileKind::Variant { key, width, height, .. }) => {
+                        plain = format!("tex_{key:016x}_{width}x{height}");
+                        plain.as_str()
                     }
+                    _ => b,
+                };
+                let known = match f.kind {
+                    Ok(
+                        FileKind::Image { .. }
+                        | FileKind::Variant { .. }
+                        | FileKind::Tile { .. }
+                        | FileKind::Map { surface: false, .. },
+                    ) => d.names.contains(b),
                     Ok(FileKind::Map { surface: true, .. }) => d.surf.is_empty() || surfs.contains(b),
                     _ => true,
                 };
@@ -796,7 +839,9 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
     for f in &files {
         // An artwork's image is counted once, though every colouring that
         // draws it holds its own copy on the GPU.
-        if let (Ok(FileKind::Image { .. } | FileKind::Art { .. }), Some((w, h))) = (&f.kind, f.size) {
+        if let (Ok(FileKind::Image { .. } | FileKind::Variant { .. } | FileKind::Art { .. }), Some((w, h))) =
+            (&f.kind, f.size)
+        {
             images[0] += gpu_bytes(w, h, false);
             images[1] += gpu_bytes(w, h, true);
         }
@@ -848,10 +893,11 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
     }
     let count = |p: fn(&FileKind) -> bool| files.iter().filter(|f| f.kind.as_ref().is_ok_and(p)).count();
     println!(
-        "pack-lint {}: {} PNGs: {} images, {} artworks, {} tiles, {} material maps; manifest: {}",
+        "pack-lint {}: {} PNGs: {} images, {} palette variants, {} artworks, {} tiles, {} material maps; manifest: {}",
         dir.display(),
         files.len(),
         count(|k| matches!(k, FileKind::Image { .. })),
+        count(|k| matches!(k, FileKind::Variant { .. })),
         count(|k| matches!(k, FileKind::Art { .. })),
         count(|k| matches!(k, FileKind::Tile { .. })),
         count(|k| matches!(k, FileKind::Map { .. })),
@@ -1036,5 +1082,40 @@ mod tests {
         assert!(!has('f', 7) && !has('g', 7) && !has('h', 7));
         assert!(!has('h', 1) && !has('h', 3) && !has('h', 6));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Per-palette variants (`tex_<key>~<pal>_<w>x<h>.png`) are pack names:
+    /// counted, checked for proportions and the index, a note when the key
+    /// has no plain image, and a bad spelling is a warning like any other.
+    #[test]
+    fn knows_per_palette_variants() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/pack-lint-variants");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = |w: usize, h: usize| png::encode_rgba(w, h, &vec![128; w * h * 4]);
+        let (plain, a, b) =
+            ("tex_0123456789abcdef_8x8", "tex_0123456789abcdef~00000007_8x8", "tex_00000000000000ff~00000009_8x8");
+        for (n, w, h) in [(plain, 32, 32), (a, 32, 32), (b, 64, 32), ("tex_0123456789abcdef~7_8x8", 8, 8)] {
+            std::fs::write(dir.join(format!("{n}.png")), img(w, h)).unwrap();
+        }
+        let index: String = [plain, a, b].iter().map(|n| format!("{n}.png\n")).collect();
+        std::fs::write(dir.join("index.txt"), index).unwrap();
+        let r = lint_report(&dir, None, 8192).unwrap();
+        let has = |lvl: Level, c: char, item: &str| {
+            r.found.iter().any(|(k, v)| k.0 == lvl && k.1 == c && v.iter().any(|i| i.contains(item)))
+        };
+        assert!(has(Level::Warning, 'b', "tex_0123456789abcdef~7_8x8"), "a short palette is not a pack name");
+        assert!(has(Level::Warning, 'e', b), "64x32 is not 8x8's proportions");
+        assert!(!has(Level::Warning, 'e', a));
+        assert!(has(Level::Note, 'v', "tex_00000000000000ff_8x8"), "a variant with no plain image");
+        assert!(!has(Level::Note, 'v', plain));
+        assert!(!has(Level::Warning, 'c', a), "listed in index.txt");
+        // Against a dump: the variant is known by its key.
+        let dump = dir.join("dump");
+        std::fs::create_dir_all(&dump).unwrap();
+        std::fs::write(dump.join("index.txt"), format!("{plain}\tuses=1\twrap=rr\n")).unwrap();
+        let r = lint_report(&dir, Some(&dump), 8192).unwrap();
+        let unknown = |n: &str| r.found.iter().any(|(k, v)| k.1 == 'i' && v.iter().any(|i| i.contains(n)));
+        assert!(!unknown(a) && unknown(b));
     }
 }

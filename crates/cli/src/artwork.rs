@@ -103,7 +103,11 @@ fn distinct(r: &Ramp) -> usize {
 pub fn group(rows: &[Row]) -> Vec<Artwork> {
     let mut by: BTreeMap<(u64, u32, u32), Artwork> = BTreeMap::new();
     for r in rows {
-        let Ok(FileKind::Image { width, height, .. }) = parse_name(r.name) else { continue };
+        // A per-palette variant is a colouring of its artwork too (its ramp is its own).
+        let Ok(FileKind::Image { width, height, .. } | FileKind::Variant { width, height, .. }) = parse_name(r.name)
+        else {
+            continue;
+        };
         let Some(surface) = (r.surface.len() == 16).then(|| u64::from_str_radix(r.surface, 16).ok()).flatten() else {
             continue;
         };

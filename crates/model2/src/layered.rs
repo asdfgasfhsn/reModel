@@ -100,6 +100,21 @@ impl TexturePack for LayeredPack {
         FoundMaterial::Missing
     }
 
+    /// The palette if any layer has a variant for it; each layer then
+    /// answers `find` with its variant or its plain image, the highest
+    /// layer with either winning.
+    fn variant(&mut self, info: &TexInfo, palette: &mut dyn FnMut() -> u32) -> u32 {
+        let mut memo = None;
+        let mut pal = || *memo.get_or_insert_with(&mut *palette);
+        for l in &mut self.layers {
+            let p = l.variant(info, &mut pal);
+            if p != 0 {
+                return p;
+            }
+        }
+        0
+    }
+
     /// The highest layer that has an image for it says.
     fn image_selflit(&mut self, info: &TexInfo) -> Option<bool> {
         self.layers.iter_mut().find_map(|l| l.image_selflit(info))
@@ -145,6 +160,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         }
     }
 
@@ -168,5 +184,50 @@ mod tests {
     fn a_pending_top_layer_holds_the_answer() {
         let mut l = LayeredPack::new(vec![Box::new(Flat(1, vec![], true)), Box::new(Flat(2, vec![10], false))]);
         assert!(matches!(l.find(&info(10)), Found::Pending));
+    }
+
+    /// A pack with per-palette variants of one key: red for palette 5.
+    struct Var(bool);
+
+    impl TexturePack for Var {
+        fn find(&mut self, info: &TexInfo) -> Found {
+            let red = (info.pal == 5).then_some(1u8).or(self.0.then_some(9));
+            red.map_or(Found::Missing, |c| {
+                Found::Image(Arc::new(Rgba { width: 1, height: 1, data: vec![c, 0, 0, 255] }))
+            })
+        }
+        fn variant(&mut self, info: &TexInfo, palette: &mut dyn FnMut() -> u32) -> u32 {
+            if info.key == 10 && palette() == 5 {
+                5
+            } else {
+                0
+            }
+        }
+    }
+
+    #[test]
+    fn a_variant_in_any_layer_is_asked_for_and_the_highest_layer_with_an_image_wins() {
+        let mut l = LayeredPack::new(vec![Box::new(Flat(2, vec![10], false)), Box::new(Var(false))]);
+        let calls = std::cell::Cell::new(0);
+        let mut pal = || {
+            calls.set(calls.get() + 1);
+            5
+        };
+        assert_eq!(TexturePack::variant(&mut l, &info(10), &mut pal), 5);
+        assert_eq!(calls.get(), 1, "the palette is worked out once for the stack");
+        // The upper layer has the plain image: it still wins over the lower
+        // layer's variant (the highest pack that has the texture).
+        let red = |f: Found| match f {
+            Found::Image(i) => Some(i.data[0]),
+            _ => None,
+        };
+        let mut with_pal = info(10);
+        with_pal.pal = 5;
+        assert_eq!(red(l.find(&with_pal)), Some(2));
+        // With the plain image only below, the variant above it is the answer.
+        let mut l = LayeredPack::new(vec![Box::new(Var(false)), Box::new(Flat(2, vec![10], false))]);
+        assert_eq!(red(l.find(&with_pal)), Some(1));
+        assert_eq!(red(l.find(&info(10))), Some(2), "palette 0: the plain image");
+        assert_eq!(TexturePack::variant(&mut l, &info(11), &mut || 5), 0);
     }
 }

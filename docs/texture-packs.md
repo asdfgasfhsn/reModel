@@ -172,7 +172,8 @@ the player and the browser use behind their `materials` setting (off by
 default; below, "Trying material maps"; docs/enhancements.md, "Material
 maps"). Specular (`.s`) and gloss (`.g`) maps are part of the format and
 are loaded, but have no effect yet (`pack-lint` notes them; the roadmap is
-in docs/enhancements.md).
+in docs/enhancements.md). Per-palette variants (`tex_<key>~<pal>_..`, below,
+"Per-palette variants") are drawn by every reader, the browser included.
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -188,6 +189,7 @@ unchanged). **Format 2** adds, all optional:
 | `regions.txt`, `region_<name>.png` | 2D region overrides (below, "Regions") |
 | `tex_<key>_<w>x<h>.n.png`, `.s.png`, `.g.png` | material maps for that image in that colour: normal, specular scale, gloss |
 | `surf_<skey>_<w>x<h>.n.png`, `.s.png`, `.g.png` | the same maps keyed by surface, serving every colour the texels are drawn in |
+| `tex_<key>~<pal>_<w>x<h>.png` | a per-palette variant: the image for that key when it is drawn through the 16-colour palette whose id is `<pal>` (8 hex digits); wins over `tex_<key>_..` for that palette, which stays the fallback (below, "Per-palette variants") |
 | `art_<skey>_<w>x<h>.png` | one image for the artwork: drawn for every colouring of the texels (every `tex_` key of that surface) that has no `tex_` image of its own (below, "Artwork images") |
 | `materials.txt` | tool record of `make pack-materials` |
 | `materials-exclude.txt` | the author's list of textures `make pack-materials` makes no map for (below, "Material maps") |
@@ -424,6 +426,7 @@ non-zero on errors:
 |---|---|
 | `pack.txt` parses; its `format` and `keys` are known and its `needs` shown (else readers refuse it); unknown keywords and features, reserved ones, `material` lines whose stem has no files, a `game` reModel doesn't know | error / warning / note |
 | every PNG's name parses as a pack name (a reserved name is a note) | warning |
+| per-palette variants (`tex_<key>~<pal>_..`): counted; a variant whose key has no plain `tex_` image of the same size (a palette with no variant draws the original) | note |
 | specular (`.s`) and gloss (`.g`) maps: loaded, but no effect yet | note |
 | `index.txt` lists every file and nothing missing (the browser needs it) | warning |
 | every PNG decodes (not interlaced) and is within `MAX_SIDE` pixels a side (default 4096, as `upscale-textures`) | error |
@@ -488,6 +491,8 @@ artworks under up to 12 keys each, which carry half the drawn pixels. An
 `art_<skey>_<w>x<h>.png` names the artwork instead (the surface key, which
 the dump index, the catalogue and the pack log already record as `surf=`).
 
+(A key drawn through two palettes can have an image per palette: below, "Per-palette variants".)
+
 A reader looks for the colouring's own `tex_` image first and draws the
 artwork's `art_` image when the pack has none, in the CLI's software and GPU
 renderers and in the player, lit as any replacement is (the game's
@@ -503,6 +508,112 @@ colouring's `tex_` image from the artwork's, through the colour ramps the
 catalogue recorded (docs/uplift-studio.md, "Artworks"), so any reader draws
 it, the browser too, and any one of them can be replaced by hand. `art_`
 files have no material maps (name those by `tex_` or `surf_`).
+
+## Per-palette variants
+
+A `tex_` key is the texels and the colour-table address, not the table's
+contents, and games rewrite the table. Top Skater's skaters share skin
+textures and the game paints a shared texture per skater through its colour
+table: key `3d5cfef2` (a hand) is a 16-colour ramp of tan on J, pale peach on
+Alex and pink on P-Nut, one key (docs/games/topskatr.md, "Skater skin"). A
+pack image is drawn as painted for every user of its key, so one image can be
+one skin tone, and the pack had to settle for a compromise tone on the keys
+two skaters share. A **variant** is an image for one key drawn through one
+palette:
+
+    tex_<key>~<pal>_<w>x<h>.png      tex_3d5cfef2....~1f3a9c07_64x64.png
+
+`<pal>` is the **palette id** of the 16-colour ramp the key is drawn through:
+the ramp `texmap` reports as `ramp=` (the colour each texel value 0 to 15
+takes at full luma, `raster::texture_look`), hashed. Exactly: FNV-1a 64 over
+the 48 bytes of the ramp (16 colours, r g b, texel 0 first), folded to 32
+bits as `hi ^ lo`, never 0 (0 becomes 1); written as 8 lowercase hex digits
+(`enhance::palette_id`). Texmap and the catalogue write it as `pal=XXXXXXXX`
+in each texture's detail, next to `ramp=`, in the format of the file name, so
+a name is copied from the report. It depends on the ramp alone, not on the
+polygon's luma (a ramp is at full luma) or on the key.
+
+**Lookup order**, per drawn polygon, in the CLI's renderers, the player and
+the browser:
+
+1. the variant `tex_<key>~<pal>_..` for the palette the key is drawn with
+   right now;
+2. else the plain `tex_<key>_..` image: the fallback for every palette that
+   has no variant, so a pack adds variants only where it needs them;
+3. else the artwork's `art_` image (CLI and player; the browser reads none);
+4. else the original texture.
+
+A variant needs no plain image (a palette with no variant then draws the
+original or the artwork's). The sizes of a variant and its plain image may
+differ; each is sampled over the texture's area. Lighting, `selflit` (the
+variant follows the `material` line of its key's plain stem), mipmaps and the
+rest are as for any replacement. Material maps are by key or surface
+(`tex_`, `surf_`) and serve every palette: a variant has no maps of its own
+(`tex_<key>~<pal>_..n.png` is not a pack name). In a stack of packs the
+highest layer that has a variant or the plain image for the texture wins.
+
+**Cost.** None for a pack without variants: one call per textured polygon
+that returns at once. With variants, the ramp is worked out (16 table lookups
+and a hash) only for a polygon whose key has some variant, and not for any
+other key. Measured 2026-11-26 (`cargo test -p remodel-gpu --release
+variant_cost -- --ignored --nocapture`, one thread, 2M calls, native):
+a pack without variants 1.7 ns a polygon, a pack with variants of other keys (300 files) 15.8 ns (one hash lookup of the key), a key that has a variant 172 ns, 129 of them the palette (the ramp's 16 lookups and the hash). At 600 textured polygons a frame, all of them keys with variants, that is 0.1 ms of CPU; Top Skater's skaters are about a hundred polygons (about 17 microseconds). Hot reload (below, "Live display") follows variant files like
+`tex_` files: one added, rewritten or removed is drawn the next frame while the
+plain image stays on screen until it has decoded. The GPU keeps a variant's
+image under its own key, never as the stand-in for another key of the
+surface (`surface` fix), and the pack log (`--pack-log`) lists a variant as
+its own subject with a `pal=` field.
+
+**Tools.**
+
+- `pack-lint` knows the name (check `b`), counts variants, checks their
+  proportions and `index.txt`, and notes a variant whose key has no plain
+  image (check `v`); against a dump, a variant is known by its key.
+- `texmap` and the catalogue: a key drawn through more than one palette is one
+  ID per palette (`Registry::intern_pal`); `pal=` is in every texture's
+  detail and in `texmap.json` (`pal`). At the end of the run each
+  palette's entry is named as a variant (`tex_<key>~<pal>_..`) and a plain-named
+  row copies the palette drawn most (marked `fallback`: the image every palette
+  without a variant draws), so the inventory, `textures/` and the studio's
+  selection have **a row per (key, palette) plus the plain row** where a key is
+  seen with more than one, and one row (plain name) where it is not. The catalogue keeps one
+  entry per key: `pal=` is its first sighting's, `pals=A,B,...` lists every
+  palette seen. A game that fades a texture through its colour tables (srallyc,
+  sgt24h) shows each step as a palette, hence a row: pick the ones that matter.
+- `studio`: `select --key KEY` takes the plain row and every variant of the key
+  (a name takes one); `draft`, `style`, `import`, `approve` and `pack` take the
+  names as any; `artworks` lists a variant as a colouring of its artwork with its
+  own ramp, so `studio bake` makes variants from an `art_` image through each
+  palette's ramp.
+- `scene render --json`: `assets` lists each texture the pack answered for, biggest
+  first: `name` (a variant's name when one drew), `variant` (its palette id or
+  null), `outcome`, `polys`, `pixels`; `variants_drawn` counts the variants.
+
+**Why not a palette-driven image** (what was weighed, 2026-11-26).
+
+- (a) is this section: explicit, full control of every colour, works in the
+  browser, and lands in the lookup the renderers already do.
+- (b) An index or shade image drawn through the game's live palette, so one
+  drawing takes each skater's colours with no per-skater work. The artwork
+  machinery looks like it, and is not it: an `art_` image in mode `fixed` is
+  drawn as painted for every colouring (the colour table does not re-tint it,
+  checked), and `studio bake` writes one finished `tex_` image per catalogued
+  colouring through the ramps at bake time: it makes images from a drawing, it
+  does not draw through the live palette. What bake does give (a) for free: with
+  a variant per palette the bake is "an `art_` image through that palette's
+  ramp". (b) itself needs a new kind of image (texel indices or shades, not
+  colours), the compositing through the live ramp in both renderers and in the
+  browser's shader, and an editing tool for it; the lighting is already
+  `replacement x ratio`, so it would compose. Not built: (a) covers the problem
+  with a lookup and a file name, and an author who wants (b) gets it from a bake
+  script today. If a game turns up where palettes are too many to paint (a team's
+  kit in 28 colourings, `vstriker`), (b) is the next step, `idx_<skey>`
+  ("Palette packs" in docs/uplift/asset-identity.md).
+- A variant keyed by the colour-table address instead of the ramp: the address
+  is already in the key, and it is the table's contents the game changes.
+- A `ramp` line in `pack.txt` replacing the ramp by data (recolour with no
+  image): "Palette packs" in asset-identity.md, not built, the same lookup would
+  carry it.
 
 ## Regions
 
@@ -638,7 +749,7 @@ image a frame. Without an `index.txt` the original textures stay, with a
 console warning.
 
 **Live reload.** The player (and any renderer given a `DirPack`) watches the pack
-folder: a changed, added or removed `tex_`, `art_`, `tile_` or map file is reported once it has
+folder: a changed, added or removed `tex_` (a variant `tex_<key>~<pal>_..` included), `art_`, `tile_` or map file is reported once it has
 stayed the same for a look (the folder is looked at ten times a second, or less often if a look
 is slow), and the renderer asks again for just that image the next time its texture is drawn. An `art_`
 change reloads every colouring of that surface; a tile or map change drops the tile or material
@@ -1365,7 +1476,7 @@ each captured frame with the software renderer, 1024x768 by default
 | `frames/FRAME.tsv` | per ID in the frame: pixels, share of the frame, output bounding box, visible polygons, share of the texels that show and their box (`uv_*`), wrap (`rr`, `mr`, ... as `index.txt`), `span_u/v` (how many texture sizes the coordinates run over: above 1, it repeats), group |
 | `ids.tsv`, `inventory.tsv` | the ID table; the run's textures and tiles ranked by coverage (frames, pixels, best frame, union of the texels shown, wrap, span, group, and what `index.txt` calls the source) |
 | `groups.tsv`, `texmap.json` | the groups; everything above for tools |
-| `textures/NAME.png` | each texture as the game draws it at full luma, under the dump and pack names (`tex_<key>_<w>x<h>`, `tile_<key>`): a restyled image goes into a pack under the same name |
+| `textures/NAME.png` | each texture as the game draws it at full luma, under the dump and pack names (`tex_<key>_<w>x<h>`, `tile_<key>`): a restyled image goes into a pack under the same name. A key drawn through more than one palette (a colour table the game rewrites) has an ID and a row for each; each palette is named as a variant (`tex_<key>~<pal>_<w>x<h>`, above, "Per-palette variants"), and a plain-named row copies the one drawn most (`fallback` in its detail); every texture's `detail` has its `pal=` |
 | `index.html` | the static viewer: one file, works from `file://` (below) |
 
 **Groups.** Polygons carry the object block of the display list they came

@@ -17,3 +17,4 @@ pollster = "1.0.1"
 [dev-dependencies]
 # Already in the tree through wgpu: validates the shader without a GPU.
 naga = { version = "30.0.1", features = ["wgsl-in"] }
+remodel-png.workspace = true

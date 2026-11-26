@@ -162,9 +162,24 @@ only today, so the split waits for
 [scene-understanding.md](scene-understanding.md). Until then a `shared`
 artwork is reported, and the pack author decides.
 
+### Per-palette variants (built 2026-11-26)
+
+The image form of this idea is built: a key drawn through several palettes can
+have one pack image per palette, `tex_<key>~<pal>_<w>x<h>.png`, `<pal>` being
+the hash of the 16-colour ramp that texmap and the catalogue report as `ramp=`
+(`pal=`). It was needed by Top Skater, whose skaters share skin textures and
+get their tone from the colour table (docs/games/topskatr.md, "Skater skin"):
+one key, three tones. The plain `tex_` image stays the fallback. The identity
+is now (key, palette), the key still being the texels plus the table address;
+the catalogue keeps one entry per key and lists the palettes (`pals=`), texmap
+has an ID per (key, palette). The design, the lookup order, the cost and why
+the palette-driven image below was not chosen are in
+[../texture-packs.md](../texture-packs.md), "Per-palette variants".
+
 ### Palette packs: recolouring with no images
 
-Proposed on 2026-11-20; nothing here is tried. A colouring is a ramp of
+Proposed on 2026-11-20; nothing here is tried (the per-palette variants above
+are the image form, and use the same lookup). A colouring is a ramp of
 16 colours, and a variant's key already names its polygon colour and
 luma table. So a pack can replace a variant's ramp and nothing else:
 the game's own texels, drawn through 48 bytes the pack supplies.

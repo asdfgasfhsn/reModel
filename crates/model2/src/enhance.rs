@@ -498,6 +498,11 @@ impl Fnv {
     }
 }
 
+/// File stem of a per-palette variant: `tex_<key>~<pal>_<w>x<h>`.
+pub fn variant_name(key: u64, pal: u32, width: u32, height: u32) -> String {
+    format!("tex_{key:016x}~{pal:08x}_{width}x{height}")
+}
+
 /// A textured polygon's texture, as dumps and packs see it.
 #[derive(Clone, Debug)]
 pub struct TexInfo {
@@ -518,9 +523,50 @@ pub struct TexInfo {
     pub y0: u32,
     pub luma_table: u32,
     pub translucent: bool,
+    /// The palette id (`palette_id`) of the 16-colour ramp this draw goes
+    /// through, set only when the pack has a per-palette variant of this key
+    /// for it (`TexturePack::variant`); 0 otherwise, so a texture with no
+    /// variant is identified by its key alone.
+    pub pal: u32,
+}
+
+/// The id of a 16-colour ramp (`raster::texture_look`: what each texel value
+/// is drawn in at full luma): FNV-1a 64 over its 48 bytes, folded to 32
+/// bits, never 0. It is what a variant name carries (`tex_<key>~<pal>_<w>x<h>`)
+/// and what texmap and the catalogue report as `pal=`, 8 lowercase hex
+/// digits (docs/texture-packs.md, "Per-palette variants").
+pub fn palette_id(ramp: &[[u8; 3]; 16]) -> u32 {
+    let mut f = Fnv::default();
+    f.bytes(ramp.as_flattened());
+    let v = (f.0 >> 32) as u32 ^ f.0 as u32;
+    v.max(1)
+}
+
+/// The key a renderer holds a pack image under: the texture's key, or for a
+/// per-palette variant a mix of the key and the palette id (never a plain
+/// key in practice: 64-bit hash).
+pub fn image_key(key: u64, pal: u32) -> u64 {
+    if pal == 0 {
+        return key;
+    }
+    let mut f = Fnv::default();
+    f.bytes(&key.to_le_bytes());
+    f.bytes(&pal.to_le_bytes());
+    f.0
 }
 
 impl TexInfo {
+    /// File stem of this colouring's variant for the palette in `pal`
+    /// (`tex_<key>~<pal>_<w>x<h>`).
+    pub fn variant_name(&self) -> String {
+        variant_name(self.key, self.pal, self.width, self.height)
+    }
+
+    /// The key a renderer keeps this draw's image under (`image_key`).
+    pub fn image_key(&self) -> u64 {
+        image_key(self.key, self.pal)
+    }
+
     /// File stem in dumps and packs.
     pub fn name(&self) -> String {
         format!("tex_{:016x}_{}x{}", self.key, self.width, self.height)
@@ -619,6 +665,10 @@ pub trait Enhance {
     /// replacement for is drawn flat in `raster::MISS_COLOUR`, as painted.
     fn overlay_miss(&mut self) -> bool {
         false
+    }
+    /// See `TexturePack::variant`.
+    fn variant(&mut self, _info: &TexInfo, _palette: &mut dyn FnMut() -> u32) -> u32 {
+        0
     }
 }
 
@@ -721,11 +771,36 @@ pub trait TexturePack {
     fn manifest(&self) -> &crate::pack::Manifest {
         &crate::pack::NO_MANIFEST
     }
+    /// Per-palette variants (`tex_<key>~<pal>_<w>x<h>.png`): the palette id
+    /// of this draw if the pack has a variant of `info`'s key for the
+    /// palette it is drawn with, else 0. `palette` works the id out (the
+    /// ramp's hash, `palette_id`) and is called only for a key the pack has
+    /// some variant of, so a pack without variants costs one call returning
+    /// 0. The renderer then sets `TexInfo::pal` to the answer before
+    /// `find`.
+    fn variant(&mut self, _info: &TexInfo, _palette: &mut dyn FnMut() -> u32) -> u32 {
+        0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_ids_follow_the_ramp_and_are_never_zero() {
+        let mut ramp = [[0u8; 3]; 16];
+        let flat = palette_id(&ramp);
+        assert_ne!(flat, 0);
+        ramp[7][1] = 1;
+        assert_ne!(palette_id(&ramp), flat, "any colour changes it");
+        assert_eq!(palette_id(&ramp), palette_id(&ramp.clone()), "and nothing else does");
+        // The same bytes as the catalogue's `ramp=` text give the same id:
+        // texmap's `pal=` is `{:08x}` of it.
+        let text = crate::idmap::ramp_text(&ramp);
+        let back = crate::idmap::parse_ramp(&text).unwrap();
+        assert_eq!(palette_id(&back), palette_id(&ramp));
+    }
 
     #[test]
     fn addressing() {
@@ -974,6 +1049,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         let (n, s) = (format!("{}.n", info.name()), format!("{}.s", info.surface_name()));
         let m = manifest("format 2\nnormal_y down\n");

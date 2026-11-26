@@ -702,7 +702,10 @@ fn name_matches(row: &str, tok: &str) -> bool {
     row == tok
         || (tok.len() == 16
             && tok.bytes().all(|b| b.is_ascii_hexdigit())
-            && (row == format!("tile_{tok}") || row.starts_with(&format!("tex_{tok}_"))))
+            && (row == format!("tile_{tok}")
+                || row.starts_with(&format!("tex_{tok}_"))
+                // The per-palette variants of the key (`tex_<key>~<pal>_<w>x<h>`).
+                || row.starts_with(&format!("tex_{tok}~"))))
 }
 
 pub(crate) fn today() -> String {
@@ -972,7 +975,12 @@ fn resolve_keys(
                     let (a, b) = (format!("tex_{t}_"), format!("tile_{t}"));
                     inv.iter()
                         .enumerate()
-                        .filter(|(_, i)| i.name.starts_with(&a) || i.name == b || i.name.starts_with(&format!("{t}_")))
+                        .filter(|(_, i)| {
+                            i.name.starts_with(&a)
+                                || i.name.starts_with(&format!("tex_{t}~"))
+                                || i.name == b
+                                || i.name.starts_with(&format!("{t}_"))
+                        })
                         .map(|(n, _)| n)
                         .collect()
                 } else {

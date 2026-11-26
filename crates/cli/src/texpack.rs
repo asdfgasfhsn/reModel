@@ -64,6 +64,9 @@ pub struct Packs {
     /// Stems of the material maps in the pack (none unless the manifest
     /// `reads_maps`).
     maps: HashSet<String>,
+    /// The palettes each key has a per-palette variant for
+    /// (`tex_<key>~<pal>_<w>x<h>.png`).
+    variants: HashMap<u64, HashSet<u32>>,
     /// Materials assembled, by id (None: no file of it decoded).
     materials: HashMap<u64, Option<Arc<Material>>>,
     /// Their mip chains, by id (filtered snapshots).
@@ -110,12 +113,15 @@ impl Packs {
             None => (Manifest::NONE, None),
         };
         let pack = pack.filter(|_| refused.is_none());
-        let (mut has_tiles, mut maps) = (false, HashSet::new());
+        let (mut has_tiles, mut maps, mut variants) = (false, HashSet::new(), HashMap::<u64, HashSet<u32>>::new());
         for e in pack.iter().flat_map(std::fs::read_dir).flatten().flatten() {
             let name = e.file_name();
             let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".png")) else { continue };
             match parse_name(stem) {
                 Ok(FileKind::Tile { .. }) => has_tiles = true,
+                Ok(FileKind::Variant { key, pal, .. }) => {
+                    variants.entry(key).or_default().insert(pal);
+                }
                 Ok(FileKind::Map { .. }) if manifest.reads_maps() => {
                     maps.insert(stem.to_string());
                 }
@@ -144,6 +150,7 @@ impl Packs {
             manifest,
             regions,
             maps,
+            variants,
             materials: HashMap::new(),
             material_mips: HashMap::new(),
             material_counts: [0; 2],
@@ -272,8 +279,13 @@ impl Packs {
 impl Enhance for Packs {
     fn texture(&mut self, info: &TexInfo) -> Option<Arc<Rgba>> {
         self.pack.as_ref()?;
-        // This colouring's own image, else the artwork's (`art_`).
-        let img = self.load(&info.name()).or_else(|| self.load(&info.art_name()));
+        // This colouring's variant for its palette, else its own image, else
+        // the artwork's (`art_`).
+        let img = Some(info.pal)
+            .filter(|&p| p != 0)
+            .and_then(|_| self.load(&info.variant_name()))
+            .or_else(|| self.load(&info.name()))
+            .or_else(|| self.load(&info.art_name()));
         self.looked_up[0] += 1;
         self.replaced[0] += img.is_some() as u64;
         img
@@ -281,7 +293,7 @@ impl Enhance for Packs {
 
     fn texture_mips(&mut self, info: &TexInfo) -> Option<Arc<Vec<Rgba>>> {
         let img = self.texture(info)?;
-        let mips = self.mips.entry(info.key).or_insert_with(|| Arc::new(img.mip_chain()));
+        let mips = self.mips.entry(info.image_key()).or_insert_with(|| Arc::new(img.mip_chain()));
         Some(mips.clone())
     }
 
@@ -332,6 +344,10 @@ impl Enhance for Packs {
 
     fn texture_selflit(&mut self, info: &TexInfo) -> bool {
         TexturePack::image_selflit(self, info).unwrap_or(false)
+    }
+
+    fn variant(&mut self, info: &TexInfo, palette: &mut dyn FnMut() -> u32) -> u32 {
+        TexturePack::variant(self, info, palette)
     }
 
     fn material_drawn(&mut self, _info: &TexInfo, changed: usize) {
@@ -402,9 +418,16 @@ impl TexturePack for Packs {
         m.clone().map_or(FoundMaterial::Missing, FoundMaterial::Maps)
     }
 
+    fn variant(&mut self, info: &TexInfo, palette: &mut dyn FnMut() -> u32) -> u32 {
+        match self.variants.get(&info.key) {
+            Some(pals) if self.pack.is_some() => Some(palette()).filter(|p| pals.contains(p)).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     fn image_selflit(&mut self, info: &TexInfo) -> Option<bool> {
         self.pack.as_ref()?;
-        let own = self.load(&info.name()).is_some();
+        let own = self.load(&info.name()).is_some() || (info.pal != 0 && self.load(&info.variant_name()).is_some());
         (own || self.load(&info.art_name()).is_some()).then(|| self.manifest.image_selflit(info, own))
     }
 
@@ -477,6 +500,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         assert!(matches!(p.find(&tex), Found::Missing));
         std::fs::write(pack.join(format!("{}.png", tex.name())), png::encode_rgba(32, 32, &big.data)).unwrap();
@@ -516,6 +540,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         let px = |v: [u8; 4], n| v.repeat(n);
         // A normal map by image key, a 2x2 specular map by surface key.
@@ -567,6 +592,7 @@ mod tests {
             y0: 0,
             luma_table: 0,
             translucent: false,
+            pal: 0,
         };
         let palette = |v: u8| {
             let mut pal = vec![0u8; 0x1_c000];
@@ -603,5 +629,51 @@ mod tests {
         assert!(index.contains("\ttranslucent=0\tsurf=0000000000000000\twrap=rr\t"), "{index}");
         assert!(p.summary().contains("1 textures drawn in several looks"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The software renderers' pack: a variant for the palette drawn wins
+    /// over the plain image, which is the fallback; the palette is worked
+    /// out only for a key that has a variant.
+    #[test]
+    fn variants_win_over_the_plain_image() {
+        let dir = std::env::temp_dir().join(format!("remodel-texpack-variant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tex = TexInfo {
+            key: 0x77,
+            surface: 5,
+            width: 1,
+            height: 1,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+            pal: 0,
+        };
+        let px = |c: u8| png::encode_rgba(1, 1, &[c, 0, 0, 255]);
+        std::fs::write(dir.join(format!("{}.png", tex.name())), px(10)).unwrap();
+        std::fs::write(dir.join(format!("{}.png", TexInfo { pal: 7, ..tex.clone() }.variant_name())), px(70)).unwrap();
+        let mut p = Packs::new(None, Some(dir.clone())).unwrap();
+        let asked = std::cell::Cell::new(0);
+        let pal = |v: u32| {
+            let a = &asked;
+            move || {
+                a.set(a.get() + 1);
+                v
+            }
+        };
+        let red = |p: &mut Packs, t: &TexInfo| p.texture(t).map(|i| i.data[0]);
+        assert_eq!(Enhance::variant(&mut p, &tex, &mut pal(7)), 7);
+        assert_eq!(Enhance::variant(&mut p, &tex, &mut pal(8)), 0, "no variant for that palette");
+        assert_eq!(Enhance::variant(&mut p, &TexInfo { key: 0x78, ..tex.clone() }, &mut pal(7)), 0);
+        assert_eq!(asked.get(), 2, "not worked out for a key without a variant");
+        assert_eq!(red(&mut p, &TexInfo { pal: 7, ..tex.clone() }), Some(70));
+        assert_eq!(red(&mut p, &tex), Some(10), "the plain image");
+        // Their mip chains are kept apart.
+        let mips = |p: &mut Packs, t: &TexInfo| p.texture_mips(t).unwrap()[0].data[0];
+        assert_eq!((mips(&mut p, &tex), mips(&mut p, &TexInfo { pal: 7, ..tex.clone() })), (10, 70));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

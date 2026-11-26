@@ -29,6 +29,19 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   `until`; `serve --moves FILE` uses another table. Predictions on a held-out
   course are honest: sideways movement and a hop's airtime carry over, speed does
   not (docs/uplift/scenes-and-server.md, "Slice 5 as built").
+- Texture packs: per-palette variants. A texture key is the texels and the
+  colour-table address, and games rewrite the table (Top Skater's skaters share
+  skin textures and get their tone from it), so one key could only have one pack
+  image. `tex_<key>~<pal>_<w>x<h>.png` is now the image for that key drawn through
+  the 16-colour palette whose id is `<pal>` (the hash of the ramp texmap reports as
+  `ramp=`, written `pal=`); it wins over the plain `tex_` image, which stays the
+  fallback. Drawn by the CLI's renderers, the player (hot reload included) and the
+  browser; no cost for a pack without variants (the palette is worked out only for
+  a key that has one: see docs/texture-packs.md, "Per-palette variants", for the
+  measurement). `pack-lint` knows the name; texmap and the catalogue report `pal=`
+  and name a key drawn through several palettes with a row each; `studio select`
+  takes the variants of a key; `scene render --json` has `assets`, which says which
+  variant drew. Render only: no state hash changes.
 - Live sessions, from the first real use (docs/uplift/session-field-notes.md):
   `session.watch` reports the writes to named values or `ADDR[:LEN]` during a
   step, each with the frame, the size, the value and the i960 instruction that
