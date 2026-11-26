@@ -245,3 +245,46 @@ smooth motion; run-ahead up to 1 (punches lag a frame, the stick none).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 60.6%
   of its instructions through it, and the state hash is unchanged.
+
+## Cheats
+
+Found 2026-11-27 with `ram search` on tours, then checked by holding each
+as a poke from power-on and drawing frames of the held run (save-state
+marks, drawn with `run --load-state`). The table is
+`crates/romset/src/games/pokes/vf2.txt`; the tour `cheats` holds all three
+(`make ram-pokes GAME=vf2`). All three are work-RAM values (RAM `0x500000`
+bank), one program ROM set.
+
+| Poke | Address | Width, value | What |
+|---|---|---|---|
+| `p1-health` | `0x510b2c` | byte, `0xb0` | Player 1's health; a round starts at `0xb0` (176) |
+| `p2-health` | `0x512b2c` | byte, `0xb0` | Player 2's (the CPU opponent's) health, one player slot (`0x2000`) on |
+| `round-timer` | `0x500028` | word, `0x76a` | the round clock in frames, counting down |
+
+- *Confirmed (health, P1):* a tour that chooses Akira and then leaves P1
+  idle against the CPU (`coin1@1100-1104,coin1@1130-1134,start@1250-1254,
+  punch@1400-1404`) shows the bar at 100%, 80%, 31% and 0% at frames
+  1950, 2100, 2500 and 2900, and the search for a byte that fell through
+  exactly `0xb0, 0x8b, 0x37, 0` found this one (a second copy at
+  `0x515b40` is derived: poking it alone does nothing to the bar). Held
+  from power-on, attract and select run as usual, the fight starts, and
+  frames drawn at 2900, 3050-3650 show the bar full where it was empty
+  and "REPLAY" without the poke, Akira downed and hit with the bar full,
+  the round count never moved by damage. Not covered: a ring-out is a
+  lost round, not a health loss, so P1 still loses to being pushed off
+  the stage (seen: "RING OUT", opponent's win mark, bar still full).
+- *Confirmed (health, P2):* a coin-start run (P1 attacks) with `0xb0` at
+  frame 1600 and 0x31, 0x7 at 2100 and 2400 gave `0x512b2c`, the twin of
+  P1's slot. Held from power-on, Lau's bar stays full while knocked down
+  and through round 1, and the next opponent (Sarah) starts and stays
+  full too. Poking `0x510b40`, which looked like P2's twin of P1's
+  neighbour, left the bar to empty: it is not health.
+- *Confirmed (timer):* the only word that fell by the frames elapsed
+  (150, 400, 266: it stands still in a replay, which a frame counter
+  would not) while the on-screen clock fell with it; the display reads
+  about (value - 120) / 60 seconds. Held at `0x76a` it stays at 29 s
+  through a whole round (frames 3050-3650) and READY shows 30.00 as
+  always. Time-over was therefore not exercised.
+- Only fights mean anything: the values are set every frame from power-on,
+  harmlessly outside one. Untested: other characters' health scaling
+  (every fight seen starts at `0xb0`), two-player mode, a later stage.

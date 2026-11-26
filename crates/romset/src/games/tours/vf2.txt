@@ -7,3 +7,6 @@ bench|600000000|coin-start
 coin-start|6000f|coin-start
 # The attract loop on its own.
 attract|5000f|
+# P1 idle after choosing Akira, holding the three cheats (docs/games/vf2.md,
+# "Cheats"): P1's and the opponent's health full, the round clock stopped.
+cheats|6000f|coin1@1100-1104,coin1@1130-1134,start@1250-1254,punch@1400-1404,poke=p1-health@0-6000,poke=p2-health@0-6000,poke=round-timer@0-6000

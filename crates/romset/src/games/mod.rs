@@ -101,6 +101,7 @@ pub fn pokes(game: &Game) -> &'static str {
     match game.id {
         "topskatr" => include_str!("pokes/topskatr.txt"),
         "srallyc" => include_str!("pokes/srallyc.txt"),
+        "vf2" => include_str!("pokes/vf2.txt"),
         _ => "",
     }
 }
