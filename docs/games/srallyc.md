@@ -277,22 +277,25 @@ spare.
 
 ## Slow frames (`--perf-log`)
 
-- *Confirmed (by running it, 2026-11-26, `--perf-log --no-sound --input
-  coin-start --frames 1500`, release player):* the slow frame at 1381 (17.8
-  ms against a 1.7 ms median) is not special and not the JIT's. Slow
-  frames come every 60 frames, at 1, 61, 121, ..., 1381, 1441 (20 to 37 ms
-  each, all of it in "emulation", none in drawing or the surface); they
-  look the same with `--jit` (no blocks installing, nothing interpreted,
-  22 slow redraws against 39 with `--no-jit`), so the interpreter is not
-  the cause. With `--geo native` they nearly vanish (one or two in 1500
-  frames, median 0.7 ms, p99 about 11 ms), against 30 or more with the
-  default and `--geo chip` (p99 about 21 ms). *Not confirmed:* what the game
-  does once a second (60 frames) that costs the TGP's program this much;
-  the cost is in running the geometry chip's program on that frame (the
-  native geometrizer does that work in the host), likely a once-a-second
-  job in the TGP's data. Not fixed: it is the chip's own work, and one
-  slow frame a second is under the audio queue's slack (docs/play.md,
-  "Slowdowns").
+- *Confirmed (by running it, 2026-11-27):* the slow frame every 60 frames
+  (1, 61, ..., 1381, 1441; 18 to 28 ms against a 0.4 ms median with the
+  JIT) was **not** the geometry chip's program, and not the JIT. It was
+  photo mode's history (`model2::photo::History`, on by default, `--photo-history`),
+  which takes a save state of the machine every 60 frames on the game's
+  thread. Sega Rally's state is 24 MB (its RAMs), and `save_state` grew a
+  fresh buffer by doubling and faulted it in: 20.4 ms each (`photo
+  history` line of `--perf-log`). `--photo-history 0` removed every slow
+  redraw (0 of 1500); an earlier note here blamed the TGP's program
+  because `--geo native` got rid of them (an unexplained side effect).
+  Headless `run`, which has no history, shows no 60-frame period, and the
+  TGP's own runs are 1 to 10 ms at worst, spread over the game (timed
+  around each run of the chip). Fixed: the history reuses the buffers
+  its compressing threads are done with (`Machine::save_state_into`), so
+  a state costs a copy: 4.5 ms each, 0 slow redraws in 1500 frames, p99
+  4.9 ms (from 19.4), worst 15.3 ms (from 28.2). The saved bytes are the
+  same, so the state hash is unchanged. The same cause is behind the
+  17.8 ms at frame 1381 (1381 = 23 x 60 + 1) with the interpreter.
+  Games with smaller states paid less, so showed it less.
 
 ## Idle loop
 

@@ -334,9 +334,18 @@ impl Machine {
     /// The whole machine's state (see `remodel-state`): load it into a
     /// machine built from the same ROMs with [`Machine::load_state`].
     pub fn save_state(&mut self) -> Vec<u8> {
+        self.save_state_into(Vec::new())
+    }
+
+    /// [`Machine::save_state`] written into `buf` (emptied first), whose
+    /// capacity is kept: a state of tens of MB made often (photo mode's
+    /// history) then costs a copy, not a fresh allocation grown by
+    /// doubling and faulted in page by page.
+    pub fn save_state_into(&mut self, mut buf: Vec<u8>) -> Vec<u8> {
         use state::State as _;
         self.bus.geo.sync();
-        let mut w = state::Writer::default();
+        buf.clear();
+        let mut w = state::Writer { buf };
         w.buf.extend_from_slice(format!("REMODEL-STATE-{STATE_FORMAT}\n").as_bytes());
         self.program_hash.save(&mut w);
         self.cpu.save(&mut w);

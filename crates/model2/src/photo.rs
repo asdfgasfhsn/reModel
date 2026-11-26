@@ -318,6 +318,10 @@ pub struct History {
     inputs: VecDeque<(u64, Inputs)>,
     /// The machine's loads when recording began: a load starts afresh.
     loads: u64,
+    /// Buffers the compressing threads are done with, for the next save
+    /// state (about the size of the state each: a fresh one costs more
+    /// than the copy into it).
+    spare: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     /// Save states taken so far, and the host time it took (on the
     /// game's thread; compressing them is on threads of their own).
     pub taken: u64,
@@ -336,6 +340,7 @@ impl History {
             keys: VecDeque::new(),
             inputs: VecDeque::new(),
             loads: 0,
+            spare: Arc::default(),
             taken: 0,
             cost: Default::default(),
         }
@@ -367,12 +372,23 @@ impl History {
         }
         if self.keys.is_empty() || f.is_multiple_of(self.every) {
             let t = std::time::Instant::now();
-            let raw = m.save_state();
+            let buf = self.spare.lock().map_or_else(|_| Vec::new(), |mut s| s.pop().unwrap_or_default());
+            let raw = m.save_state_into(buf);
             self.cost += t.elapsed();
             self.taken += 1;
+            let spare = self.spare.clone();
             let h = std::thread::Builder::new()
                 .name("photo history".into())
-                .spawn(move || png::zlib::compress(&raw))
+                .spawn(move || {
+                    let packed = png::zlib::compress(&raw);
+                    if let Ok(mut s) = spare.lock() {
+                        // Two are enough: one being filled, one being packed.
+                        if s.len() < 2 {
+                            s.push(raw);
+                        }
+                    }
+                    packed
+                })
                 .expect("start a thread");
             self.keys.push_back((f, Key::Pending(h)));
         }

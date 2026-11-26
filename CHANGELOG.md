@@ -16,6 +16,7 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 ## Unreleased
 
 - `remodel scene probe NAME --at X,Y[,W,H]` (`make scene-probe`) and the server verbs `scene.probe` and `session.probe`: what draws each game pixel, top to bottom (2D plane, tile cell, `tile_KEY`, region; 3D texture key, palette variant, polygon) and which pack file supplies it, with no GPU (docs/texture-packs.md, "Probing a pixel").
+- Player: photo mode's history no longer causes a slow frame every second. Its save state (24 MB in Sega Rally) reuses buffers instead of allocating a new one: 20 ms to 4.5 ms on the game's thread, and no slow redraws in a 1,500-frame `--perf-log` run (they came every 60 frames).
 
 ## 0.16.0 (2026-11-26): live game sessions, per-palette texture packs, sharing audit
 
