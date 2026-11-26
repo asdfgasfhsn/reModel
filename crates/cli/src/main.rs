@@ -33,6 +33,9 @@ mod serve;
 #[cfg(all(feature = "serve", unix))]
 mod session;
 mod sharc;
+mod sharing;
+mod sharing_cmd;
+mod sharing_collect;
 mod sound_render;
 mod soundtrack;
 mod spec_stats;
@@ -1313,6 +1316,10 @@ fn default_run_dir(game: &str) -> PathBuf {
 }
 
 fn cmd_studio(o: &Opts) -> ExitCode {
+    // `studio sharing` answers with its own data (sharing_cmd.rs).
+    if o.args.get(1).map(String::as_str) == Some("sharing") {
+        return sharing_cmd::main(o);
+    }
     let ctx = studio::Ctx {
         game: o.game_id.clone(),
         rom: o.rom_dir.clone(),

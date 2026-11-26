@@ -595,6 +595,8 @@ studio-regions: release ## STUDIO's regions and which have a replacement (STUDIO
 	$(RUN) studio regions $(STUDIO) $(STUDIO_ARGS)
 studio-seam: release ## Seam check of STUDIO's pack/ (STUDIO_ARGS="--from draft", --strict fails on suspects): per wrap mode, repeat edges against each other and edge lines on mirrored ones, against the originals
 	$(RUN) studio seam $(STUDIO) $(STUDIO_ARGS)
+studio-sharing: release ## Who shares which texture and does the pack draw each owner consistently: reads every scene of STUDIO that has a local copy (no ROM, no GPU), groups the palettes drawn together into owners (STUDIO/owners.txt names them, `NAME|pal,pal`), compares what the pack draws for each (key, palette) with the original through that palette; writes STUDIO/sharing/sharing.tsv, exit 1 when a character has a flag (STUDIO_ARGS="--sheets DIR --write-map --refresh --skin-limit X --other-limit X --variant-limit X --scene A,B --json"; docs/uplift-studio.md, "Sharing and owners")
+	$(RUN) studio sharing $(STUDIO) $(STUDIO_ARGS)
 img: release ## Image tools, no ROM (docs/uplift-studio.md, "Image tools"): IMG_ARGS="sheet OUT.png A.png B.png --cols 2" (labelled contact sheet) | "diff A.png B.png [--max-changed PCT] [--out HEAT.png]" | "stats A.png [--region X,Y,W,H]"; add --json for one object; nothing is overwritten without --replace
 	$(CAP) $(REMODEL) img $(IMG_ARGS)
 

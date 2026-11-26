@@ -426,7 +426,57 @@ fn scene_level(
             "restyle what the scene draws most: `remodel scene render NAME --pack pack/ --against original`",
         ));
     }
+    sharing_gate(&game_id, project, pack_dir, limits, release, out);
     Ok(())
+}
+
+/// `sharing`, optional: with an `owners.txt` in the project, each named owner's flags
+/// (`remodel studio sharing`) against the limit (`sharing` in gates.txt, default 0).
+fn sharing_gate(
+    game_id: &str,
+    project: &Path,
+    pack_dir: &Path,
+    limits: &Limits,
+    release: bool,
+    out: &mut Vec<GateResult>,
+) {
+    if !project.join("owners.txt").is_file() {
+        return;
+    }
+    let lim = limits.get("sharing", gates::SHARING_MAX_FLAGS);
+    let lims = crate::sharing::Limits::default();
+    let run = crate::sharing_cmd::run_project(&crate::sharing_cmd::Request {
+        game: game_id,
+        project,
+        owners_file: None,
+        pack_dir: Some(pack_dir),
+        only: &[],
+        limits: &lims,
+        refresh: false,
+        progress: false,
+    });
+    let Ok(run) = run else {
+        return;
+    };
+    for o in run.report.owners.iter().filter(|o| o.named) {
+        let n = o.flags as f64;
+        out.push(row(
+            &o.name,
+            "sharing",
+            n,
+            lim,
+            match (n <= lim, release) {
+                (true, _) => Verdict::Pass,
+                (false, true) => Verdict::Error,
+                (false, false) => Verdict::Warn,
+            },
+            format!(
+                "flags on the owner's parts at most {lim}: {n} (a part's tone off its owner's by more than {} for skin, {} for the rest; a part the pack does not draw; a plain image where another palette of the key differs by more than {})",
+                lims.skin, lims.other, lims.variant
+            ),
+            "see which parts: `remodel studio sharing PROJECT --sheets DIR`; give the key a variant (`studio select --key`, then a `tex_KEY~PAL` image) or repaint the part",
+        ));
+    }
 }
 
 fn write_report(dir: &Path, results: &[GateResult], data: &Value, failing: &[&GateResult]) -> Result<(), String> {

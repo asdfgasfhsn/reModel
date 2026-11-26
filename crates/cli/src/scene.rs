@@ -256,14 +256,14 @@ fn has_capture(dir: &Path) -> bool {
 }
 
 /// The one frame directory in a scene's capture.
-fn capture_frame_dir(root: &Path) -> Option<PathBuf> {
+pub(crate) fn capture_frame_dir(root: &Path) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).filter(|p| p.join("meta.txt").is_file()).collect();
     dirs.sort();
     dirs.into_iter().next()
 }
 
-fn state_of(dir: &Path, recipe: Option<&Recipe>) -> State {
+pub(crate) fn state_of(dir: &Path, recipe: Option<&Recipe>) -> State {
     let Some(meta) = read_meta(dir).filter(|_| has_capture(dir)) else { return State::Missing };
     let Some(r) = recipe else { return State::Unreproducible };
     if let Some(why) = meta.get("stale") {

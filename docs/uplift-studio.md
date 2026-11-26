@@ -132,6 +132,7 @@ scriptable (below, "Strict, with answers").
 | `variants` | one restyled image for every key of its surface, tinted per key by one ratio (the older step; `bake` replaces it where the catalogue has ramps) |
 | `text` | text to tiles (below) |
 | `seam` | the seam check (below); the `seam` gate runs the same test |
+| `sharing` | who shares which texture, by palette and owner, and whether the pack draws each owner consistently (below, "Sharing and owners"); no ROM, no GPU, answers with its own data under `--json` |
 | `compare` | before and after sheets (below) |
 
 **Several maps.** A project may hold more than one texture map: a course
@@ -640,6 +641,7 @@ missing original makes them `info`. `project approve` calls
 | `known` | Every `tex_` and `tile_` file is a name of the project's texture map (`map/`), and every `art_` file an artwork of it (by surface key and size); the files that are not are listed | warn |
 | `selected` | Every selected row has an approved image, its own or its artwork's `art_` image | warn; error with `--release` |
 | `coverage` | Per scene with a local copy (`scene make`; a GPU, no ROM): at least 10% of the native view's pixels differ from the original once the pack is drawn | warn; error with `--release` |
+| `sharing` | Optional, with an `owners.txt` in the project: per named owner, at most 0 flags of `studio sharing` (parts off their owner's tone, parts the pack leaves as the original, plain images where the key's palettes differ: "Sharing and owners"); the scenes made, no GPU, no ROM | warn; error with `--release` |
 
 `coverage` counts changed pixels (`scene render --against original`'s
 `changed_share`), which is a lower bound of "drawn from replaced
@@ -666,7 +668,7 @@ and `report.md` (totals, failures first, overrides, what was not run).
 ([uplift/quality-gates.md](uplift/quality-gates.md), E1 and E2). A project
 overrides one in `gates.txt`: `GATE`, `VALUE` and a `REASON`, by tabs, for
 `file` (the biggest scale), `alpha`, `alpha.soft`, `seam`, `changed`,
-`noise`, `budget` (MB), `flicker` and `coverage` (percent). An override
+`noise`, `budget` (MB), `flicker`, `coverage` (percent) and `sharing` (flags). An override
 without a reason, or for an unknown gate, is refused, and the report lists
 each one.
 
@@ -676,6 +678,111 @@ original, per 100 frames drawn, pass `--limit PX` (default 5,000); it
 prints `flicker gate ...` with the number and the limit. `studio seam
 --strict` fails on a suspect, and `studio status --strict` when a selected
 row has no approved image (the `selected` gate).
+
+## Sharing and owners
+
+A game that gives each object its colours through a colour table draws one
+texture key through several palettes (docs/texture-packs.md, "Per-palette
+variants"). `studio sharing` finds out who shares what, and whether the pack
+treats each owner alike. It is the audit that the one-off fixes of Top Skater's
+skin ("Skater skin" in docs/games/topskatr.md) were missing.
+
+```sh
+remodel --game topskatr studio sharing STUDIO [--owners FILE] [--pack DIR] [--scene A,B] \
+        [--sheets DIR] [--tsv FILE] [--fix DIR] [--write-map] [--refresh] [--all-rows] \
+        [--skin-limit X] [--other-limit X] [--variant-limit X] [--json]
+make studio-sharing STUDIO=out/topskatr/studio/cel-pack5 STUDIO_ARGS="--sheets DIR"
+```
+
+It needs no ROM and no GPU, only the project's scenes made (`scene make`, "Scenes"):
+every scene of the project's `scenes.txt` that has a local copy is drawn by the
+software renderer's identification pass (what `texmap` does, without the picture), and
+what each draws is kept per scene in `STUDIO/sharing/` (the stamp of `scene.txt` says
+when a scene is read again; 360 Top Skater scenes take about 8 s on 16 cores the first
+time and 1 s after; `--refresh` draws them all again). The store also keeps every
+(key, palette)'s mean colour and its original image through that palette
+(`sharing/orig/`), which the sheets and `--write-map` use.
+
+**What it reports.** One row per (owner, key, palette): the scenes and object blocks
+("groups") it appears in, its pixels and its share of the key's pixels over all palettes,
+what the pack draws for it (`variant`, the key's `plain` image, or `original`: nothing),
+the original's mean colour through the palette and the pack's (`orig`, `pack`), and the
+flags. Output: a TSV (`STUDIO/sharing/sharing.tsv`, or `--tsv`), the owner table and the
+flagged character parts as text, and with `--json` the shared answer envelope: `data.owners[]`
+(name, character, palettes, objects, scenes, `stems`, pixels, parts, flags, `skin_ratio`),
+`data.flags`, `data.rows[]` (the flagged ones; `--all-rows` for all, at most 400), `limits`,
+`failed[]`. Exit 1 when a character has a flag.
+
+**Owners.** The game draws an object's parts as consecutive object blocks of one 3D window
+(Top Skater: a skater and his board are blocks 50 to 84 of window 3, the course is window 2),
+so a **run** of blocks of one window of one scene (a gap of at most 3 blocks) is one
+object, and the palettes drawn in it (at least 24 pixels) are its signature. An **owner** is
+a set of palettes: the signatures that belong together.
+
+- `STUDIO/owners.txt` names owners, `NAME|pal,pal,...` (palette ids as texmap prints `pal=`,
+  `#` comments). A named owner takes a run when at least half the run's palettes are
+  its own (a run two owners take equally, such as a board palette that both share and nothing else,
+  goes to both). Named owners are **characters**.
+- The runs no named owner takes and that show two or more palettes are clustered as
+  `auto-N` (two signatures are one cluster when they share half their union; N by pixels),
+  and `-` holds what is left. Each owner lists its scenes as name stems (`alex x22`), so
+  an auto cluster is named by looking at them; the clusters of Top Skater's skaters fall out
+  one each, the courses' windows as a lot of small ones.
+- A palette may belong to several owners (Ash and Alex draw the same skin ramp,
+  the board's is everyone's), which is why a run, not a palette, is the unit.
+
+**Consistency, per owner.** The tone of a part is the mean colour of the opaque texels of
+the image the pack draws for it, against the original's through the palette (`texture_look`'s
+ramp: what the game draws). The look and the lighting multiply both the same way, so neither
+is applied; what is compared is the ratio of the two. For each part the tool takes where
+the owner's other parts put it: the weighted median (by 1 + log10 of pixels) of the others'
+pack/original ratios, per channel from the other skin parts (two or more), else one brightness
+ratio from the other parts, and compares the part's tone with the original times that
+(`dev`). Skin is "warm hue, mid-light, not saturated" in the original's tone and the
+pack's (`skin_like`: a rule of thumb, so blond hair and red trunks are not skin). A skin part
+is held to the colour (CIE76 colour difference, `--skin-limit` 8), any other part to its
+brightness only (L*, `--other-limit` 15), because a comic look recolours clothes on purpose.
+Parts with near-black originals leave the median out. Flags:
+
+| Flag | Raised when | Limit |
+|---|---|---|
+| `outlier` | the part's `dev` is over the limit | `--skin-limit` 8 (skin), `--other-limit` 15 (the rest) |
+| `original` | a **character's** part is drawn by the pack as the original (no image) | none |
+| `needs-variant:PAL` | the part draws the key's plain image, PAL draws it too, and the tones the two should have differ by more than the limit | `--variant-limit` 10 |
+
+A named owner takes a run only when it holds at least two of the owner's own palettes (those
+at most two owners list: a board or shoe palette everyone draws does not count), so the
+course's objects are not taken for a skater's.
+
+**Sheets.** `--sheets DIR` writes `owner-NAME.png`: for the owner's parts, biggest first (48),
+the original through its palette on the left and what the pack draws on the right, the key,
+palette, draw (`v`, `p`, `o`) and `dev` under each, flagged ones in red.
+
+**`--fix DIR`** writes, for every flagged part of a character, the image `tex_KEY~PAL_WxH.png`
+(the plain name for a key the scenes draw through one palette) repainted to the tone the owner's
+others put it at, moved only halfway into the limit (`target`; a non-skin part keeps its hue): the pack's
+image for that palette, or the original through the palette when the pack has none; a starting point to look
+at, `studio import`, `approve` and `pack`.
+
+**`--write-map`** writes `STUDIO/map/sharing/`, a texture map (inventory and `textures/`) with a
+row per (key, palette) for every key the scenes draw through more than one palette
+and the plain row (the palette drawn most), the plain name where a key has one. The
+project's maps are merged by name, the first map that has a name winning, so this adds only the
+rows the others lack: **`studio select --key KEY` finds every palette of a key**, also
+one that the project's texmap saw through one palette only (a key
+seen through a single palette had no variant row to select).
+
+**The gate.** With an `owners.txt` in the project, `pack check` (level `scene`, which also
+needs the scenes) runs `sharing`: one result per named owner, its flags against the limit
+(`sharing` in `gates.txt`, default 0 flags: a warning, an error with `--release`).
+Without `owners.txt` the gate is not run.
+
+**Limits.** An owner is found among objects drawn together, so two skaters in one window and
+run are one owner (it happens when the rival and the player are neighbours in the block
+numbers; the run gap is `RUN_GAP`). The tone is a mean, so a part whose pattern changed but
+whose mean did not is not flagged, and an ink-heavy image (a logo) cannot reach a white original's mean; the look is a common factor, not applied. Skin is found
+by colour. The pack's `art_` images are not read (a key an artwork draws counts as
+`original`). Only the project's own `pack/` is read, not a stack.
 
 ## Regions
 

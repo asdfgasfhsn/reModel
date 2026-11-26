@@ -390,7 +390,7 @@ fn glyph(c: char) -> [&'static str; 5] {
 }
 
 /// `text` drawn at (x, y), each font pixel k x k, clipped to `max_w` pixels.
-fn draw_text(im: &mut Image, text: &str, x: usize, y: usize, k: usize, max_w: usize, colour: [u8; 3]) {
+pub(crate) fn draw_text(im: &mut Image, text: &str, x: usize, y: usize, k: usize, max_w: usize, colour: [u8; 3]) {
     let adv = 4 * k;
     for (i, c) in text.chars().enumerate() {
         if (i + 1) * adv > max_w {

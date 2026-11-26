@@ -67,6 +67,8 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
          [--run-args \"--height 1080 --aspect 16:9\"] [--force]   (needs the ROMs)
   compare PROJECT --scene NAME[,NAME..]|all [--pack DIR] [--into DIR] [--view native|H[,A:B]]
          before and after from the scenes' captures: no run, no ROM (remodel scene make first)
+  sharing PROJECT [--owners FILE] [--pack DIR] [--scene NAME,..] [--sheets DIR] [--tsv FILE] [--write-map] [--refresh]
+         who shares which texture and whether the pack draws each owner consistently (`studio sharing --help`)
   A run's output is never reused: compare refuses a folder that holds one unless --force reruns it.
 Every command takes --json: one object (ok, code, error, data, warnings, next) instead of text.
 Exit codes: 0 done, 1 a check failed, 2 the request was wrong (unknown names and options are errors),

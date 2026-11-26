@@ -585,6 +585,14 @@ its own subject with a `pal=` field.
   names as any; `artworks` lists a variant as a colouring of its artwork with its
   own ramp, so `studio bake` makes variants from an `art_` image through each
   palette's ramp.
+- `studio sharing STUDIO`: the audit of variants. Over the project's scenes it lists, per key,
+  each palette it is drawn with (the scenes and object blocks, the pixel share, and what the
+  pack draws for it: `variant`, `plain` or `original`), groups the palettes drawn together on one
+  object into **owners** (a skater; named in the project's `owners.txt`), and flags the parts
+  whose drawn image is off their owner's tone, the plain images drawn where the key's palettes
+  differ, and the characters' parts the pack leaves as the original; `--fix DIR` repaints those
+  as variants and `--write-map` gives every palette of a shared key a row to select
+  (docs/uplift-studio.md, "Sharing and owners"). `pack check` has it as the optional `sharing` gate.
 - `scene render --json`: `assets` lists each texture the pack answered for, biggest
   first: `name` (a variant's name when one drew), `variant` (its palette id or
   null), `outcome`, `polys`, `pixels`; `variants_drawn` counts the variants.

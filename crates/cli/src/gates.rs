@@ -58,6 +58,9 @@ pub const NOISE_MAX: f64 = 16.0;
 pub const FLICKER_PX_PER_100_FRAMES: f64 = 5000.0;
 /// `coverage`: the share of a scene's pixels that differ from the original
 /// once the pack is drawn, in percent. Uncalibrated: a project sets its own.
+/// `sharing`: flags allowed per owner (`studio sharing`; the gate runs only for a project with an `owners.txt`).
+pub const SHARING_MAX_FLAGS: f64 = 0.0;
+
 pub const COVERAGE_MIN_PCT: f64 = 10.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -155,8 +158,8 @@ pub struct Limits {
     set: BTreeMap<String, (f64, String)>,
 }
 
-pub const LIMIT_GATES: [&str; 9] =
-    ["file", "alpha", "alpha.soft", "seam", "changed", "noise", "budget", "flicker", "coverage"];
+pub const LIMIT_GATES: [&str; 10] =
+    ["file", "alpha", "alpha.soft", "seam", "changed", "noise", "budget", "flicker", "coverage", "sharing"];
 
 impl Limits {
     pub fn parse(text: &str) -> Result<Limits, String> {

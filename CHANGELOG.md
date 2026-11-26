@@ -15,6 +15,24 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Studio: `remodel studio sharing STUDIO` (`make studio-sharing`) audits which textures
+  share and whether the pack draws their owners consistently (docs/uplift-studio.md,
+  "Sharing and owners"). From the project's scenes (their captures, no ROM and no GPU;
+  360 Top Skater scenes in 8 s, then 1 s from `STUDIO/sharing/`) it lists, per texture
+  key, each palette it is drawn with (scenes, object blocks, pixel share, and what the
+  pack draws: variant, plain or original), groups the palettes drawn together on one
+  object (a run of object blocks in one 3D window) into owners, named in a small
+  `owners.txt` (`NAME|pal,pal,...`) and clustered as `auto-N` otherwise, and compares each
+  part's drawn tone (the mean colour of the pack's image) with the original seen through
+  its palette, against where its owner's other parts put it. It flags outliers (skin
+  12%, other parts 30%), a character's part drawn as the original, and a plain image that
+  serves palettes that look different. Output: a TSV, `--json` in the shared answer
+  envelope, a contact sheet per owner (the original through the palette next to what the
+  pack draws), `--fix DIR` (repainted variants of what is flagged on a character) and
+  `--write-map` (a texture map with a row per palette of each shared key, so
+  `studio select --key` finds a variant for a palette the project's texmap saw a key
+  through once or not at all). `pack check` runs it as the optional `sharing` gate when the
+  project has an `owners.txt`.
 - Moves (docs/uplift-studio.md, "Moves"): `remodel moves learn GAME --tours FILE...
   [--out FILE]` (`make moves-learn`) cuts recordings' race stretches into the input
   spans that recur (button taps and holds, analog steers by strength and duration,
