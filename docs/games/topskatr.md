@@ -458,6 +458,18 @@ blank EEPROM, as `tour run` starts).
   counts in 0x5dce20; the id then indexes 14 entries of the portrait and
   model data at 0x509de0.
 
+## Skater skin: shared textures, per-skater colour tables (2026-11-26)
+
+*Confirmed* (reModel texmap of select and race scenes of all eight skaters, `ramp=` per sighting; the drawn colour measured per texture over the pixels its id draws):
+
+- Skaters share skin textures, and the game colours a shared texture per skater through its colour table. A `tex_` key (the texels plus the colour-table address) is the same for two skaters, but the 16-colour ramp behind it differs, so the same key is a different skin tone. Example, key `3d5cfef2` (a hand): mean colour 172/131/100 on J, 229/169/152 on Alex, 210/156/148 on P-Nut. The drawn colour is the texture's own colour times about 0.9 (the polygon's shading), with no further tint; ratios drawn/texture 0.80 to 0.94 for skin.
+- The shared groups (select scenes of the six, Alex and P-Nut by their hidden-skater scenes):
+  - J and Alex: `8c132103`, `9beb999d`, `58ea7ba9`, `a7c6d18e`, `5cecd028`, `3d5cfef2` (arms, chest, hands). J's ramps give tan 172-176/131-134/100-103; Alex's give pale peach 229-236/169-175/152-158. `3d5cfef2` is also P-Nut's hand.
+  - Jill and P-Nut (the pale girl and the hidden lifeguard use the same body textures; P-Nut's ramp is a little pinker and darker, 207/153/145 against 216/171/165): `068bf7fc` (face), `0f3675cc`, `1660e12e` (calves; also Alex's legs), `34ecb775`, `411613f6`, `815dd6b9`, `8fd6ef22`, `b4948f9f`, `ceb680e0`. P-Nut's own: `e85dee9c`, `17997492`, `1493d185`.
+  - Kenta and Cookie: `9300e549` (hands). Ash and Alex: `2914da14` (neck). `2f468ad4` (the top) is Jill's grey-white and P-Nut's green.
+  - Race scenes: novice courses draw Ash, expert courses Jill; the other four skaters' races were made for this check.
+- *Consequence for a texture pack:* the pack draws a replacement image as painted for every skater that uses the key; the colour table does not re-tint it (checked: key `3d5cfef2` painted flat blue drew blue on J's and on P-Nut's hands). A pack therefore cannot give two skaters different tones through one shared key; one tone per key must serve all its users. Painting a shared key at one skater's tone makes the other skater patchy (a tan arm on a pink body). A per-colour-table variant would need the pack lookup to see the ramp (a code change, not built).
+
 ## Enhanced preset
 
 What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
