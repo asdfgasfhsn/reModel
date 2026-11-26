@@ -123,7 +123,7 @@ of the time went to the missing pieces below, not to the search itself.
 ## Addressed (2026-11-26, the same day)
 
 What the list above asked for, and where it went (design: scenes-and-server.md,
-"Slice 5 as built"; user-facing: ../uplift-studio.md, "Live sessions").
+"After the first real use"; user-facing: ../uplift-studio.md, "Live sessions").
 
 | Missing | Now |
 |---|---|

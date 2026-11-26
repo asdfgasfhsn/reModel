@@ -4,7 +4,7 @@ Shared words, roles and rules: [README.md](README.md). Status: the MVP
 slice at the end is built (2026-11-21) and its user-facing parts are in
 [../uplift-studio.md](../uplift-studio.md), "Scenes". The server and the
 live session's slice 2 are built (2026-11-26; "Slice 2 as built" below,
-[../uplift-studio.md](../uplift-studio.md), "Live sessions"); spines from a person's recording (slice 4) the same day, "Slice 4 as built"; what the first real use missed (watch, disasm, following, reads, until, presets) the same day, "Slice 5 as built". The rest
+[../uplift-studio.md](../uplift-studio.md), "Live sessions"); spines from a person's recording (slice 4) the same day, "Slice 4 as built"; what the first real use missed (watch, disasm, following, reads, until, presets) the same day, "After the first real use". The rest
 (`scene what/where/sheet/clip`, `--asset`, `--overlay`, facts, the side
 channel, `session.what`) is still a design.
 
@@ -544,7 +544,7 @@ measured numbers in [../uplift-studio.md](../uplift-studio.md), "Spines".
   positions), a nearest-neighbour structure (the scan is 645 rows for a 19,000
   frame run), and a cache shared between worktrees.
 
-### Slice 5 as built (2026-11-26): what the first real use missed
+### After the first real use (2026-11-26): what it missed, built
 
 The field notes ([session-field-notes.md](session-field-notes.md)) listed what a
 long task against the server lacked; this slice builds it. The verb table
