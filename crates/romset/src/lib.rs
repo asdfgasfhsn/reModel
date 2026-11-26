@@ -1026,17 +1026,10 @@ impl RomSet {
     /// second slot).
     pub fn region32_slots(&self, role: Role, slot: usize) -> Vec<u8> {
         let mut out = Vec::new();
-        let idx: Vec<usize> =
-            self.game.files.iter().enumerate().filter(|(_, f)| f.role == role).map(|(i, _)| i).collect();
-        for &[lo, hi] in idx.as_chunks::<2>().0 {
+        for [lo, hi] in role_pairs(self.game, role) {
             let pair = interleave16(&self.chips[lo], &self.chips[hi]);
-            if pair.is_empty() {
-                continue;
-            }
-            let start = out.len();
-            while out.len() - start < slot {
-                let n = pair.len().min(slot - (out.len() - start));
-                out.extend_from_slice(&pair[..n]);
+            if !pair.is_empty() {
+                fill_slot(&mut out, &pair, slot);
             }
         }
         out
@@ -1075,13 +1068,16 @@ impl RomSet {
         const SOCKET: usize = 0x20_0000;
         let mut out = Vec::new();
         for (_, c) in self.game.files.iter().zip(&self.chips).filter(|(f, c)| f.role == role && !c.is_empty()) {
-            let start = out.len();
-            while out.len() - start < SOCKET {
-                let n = c.len().min(SOCKET - (out.len() - start));
-                out.extend_from_slice(&c[..n]);
-            }
+            fill_slot(&mut out, c, SOCKET);
         }
         out
+    }
+
+    /// The MPEG sample ROM space of a music board ([`Role::MpegData`]): its
+    /// chips back to back.
+    pub fn mpeg_data(&self) -> Vec<u8> {
+        let files = self.game.files.iter().zip(&self.chips);
+        files.filter(|(f, _)| f.role == Role::MpegData).flat_map(|(_, c)| c.iter().copied()).collect()
     }
 
     pub fn chip(&self, name: &str) -> Option<&[u8]> {
@@ -1221,12 +1217,28 @@ pub fn variant_available(variant: &'static Variant, root: &Path) -> bool {
 
 /// Concatenate the interleaved pairs of chips with `role`, in manifest order.
 fn assemble(game: &Game, chips: &[Vec<u8>], role: Role) -> Vec<u8> {
-    let idx: Vec<usize> = game.files.iter().enumerate().filter(|(_, f)| f.role == role).map(|(i, _)| i).collect();
     let mut out = Vec::new();
-    for &[lo, hi] in idx.as_chunks::<2>().0 {
+    for [lo, hi] in role_pairs(game, role) {
         out.extend(interleave16(&chips[lo], &chips[hi]));
     }
     out
+}
+
+/// The manifest indices of the chip pairs (low half, high half) with
+/// `role`, in manifest order.
+fn role_pairs(game: &Game, role: Role) -> Vec<[usize; 2]> {
+    let idx: Vec<usize> = game.files.iter().enumerate().filter(|(_, f)| f.role == role).map(|(i, _)| i).collect();
+    idx.as_chunks::<2>().0.to_vec()
+}
+
+/// Append `data` to `out` as a slot of `slot` bytes: repeated to fill it,
+/// as a board decoding fewer address lines than the slot has.
+fn fill_slot(out: &mut Vec<u8>, data: &[u8], slot: usize) {
+    let start = out.len();
+    while out.len() - start < slot {
+        let n = data.len().min(slot - (out.len() - start));
+        out.extend_from_slice(&data[..n]);
+    }
 }
 
 /// Combine two 16-bit-wide chips into one 32-bit little-endian bus:
@@ -1234,9 +1246,7 @@ fn assemble(game: &Game, chips: &[Vec<u8>], role: Role) -> Vec<u8> {
 /// The manifest indices of `chip` and its partner, if `chip` is the low
 /// half of a [`Role::Polygons`] pair.
 fn polygon_pair(game: &Game, chip: &str) -> Option<(usize, usize)> {
-    let idx: Vec<usize> =
-        game.files.iter().enumerate().filter(|(_, f)| f.role == Role::Polygons).map(|(i, _)| i).collect();
-    idx.as_chunks::<2>().0.iter().find(|&&[lo, _]| game.files[lo].name == chip).map(|&[lo, hi]| (lo, hi))
+    role_pairs(game, Role::Polygons).into_iter().find(|&[lo, _]| game.files[lo].name == chip).map(|[lo, hi]| (lo, hi))
 }
 
 /// Restore link bit `bit` (8 or 9) of the polygon attribute words in a

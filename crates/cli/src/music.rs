@@ -7,17 +7,6 @@ use std::time::Instant;
 /// Host frames per second: the rate `run` stamps on `sound-tx.txt` lines.
 const HOST_FPS: f64 = model2::pacing::FPS;
 
-/// The MPEG ROM space: the `MpegData` chips, concatenated as plain bytes.
-fn mpeg_rom(roms: &RomSet) -> Vec<u8> {
-    roms.game
-        .files
-        .iter()
-        .zip(&roms.chips)
-        .filter(|(f, _)| f.role == Role::MpegData)
-        .flat_map(|(_, c)| c.clone())
-        .collect()
-}
-
 /// Write 16-bit PCM as a WAV file.
 pub fn write_wav(path: &Path, rate: u32, channels: u16, pcm: &[i16]) -> std::io::Result<()> {
     std::fs::write(path, sound::wav::encode(rate, channels, pcm))
@@ -39,7 +28,7 @@ fn db(x: f64) -> f64 {
 /// Writes `mpeg-ADDR.wav` (native rate), `.f32` (raw float, interleaved) and
 /// `.mp2` (the frames' bytes, for comparison with another decoder).
 pub fn mpeg_dump(roms: &RomSet, addr: u32, seconds: f64, dir: &Path) -> Result<(), String> {
-    let rom = mpeg_rom(roms);
+    let rom = roms.mpeg_data();
     let mut at = mpeg::sync(&rom, addr as usize).ok_or("no frame header at or after the address")?;
     if at != addr as usize {
         println!("first frame header at {at:#x}");
@@ -143,7 +132,7 @@ pub fn music_render(
     }
 
     let program = roms.game.files.iter().position(|f| f.role == Role::MpegCpu).ok_or("game has no DSB2")?;
-    let mut dsb = dsb::Dsb2::new(&roms.chips[program], mpeg_rom(roms));
+    let mut dsb = dsb::Dsb2::new(&roms.chips[program], roms.mpeg_data());
     let table = dsb.track_table();
     println!("firmware track table: {} tracks", table.len());
     let track_of = |start: u32, end: u32| table.iter().position(|&r| r == (start, end)).map(|i| i + 1);
@@ -328,7 +317,7 @@ fn dsb1_render(
     }
 
     let program = roms.game.files.iter().position(|f| f.role == Role::Dsb1Cpu).ok_or("game has no music board")?;
-    let mut dsb = dsb::Dsb1::new(&roms.chips[program], mpeg_rom(roms));
+    let mut dsb = dsb::Dsb1::new(&roms.chips[program], roms.mpeg_data());
     let table = dsb.track_table();
     println!("firmware track list: {} tracks", table.len());
     if let Some(dir) = soundtrack {

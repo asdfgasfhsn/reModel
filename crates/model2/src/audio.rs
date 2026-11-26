@@ -138,22 +138,13 @@ impl Live {
                 Sound::Scsp(Box::new(sound::SoundBoard::new(prog, roms.region16be(Role::Samples))))
             }
         });
-        let mpeg = || -> Vec<u8> {
-            roms.game
-                .files
-                .iter()
-                .zip(&roms.chips)
-                .filter(|(f, _)| f.role == Role::MpegData)
-                .flat_map(|(_, c)| c.iter().copied())
-                .collect()
-        };
         let chip = |role| roms.game.files.iter().position(|f| f.role == role).map(|i| &roms.chips[i]);
         let music = if let Some(prog) = chip(Role::MpegCpu) {
-            let mut d = dsb::Dsb2::new(prog, mpeg());
+            let mut d = dsb::Dsb2::new(prog, roms.mpeg_data());
             d.set_diagnostics(false);
             Some(Music::Dsb2(d))
         } else if let Some(prog) = chip(Role::Dsb1Cpu) {
-            let mut d = dsb::Dsb1::new(prog, mpeg());
+            let mut d = dsb::Dsb1::new(prog, roms.mpeg_data());
             d.set_diagnostics(false);
             Some(Music::Dsb1(d))
         } else {
