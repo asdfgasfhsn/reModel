@@ -155,11 +155,15 @@ impl Drop for SocketFile {
 
 pub const SERVE_USAGE: &str = "\
 remodel --game G serve [--socket [PATH]] [--marks N] [--max-step N] [--sessions N] [--tours FILE]... [--no-stdio]
+                       [--checkpoint-every N] [--index-every K]
   MCP (JSON-RPC, a message a line) on standard input and output, and with --socket on a Unix
   socket (default out/serve/GAME.sock, mode 0600). No network port is ever opened.
   --marks N       marks a session keeps (default 16)         --max-step N   frames one step runs (default 3600)
   --sessions N    sessions open at once (default 4)           --tours FILE   a project's tours, for `from: tour:..`
   --no-stdio      serve the socket only (stop with SIGTERM)
+  --checkpoint-every N / --index-every K   when an open makes a recording's spine: a checkpoint every N
+                  frames (default 600), a row of values every K (default 30); `session.open` and
+                  `spine.index` can also say it per call (`every`, `index_every`)
   Pictures and exported tours go to out/serve/GAME/ (--out DIR, before `serve`, moves them). Run it through tools/capped.
 ";
 
@@ -191,10 +195,13 @@ pub fn default_socket(game: &str) -> PathBuf {
     PathBuf::from("out/serve").join(format!("{game}.sock"))
 }
 
-/// `remodel serve`.
-pub fn run(o: &crate::Opts, roms: &romset::RomSet) -> ExitCode {
-    let mut args = o.args[1..].to_vec();
-    let parsed = (|| -> Result<(Config, Option<PathBuf>, bool), String> {
+/// What `remodel serve`'s options say: the config, the socket (if any) and
+/// whether standard input is left alone.
+pub type ServeOpts = (Config, Option<PathBuf>, bool);
+
+/// `remodel serve`'s options.
+pub fn parse_serve(mut args: Vec<String>, game_id: &str) -> Result<ServeOpts, String> {
+    {
         let mut cfg = Config::default();
         // `--socket` alone means the default place.
         let socket = match args.iter().position(|a| a == "--socket") {
@@ -206,7 +213,7 @@ pub fn run(o: &crate::Opts, roms: &romset::RomSet) -> ExitCode {
                         args.remove(i + 1);
                         p
                     }
-                    None => default_socket(roms.game.id),
+                    None => default_socket(game_id),
                 };
                 args.remove(i);
                 Some(path)
@@ -215,6 +222,8 @@ pub fn run(o: &crate::Opts, roms: &romset::RomSet) -> ExitCode {
         cfg.marks = number(&mut args, "--marks", cfg.marks as u64, 1)? as usize;
         cfg.max_step = number(&mut args, "--max-step", cfg.max_step, 1)?;
         cfg.sessions = number(&mut args, "--sessions", cfg.sessions as u64, 1)? as usize;
+        cfg.checkpoint_every = number(&mut args, "--checkpoint-every", cfg.checkpoint_every, 1)?;
+        cfg.index_every = number(&mut args, "--index-every", cfg.index_every, 1)?;
         while let Some(t) = take(&mut args, "--tours")?.map(PathBuf::from) {
             if !t.is_file() {
                 return Err(format!("--tours {}: no such file", t.display()));
@@ -236,7 +245,12 @@ pub fn run(o: &crate::Opts, roms: &romset::RomSet) -> ExitCode {
         }
         cfg.out = crate::OUT_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("out/serve"));
         Ok((cfg, socket, no_stdio))
-    })();
+    }
+}
+
+/// `remodel serve`.
+pub fn run(o: &crate::Opts, roms: &romset::RomSet) -> ExitCode {
+    let parsed = parse_serve(o.args[1..].to_vec(), roms.game.id);
     let (cfg, socket, no_stdio) = match parsed {
         Ok(p) => p,
         Err(e) => {
@@ -330,6 +344,7 @@ remodel [--game G] session VERB [name=value ...]        (session VERB is call se
   Run one verb on a running server (remodel serve --socket) and print its answer, the same envelope the
   MCP tool gives. A list takes its name more than once: inputs=start inputs=steer=0x80.
   --socket PATH   the server's socket (default out/serve/GAME.sock)
+remodel call VERB --help   the verb's text and arguments, from the verb table (no server needed)
 ";
 
 /// `remodel call VERB ...` and `remodel session VERB ...`.
@@ -348,6 +363,10 @@ pub fn call(o: &crate::Opts) -> ExitCode {
         let verb = if o.args[0] == "session" && !first.contains('.') { format!("session.{first}") } else { first };
         let v = session::find_verb(&verb)?;
         let pairs: Vec<String> = it.collect();
+        if pairs.iter().any(|p| p == "--help" || p == "-h") {
+            print!("{}", session::help(v));
+            return Ok(Answer::done(Value::Null));
+        }
         let tool_args = session::args_from_pairs(v, &pairs)?;
         session::validate(v, &tool_args)?;
         let socket = socket.unwrap_or_else(|| default_socket(&o.game_id));
@@ -357,6 +376,12 @@ pub fn call(o: &crate::Opts) -> ExitCode {
         Ok(a) | Err(a) => {
             let text = if a.data.is_null() {
                 String::new()
+            } else if let Some(t) = a.data["text"].as_str() {
+                // `session.read format=tsv`: the lines themselves.
+                t.to_string()
+            } else if let Some(l) = a.data["listing"].as_array() {
+                // `session.disasm`: the listing.
+                l.iter().filter_map(Value::as_str).map(|s| format!("{s}\n")).collect()
             } else {
                 serde_json::to_string_pretty(&a.data).unwrap_or_default() + "\n"
             };
@@ -511,6 +536,44 @@ mod tests {
 
     fn server() -> Server<'static> {
         Server::new(romset::games::find("topskatr").unwrap(), None, Config::default())
+    }
+
+    fn opts(args: &[&str]) -> Result<ServeOpts, String> {
+        parse_serve(args.iter().map(|s| s.to_string()).collect(), "topskatr")
+    }
+
+    #[test]
+    fn serve_options_include_the_spine_granularity() {
+        let (c, socket, no_stdio) = opts(&[]).unwrap();
+        assert_eq!((c.checkpoint_every, c.index_every), (crate::spine::CHECKPOINT_EVERY, crate::spine::INDEX_EVERY));
+        assert!(socket.is_none() && !no_stdio);
+        let (c, socket, _) =
+            opts(&["--socket", "--index-every", "10", "--checkpoint-every", "300", "--marks", "3"]).unwrap();
+        assert_eq!((c.checkpoint_every, c.index_every, c.marks), (300, 10, 3));
+        assert_eq!(socket.unwrap(), default_socket("topskatr"));
+        for bad in [
+            &["--index-every", "0"][..],
+            &["--index-every", "x"],
+            &["--index-every"],
+            &["--checkpoint-every", "0"],
+            &["--checkpoint-every", "-3"],
+            &["--no-stdio"],
+            &["--bogus"],
+        ] {
+            assert!(opts(bad).is_err(), "{bad:?}");
+        }
+        assert!(opts(&["--index-every", "0"]).unwrap_err().contains("--index-every wants a number, 1 or more"));
+        assert!(SERVE_USAGE.contains("--index-every K") && SERVE_USAGE.contains("--checkpoint-every N"));
+    }
+
+    #[test]
+    fn a_verbs_help_is_printable_for_every_verb() {
+        // `remodel call VERB --help` prints this; it must name every argument.
+        for v in VERBS {
+            let h = session::help(v);
+            assert!(h.contains(&session::usage(v)), "{}", v.name);
+        }
+        assert!(CALL_USAGE.contains("--help") || CALL_USAGE.contains("VERB"));
     }
 
     fn rpc(s: &mut Server, msg: Value) -> Value {

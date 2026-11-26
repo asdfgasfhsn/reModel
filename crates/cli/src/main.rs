@@ -708,7 +708,9 @@ pub static OVERLAY_MISS: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 
 fn parse_opts() -> Result<Opts, ExitCode> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    // `call VERB --help` and `spine --help` have help of their own.
+    let own_help = args.iter().any(|a| a == "call" || a == "session" || a == "spine");
+    if !own_help && args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
         return Err(ExitCode::SUCCESS);
     }
@@ -3416,7 +3418,7 @@ fn run(
     let _ = std::fs::remove_dir_all(&frames_dir);
     let _ = std::fs::create_dir_all(&frames_dir);
     if let Some(a) = std::env::var("REMODEL_WATCH").ok().and_then(|v| parse_num(&v)) {
-        m.bus.watch = Some((a, Vec::new()));
+        m.bus.watch = Some(Box::new(model2::bus::Watch::word(a)));
     }
     // Experimental (docs/hw/link-board.md): REMODEL_LINK=idle fits an idle
     // link board whatever the game's manifest says and traces every access
@@ -3741,9 +3743,10 @@ fn run(
         let _ = std::fs::write(dir.join("link-trace.txt"), text);
         println!("link trace    {} accesses ({}/link-trace.txt)", t.len(), dir.display());
     }
-    if let Some((a, log)) = &b.watch {
+    if let Some(w) = &b.watch {
+        let (a, log) = (w.ranges.first().map_or(0, |r| r.0), &w.hits);
         println!("watch {a:#010x}: {} writes", log.len());
-        for &(t, ip, addr, v, n) in log.iter().take(64) {
+        for &(t, ip, addr, v, n, _) in log.iter().take(64) {
             println!("  frame {:>6} ip {ip:#08x} {addr:#010x} <- {v:#x} ({n} bytes)", t / model2::bus::FRAME_CYCLES);
         }
     }

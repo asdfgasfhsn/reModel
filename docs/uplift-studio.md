@@ -1184,6 +1184,20 @@ make ram-pokes GAME=topskatr             # the table
 remodel ram show TOUR --at 5000,5300 0x5830b0:w   # the values at those addresses
 ```
 
+**A poke and the frame.** A poke is applied at the *start* of each frame it
+covers, before the game runs that frame, as the inputs are. In a live session
+(`session.poke`), a `session.read` right after a step therefore shows the
+poked value: it reads as if the game saw it, but the game has not run that
+frame yet, and a game that rewrites the word every frame (a position, a
+velocity, a counter derived from others) overwrites the poke before its own code
+reads it, so the poke does nothing to what it computes. Only a word nothing
+rewrites (a flag, a task entry) is held by a poke. The read says so in a
+warning when a poke covers a value it returns; `session.read when=before_poke`
+gives the bytes a poke of this frame covers as the previous frame left them, so
+an agent can tell what the game wrote from what the poke wrote; and
+`session.watch` shows who rewrites the word and where
+("Live sessions").
+
 `ram search` runs the tour from power-on and copies the two work RAMs
 (`0x200000`, 256 KB; `0x500000`, 1 MB) as each `--at` frame starts. A
 rule between each pair of snapshots keeps the addresses that follow it:
@@ -1204,6 +1218,11 @@ The third field says how the value was found, as the poke table's does, and
 marks what is unconfirmed. A value is found with `ram search` on a tour,
 then read against rendered frames of the same tour (`scene render`, or a
 scenes.txt recipe) at several frames before it goes in.
+
+A line `NAME|VALUE=NUMBER|note` (`racing|screen=7|...`) is not a value but a
+**named state** of one, so `session.step until: screen racing` reads the
+game's own word for it. Only codes with one meaning are named (`ram values`
+and the spine index skip these lines).
 
 ```sh
 make ram-values GAME=topskatr                          # the table (no ROM)
@@ -1357,13 +1376,16 @@ and the command line cannot drift; `remodel call --help` lists them):
 
 | Verb | Does |
 |---|---|
-| `session.open` | `from`: `power-on` (default), `scene:NAME` (a made scene's state, about 0.1 s), `tour:LABEL@FRAME`. Answers the session id, frame and state hash |
+| `session.open` | `from`: `power-on` (default), `scene:NAME` (a made scene's state, about 0.1 s), `tour:LABEL@FRAME`. `overlay` (with a tour): inputs added on top of the recording on the way there, as tour terms (`jumpfront@2560-3000`); the session exports as a branch from just before the overlay that carries it. `index_every` and `checkpoint_every`: the granularity if this open makes the spine. Answers the session id, frame and state hash |
 | `session.input` | Holds inputs from the current frame on, by the game's input names (`start`, `punch2`), analog channels (`steer=0x80`) and guns (`gun1=10:20`); an empty list releases all |
-| `session.step` | Runs `frames` (at most `--max-step`, default 3600), optionally with `inputs` for just those frames and `until` (`value NAME OP V`, OP `gt ge lt le eq ne`, a name of the game's value table; or `frames N`) |
+| `session.step` | Runs `frames` (at most `--max-step`, default 3600), optionally with `inputs` for just those frames; `follow: tour:LABEL` (applies that recording's inputs, frame by frame, with `inputs` added on top as an overlay; a recording's pokes are followed too); `until` (`value NAME OP V`, OP `gt ge lt le eq ne`; `distance NX,NY,NZ to X,Y,Z lt D`; `changes NAME`; `screen NAME` or a number; `frames N`; names from the game's value table) and answers `until_reading`; the writes a `session.watch` saw come back in `watch` |
 | `session.mark` / `restore` / `forget` | Named copies of the machine (at most `--marks`, default 16, each about 73 MB). `restore` returns the machine, the log and the held inputs |
-| `session.read` | Named values (the table of "Named values"), or raw `ADDR[:b\|w\|l]`; no names: all of the table |
+| `session.read` | Named values (the table of "Named values"), or raw `ADDR[:b\|w\|l][:signed\|:float]`, or a range `ADDR:LEN` / `ADDR..END` (a hex dump; with `:b\|w\|l` or `:signed\|:float` a list of values); no names: all of the table. `format`: `json` (default, a row a value), `compact` (one object, name to value) or `tsv` (a line a value, in `text`). `when: before_poke`: a value a poke of this frame covers reads as the previous frame left it ("Pokes") |
 | `session.poke` | Holds a value in RAM for some frames (a poke-table name or `ADDR:VALUE[:b\|w\|l]`); logged, and the exported tour is marked as a cheat run |
-| `session.camera` | Photo mode's camera words for the session's pictures (`orbit=30,tilt=-8,z=1`); render state only, never in the log |
+| `session.watch` | Reports writes to named values or `ADDR[:LEN]` during the next steps: each with the frame being run, the i960 instruction (`ip`) that wrote, the size and the value, in the step's `watch` (up to `limit`, default 200, counting the rest). It never changes the emulation (the same state hashes with and without) and a session's own pokes are not shown; no `what` reads the watch, an empty list clears it. See "Watching writes" below |
+| `session.disasm` | The main CPU's (i960) code at `addr`, `count` instructions (default 16), optionally from `back` bytes before; as the machine holds it, so it reads ROM or RAM code. An answer, not a file: listings are not committed |
+| `session.list` | The open sessions: id, where each started, frame, marks, held inputs, watch and camera |
+| `session.camera` | Photo mode's camera words for the session's pictures (`orbit=30,tilt=-8,z=1`), or `preset=chase\|side\|top` (a third-person view relative to the game's camera; more words may follow: `preset=side,fov=1.3`); render state only, never in the log. Tilt is positive for an eye above (looking down), negative for one under the floor. A preset moves the eye by shares of the scene's scale: an enclosed course (a hall) can put it inside a wall or ceiling, and the game draws little behind its own camera, so a view from further back shows a bare floor there |
 | `session.render` | Draws the current frame (`view`, `pack` layers, `look`, `crop`, `against`, `camera`) to `out/serve/GAME/NAME.png` and answers the path, size, polygon count and, against the original, the changed share |
 | `session.export` | The log as a branch tour line, `LABEL\|Nf\|from=SPINE@F INPUTS`; with `file`, written to `out/serve/GAME/FILE.tours`. `remodel tour run LABEL --tours FILE` replays it to the same state hash |
 | `session.close` | Frees the machine and its marks |
@@ -1378,6 +1400,46 @@ takes the `render` lock (`tools/lock`) only while the GPU draws; run it under
 `tools/capped` as above. `--sessions N` caps the sessions open (default 4),
 `--tours FILE` (as often as needed) adds a project's tours for `tour:` starts, and `--out DIR`
 (before `serve`) moves the pictures and exported tours.
+
+`remodel call VERB --help` prints a verb's text and arguments from the table
+(no server needed); `remodel call --help` lists the verbs. `--checkpoint-every N`
+and `--index-every K` on `serve` set the granularity of a spine an open makes
+(the defaults are 600 and 30 frames; `session.open` and `spine.index` can also
+say it per call).
+
+**Watching writes.** The question "does the game rewrite this word, and
+where?" takes `session.watch what=clock what=0x5830b0:16` and a step: the
+step's answer has `watch.hits`, each `{frame, ip, addr, size, value, raw,
+name}`. `frame` is the frame being run when the write happened (a write while
+the machine runs from frame F to F+1 says F); `ip` is the i960 instruction that
+wrote, for `session.disasm` (a recompiled block reports its own instruction; the
+DMA-like writers of the copro do not report one); `value` is decoded when the
+write is exactly a named value's width, `raw` always. The watch is a check on
+the bus's memory write, one `Option` test that costs nothing measurable when
+none is set; with one set the CPU is slower (about 1% on the interpreter;
+with `--jit` the fast memory path is off while a watch is set, 804 to 580
+frames a second on Top Skater's race). The emulation does not change: a test
+compares the state hash of a step with and without a watch, and the JIT's
+too. A session's own pokes are not shown, as they are not the program's writes.
+A write is reported as the program made it, so a write the game makes later in
+the same frame (a rewrite) shows as its own hit: that is how the first real use
+found that the game rewrites the values the secret-event check reads (a one-off local patch then; now a verb).
+
+**Following a recording.** `session.step follow: tour:LABEL frames: N` applies
+that tour's inputs for the frames stepped, as a replay would: from a spine
+opened at a frame, it is "play the recording on from here". `inputs` is then an
+overlay held on top for those frames (`follow: rec, inputs: [jumpfront]` holds
+jump on top of the recording's own presses); without `inputs`, nothing is added,
+and the session's held inputs are not used. A tour that pokes is followed with
+its pokes (the session is then a cheat run, as an export says). The log has the
+inputs, so `session.export` after a follow writes them as terms and replays to
+the same hash (a test compares a follow with `tour run` of the same tour, and a
+follow with an overlay with a hand-written branch). To change the recording's
+*past* (the overlay a recording needs before the frame you open at), open with
+`overlay`: `session.open from: tour:rec@3072 overlay: [jumpfront@2560-3000]`
+loads the checkpoint before the overlay's first frame, replays to the frame with
+the overlay's inputs on top and exports as a branch from the frame before the
+overlay, the recording's own terms from there restated as the branch's.
 
 **Checking it.** `make serve-check` starts the binary and plays an MCP client
 against it on a real game: initialize, the tool list, a session opened at

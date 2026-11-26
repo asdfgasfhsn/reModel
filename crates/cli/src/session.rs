@@ -71,7 +71,7 @@ const CAMERA: Arg = arg(
     "camera",
     Ty::Str,
     false,
-    "photo mode's camera words for this picture: orbit=30,tilt=-8,z=1 (back, orbit, tilt, yaw, pitch, roll, x, y, z, fov, near, hud)",
+    "photo mode's camera words for this picture: orbit=30,tilt=-8,z=1 (back, orbit, tilt, yaw, pitch, roll, x, y, z, fov, near, hud), or preset=chase|side|top first (a third-person view relative to the game's camera)",
 );
 const NAME: Arg = arg("name", Ty::Str, false, "file name stem for the picture (letters, digits, - and _)");
 
@@ -82,6 +82,9 @@ pub static VERBS: &[Verb] = &[
         about: "Open a session: a machine of its own that runs only when stepped. from: power-on, scene:NAME (a made scene's state) or tour:LABEL@FRAME (as a branch tour does).",
         args: &[
             arg("from", Ty::Str, false, "power-on (default), scene:NAME or tour:LABEL@FRAME"),
+            arg("overlay", Ty::List, false, "with tour:LABEL@FRAME: inputs added on top of the recording on the way there, as tour terms with frames (jumpfront@2560-3000); the session then exports as a branch that carries them"),
+            arg("index_every", Ty::Int, false, "when this open makes the recording's spine: a row of values every this many frames (default: the server's --index-every, 30)"),
+            arg("checkpoint_every", Ty::Int, false, "when this open makes the recording's spine: a checkpoint every this many frames (default: the server's --checkpoint-every, 600)"),
             arg("game", Ty::Str, false, "the game; must be the one this server runs"),
         ],
     },
@@ -92,12 +95,13 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "session.step",
-        about: "Run frames, and only these. Optionally with inputs for just those frames, and stopping early at a condition. Never more than the server's --max-step frames.",
+        about: "Run frames, and only these. Optionally with inputs for just those frames, following a recording's inputs (`follow`, with `inputs` as an overlay held on top), and stopping early at a condition. Writes watched by session.watch during the step are reported in `watch`. Never more than the server's --max-step frames.",
         args: &[
             SESSION,
             arg("frames", Ty::Int, true, "how many frames to run (at most --max-step)"),
-            arg("inputs", Ty::List, false, "inputs held for just this step (as session.input)"),
-            arg("until", Ty::Str, false, "stop early: `value NAME OP V` (OP gt ge lt le eq ne; NAME from the game's value table) or `frames N`"),
+            arg("inputs", Ty::List, false, "inputs held for just this step (as session.input); with follow, an overlay added on top of the recording's"),
+            arg("follow", Ty::Str, false, "tour:LABEL (or LABEL): apply that tour's inputs, frame by frame, for the frames stepped (the held inputs are not used; `inputs` is added on top). A tour with pokes is followed with its pokes (a cheat run)"),
+            arg("until", Ty::Str, false, "stop early: `value NAME OP V` (OP gt ge lt le eq ne), `distance NX,NY[,NZ] to X,Y[,Z] OP D` (names from the game's value table), `changes NAME` (differs from the step's start), `screen NAME|N` (the table's named screens), or `frames N`"),
         ],
     },
     Verb {
@@ -117,9 +121,34 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "session.read",
-        about: "Read named values from the game's value table, or raw memory as ADDR[:b|w|l] (little-endian; default l). No names: every named value.",
-        args: &[SESSION, arg("names", Ty::List, false, "value names, or ADDR[:b|w|l]")],
+        about: "Read named values from the game's value table, or raw memory: ADDR[:b|w|l][:signed|:float] (little-endian; default l), or ADDR:LEN (or ADDR..END) for a range, as a hex dump (with :b|w|l and :signed|:float a list of values). No names: every named value. A poke is applied at the start of the frame it covers, so right after a step a poked value reads as the poke wrote it, before the game has run that frame (and the game may rewrite it as it runs): `when=before_poke` reads the poked bytes as the previous frame left them.",
+        args: &[
+            SESSION,
+            arg("names", Ty::List, false, "value names, or ADDR[:b|w|l][:signed|:float], or ADDR:LEN / ADDR..END"),
+            arg("format", Ty::Str, false, "json (default: a row a value), compact (one object, name: value) or tsv (a line a value, in `text`)"),
+            arg("when", Ty::Str, false, "after (default: as the machine is, pokes of this frame applied) or before_poke (bytes a poke of this frame covers read as the previous frame left them)"),
+        ],
     },
+    Verb {
+        name: "session.watch",
+        about: "Watch writes to memory during steps: WHAT is value names or ADDR[:LEN] (LEN bytes, or b|w|l; default 4). The next steps report every write that touches one (up to `limit` a step) with the frame being run, the i960 instruction that wrote (`ip`), the size and the value. A watch never changes the emulation (state hashes are the same with and without) but runs the CPU slower while it is set, and a session's own pokes are not shown. No `what`: the current watch; an empty list clears it.",
+        args: &[
+            SESSION,
+            arg("what", Ty::List, false, "value names, or ADDR[:LEN]; an empty list clears the watch"),
+            arg("limit", Ty::Int, false, "most writes kept in a step (default 200, at most 5000)"),
+        ],
+    },
+    Verb {
+        name: "session.disasm",
+        about: "Disassemble the main CPU's (i960) code at an address, as the machine holds it now (ROM or RAM). The listing is an answer, not a file: do not commit it.",
+        args: &[
+            SESSION,
+            arg("addr", Ty::Str, true, "the address (hex with 0x, or decimal)"),
+            arg("count", Ty::Int, false, "instructions (default 16, at most 256)"),
+            arg("back", Ty::Int, false, "start this many bytes before the address (rounded to a word; the listing marks the address with =>; going back can start inside an instruction)"),
+        ],
+    },
+    Verb { name: "session.list", about: "The open sessions: id, where each started, its frame, marks, held inputs and watch.", args: &[] },
     Verb {
         name: "session.poke",
         about: "Hold a value in RAM for some frames, as a tour's poke= does (a cheat: logged, and the exported tour is marked). WHAT is a name from the game's poke table or ADDR:VALUE[:b|w|l].",
@@ -131,7 +160,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "session.camera",
-        about: "Set (or with no argument, read) photo mode's camera for this session's pictures. It is render state only and never enters the log. reset or an empty string returns to the game's own.",
+        about: "Set (or with no argument, read) photo mode's camera for this session's pictures. It is render state only and never enters the log. reset or an empty string returns to the game's own. `preset=chase|side|top` is a third-person view relative to the game's camera (chase: back and a little up; side: a quarter turn; top: up and looking down), with other words after it (`preset=side,fov=1.3`); the eye can land inside walls or a ceiling of an enclosed course, and the game draws little of what is behind its own camera, so a view from further back shows a bare floor there.",
         args: &[SESSION, CAMERA],
     },
     Verb {
@@ -268,6 +297,32 @@ pub fn usage(v: &Verb) -> String {
     let args: Vec<String> =
         v.args.iter().map(|a| if a.required { format!("{}=..", a.name) } else { format!("[{}=..]", a.name) }).collect();
     format!("remodel call {} {}", v.name, args.join(" "))
+}
+
+/// `remodel call VERB --help`: the verb's text and each argument, from the
+/// table the tool listing and the checks read.
+pub fn help(v: &Verb) -> String {
+    let mut s = format!("{}\n  {}\n\n  {}\n", v.name, v.about, usage(v));
+    if v.args.is_empty() {
+        s.push_str("\n  no arguments\n");
+    } else {
+        s.push_str("\narguments (name=value; a list repeats the name):\n");
+        for a in v.args {
+            let ty = match a.ty {
+                Ty::Str => "text",
+                Ty::Int => "whole number",
+                Ty::List => "list",
+            };
+            s.push_str(&format!(
+                "  {:<16} {:<12} {}  {}\n",
+                a.name,
+                ty,
+                if a.required { "required" } else { "optional" },
+                a.about
+            ));
+        }
+    }
+    s
 }
 
 /// The arguments of `remodel call VERB key=value...` as the JSON the tool
@@ -421,6 +476,15 @@ impl RenderLock {
 /// (as `scene make`'s).
 const DISPLAY_LEAD: u64 = 3;
 
+/// Writes `session.watch` keeps in a step unless asked for more.
+const DEFAULT_WATCH_LIMIT: usize = 200;
+
+/// A tour's whole input as terms, named pokes resolved.
+fn tour_items(game: &Game, tours: &[tour::Tour], label: &str) -> Result<Vec<String>, String> {
+    let table = tour::poke_table(romset::games::pokes(game)).map_err(|e| format!("{} {e}", game.id))?;
+    tour::resolve_pokes(tour::inputs(tours, label, game.controls.coin_start)?, &table)
+}
+
 /// The most frames `session.open from tour:..` runs to get to its start.
 const OPEN_MAX_FRAMES: u64 = 200_000;
 
@@ -442,6 +506,8 @@ struct Mark {
     log: Vec<Sample>,
     pokes: Vec<PokeLog>,
     held: Vec<String>,
+    pre: Vec<(u32, u8)>,
+    pre_frame: u64,
 }
 
 /// What a session started from.
@@ -469,6 +535,141 @@ pub struct Session {
     /// The start (a tour it branches from) or a poke is a cheat.
     poked: bool,
     frames_run: u64,
+    /// `session.watch`: what to report writes to during steps.
+    watch: Vec<WatchItem>,
+    watch_limit: usize,
+    /// The bytes a poke covering `pre_frame` overwrote, as that frame's
+    /// start found them (`session.read when=before_poke`).
+    pre: Vec<(u32, u8)>,
+    pre_frame: u64,
+    /// What the session was opened from, as asked (`session.list`).
+    from: String,
+}
+
+/// One watched range: `[start, end)`, and the named value it is, if it is.
+#[derive(Clone)]
+struct WatchItem {
+    what: String,
+    start: u32,
+    end: u32,
+    def: Option<ValueDef>,
+}
+
+/// `n` bytes at `addr` as the machine holds them, or (`before`) as the
+/// previous frame left them where a poke of this frame has overwritten them.
+fn peek_at(s: &Session, addr: u32, width: usize, before: bool) -> Option<u32> {
+    let mut raw = s.m.bus.peek(addr, width)?;
+    if before && s.pre_frame == s.frame() {
+        for i in 0..width {
+            if let Some(&(_, b)) = s.pre.iter().find(|x| x.0 == addr.wrapping_add(i as u32)) {
+                raw = (raw & !(0xff << (8 * i))) | ((b as u32) << (8 * i));
+            }
+        }
+    }
+    Some(raw)
+}
+
+/// Whether a poke of the frame the session is on covers any of these bytes.
+fn poke_covers(s: &Session, addr: u32, len: usize) -> bool {
+    s.pre_frame == s.frame() && s.pre.iter().any(|&(a, _)| a >= addr && (a as u64) < addr as u64 + len as u64)
+}
+
+/// A raw read: one value, or a range of bytes (as values, if a width or
+/// kind was asked for).
+enum RawRead {
+    One { addr: u32, width: usize, kind: tour::Kind },
+    Range { addr: u32, len: usize, elem: Option<(usize, tour::Kind)> },
+}
+
+/// The most bytes one range read gives.
+const RANGE_MAX: usize = 4096;
+
+/// `ADDR[:b|w|l][:signed|float]`, `ADDR:float`, `ADDR:LEN[:b|w|l][:signed|float]`
+/// or `ADDR..END[...]`. None where the text does not start with an
+/// address (it is not a raw read at all).
+fn parse_raw(spec: &str) -> Option<Result<RawRead, String>> {
+    let mut parts = spec.split(':');
+    let head = parts.next()?;
+    let (addr, end) = match head.split_once("..") {
+        Some((a, e)) => (num(a)?, Some(num(e)?)),
+        None => (num(head)?, None),
+    };
+    let addr = u32::try_from(addr).ok()?;
+    let mut len = end.map(|e| e.saturating_sub(addr as u64));
+    let (mut width, mut kind) = (None, None);
+    for (i, p) in parts.enumerate() {
+        match p {
+            "b" | "w" | "l" if width.is_none() => {
+                width = Some(match p {
+                    "b" => 1,
+                    "w" => 2,
+                    _ => 4,
+                })
+            }
+            "signed" | "float" if kind.is_none() => {
+                kind = Some(if p == "signed" { tour::Kind::Signed } else { tour::Kind::Float })
+            }
+            n if i == 0 && len.is_none() && num(n).is_some() => len = num(n),
+            _ => {
+                return Some(Err(format!(
+                    "`{p}` is not b, w, l, signed, float or a length (ADDR[:LEN][:b|w|l][:signed|float])"
+                )))
+            }
+        }
+    }
+    if kind == Some(tour::Kind::Float) && width.is_some_and(|w| w != 4) {
+        return Some(Err("float is a long: ADDR:l:float, or ADDR:float".into()));
+    }
+    let width_given = width.is_some();
+    let width = width.unwrap_or(4);
+    Some(match len {
+        None => Ok(RawRead::One { addr, width, kind: kind.unwrap_or(tour::Kind::Unsigned) }),
+        Some(l) if l == 0 || l as usize > RANGE_MAX => Err(format!("a range is 1 to {RANGE_MAX} bytes")),
+        Some(l) => {
+            let l = l as usize;
+            let elem = (kind.is_some() || width_given).then_some((width, kind.unwrap_or(tour::Kind::Unsigned)));
+            if elem.is_some_and(|(w, _)| !l.is_multiple_of(w)) {
+                Err(format!("{l} bytes is not a whole number of {width}-byte values"))
+            } else {
+                Ok(RawRead::Range { addr, len: l, elem })
+            }
+        }
+    })
+}
+
+/// The writes a step's watch saw, as JSON.
+fn watch_json(items: &[WatchItem], w: &model2::bus::Watch) -> Value {
+    let hits: Vec<Value> = w
+        .hits
+        .iter()
+        .map(|&(_, ip, addr, v, n, frame)| {
+            let end = addr.wrapping_add(n as u32);
+            let item = items.iter().find(|i| addr < i.end && end > i.start);
+            let def = item.and_then(|i| i.def.as_ref());
+            let exact = def.filter(|d| d.addr == addr && d.width == n);
+            let mut h = json!({
+                "frame": frame, "ip": format!("{ip:#x}"), "addr": format!("{addr:#x}"), "size": n,
+                "value": exact.map_or_else(|| json!(v), |d| crate::ram::decode(d, v)), "raw": format!("{v:#x}"),
+            });
+            if let Some(d) = def {
+                h["name"] = json!(d.name);
+            }
+            h
+        })
+        .collect();
+    json!({"writes": hits.len() as u64 + w.dropped, "kept": hits.len(), "dropped": w.dropped, "hits": hits})
+}
+/// The address and width of a poke term (`poke=ADDR:VALUE[:b|w|l]`).
+fn poke_region(term: &str) -> Option<(u32, usize)> {
+    let mut it = term.strip_prefix("poke=")?.split(':');
+    let addr = u32::try_from(num(it.next()?)?).ok()?;
+    it.next()?;
+    let width = match it.next() {
+        None | Some("b") => 1,
+        Some("w") => 2,
+        _ => 4,
+    };
+    Some((addr, width))
 }
 
 impl Session {
@@ -479,12 +680,57 @@ impl Session {
     /// Set the inputs of `frame` on the bus: `held`, and the pokes that
     /// cover it; note them in the log.
     fn apply(&mut self, game: &Game, frame: u64, held: &[String]) -> Result<(), String> {
-        let mut items: Vec<String> = held.iter().map(|h| format!("{h}@{frame}")).collect();
-        items.extend(
-            self.pokes.iter().filter(|p| p.from <= frame && frame <= p.to).map(|p| format!("{}@{frame}", p.term)),
-        );
-        let script = InputScript::parse(&items.join(","), &game.controls)?;
-        script.apply(frame, &mut self.m.bus);
+        self.apply_with(game, frame, held, None)
+    }
+
+    /// Remember what the pokes of `frame` are about to overwrite (the
+    /// first time they apply to that frame).
+    fn note_pre(&mut self, frame: u64) {
+        if self.pre_frame != frame {
+            self.pre.clear();
+            self.pre_frame = frame;
+        }
+        let mut add: Vec<(u32, u8)> = Vec::new();
+        for p in self.pokes.iter().filter(|p| p.from <= frame && frame <= p.to) {
+            if let Some((addr, w)) = poke_region(&p.term) {
+                for i in 0..w as u32 {
+                    let a = addr.wrapping_add(i);
+                    if !self.pre.iter().any(|x| x.0 == a) && !add.iter().any(|x| x.0 == a) {
+                        if let Some(b) = self.m.bus.peek(a, 1) {
+                            add.push((a, b as u8));
+                        }
+                    }
+                }
+            }
+        }
+        self.pre.extend(add);
+    }
+
+    /// [`Session::apply`], with the frame's inputs taken from `script` (a
+    /// recording followed, built once for the step, with the held inputs
+    /// and the session's pokes in it) when there is one.
+    fn apply_with(
+        &mut self,
+        game: &Game,
+        frame: u64,
+        held: &[String],
+        script: Option<&InputScript>,
+    ) -> Result<(), String> {
+        self.note_pre(frame);
+        match script {
+            Some(script) => script.apply(frame, &mut self.m.bus),
+            None => {
+                let mut items: Vec<String> = held.iter().map(|h| format!("{h}@{frame}")).collect();
+                items.extend(
+                    self.pokes
+                        .iter()
+                        .filter(|p| p.from <= frame && frame <= p.to)
+                        .map(|p| format!("{}@{frame}", p.term)),
+                );
+                let script = InputScript::parse(&items.join(","), &game.controls)?;
+                script.apply(frame, &mut self.m.bus);
+            }
+        }
         if frame > self.start {
             let s = (frame, self.m.bus.inputs, self.m.bus.analog);
             match self.log.last_mut() {
@@ -547,33 +793,98 @@ impl Session {
 #[derive(Debug)]
 enum Until {
     Frames(u64),
-    Value { def: ValueDef, op: &'static str, v: f64 },
+    Value {
+        def: ValueDef,
+        op: &'static str,
+        v: f64,
+    },
+    /// The distance from the named values (2 or 3 of them) to a point.
+    Distance {
+        defs: Vec<ValueDef>,
+        to: Vec<f64>,
+        op: &'static str,
+        d: f64,
+    },
+    /// The value's raw bytes differ from what they were at the step's start.
+    Changes {
+        def: ValueDef,
+        start: Option<u32>,
+    },
 }
 
-fn parse_until(text: &str, table: &[ValueDef]) -> Result<Until, Answer> {
-    let want = || bad(format!("until `{text}`: want `value NAME OP V` (OP: gt ge lt le eq ne) or `frames N`"));
+const UNTIL_WORDS: &str = "want `value NAME OP V` (OP: gt ge lt le eq ne), `distance NX,NY[,NZ] to X,Y[,Z] OP D`, `changes NAME`, `screen NAME|N` or `frames N`";
+
+fn parse_op(op: &str) -> Option<&'static str> {
+    Some(match op {
+        "gt" | ">" => "gt",
+        "ge" | ">=" => "ge",
+        "lt" | "<" => "lt",
+        "le" | "<=" => "le",
+        "eq" | "==" | "=" => "eq",
+        "ne" | "!=" => "ne",
+        _ => return None,
+    })
+}
+
+fn find_def(table: &[ValueDef], name: &str) -> Result<ValueDef, Answer> {
+    table.iter().find(|d| d.name == name).cloned().ok_or_else(|| {
+        let all: Vec<String> = table.iter().map(|d| d.name.clone()).collect();
+        Answer::unknown("value", name, &all).next("remodel ram values")
+    })
+}
+
+fn float_arg(v: &str) -> Option<f64> {
+    match num(v) {
+        Some(n) => Some(n as f64),
+        None => v.parse::<f64>().ok().filter(|f| f.is_finite()),
+    }
+}
+
+fn parse_until(text: &str, table: &[ValueDef], states: &[tour::StateDef]) -> Result<Until, Answer> {
+    let want = || bad(format!("until `{text}`: {UNTIL_WORDS}"));
     let w: Vec<&str> = text.split_whitespace().collect();
     match w[..] {
         ["frames", n] => Ok(Until::Frames(num(n).ok_or_else(want)?)),
         ["value", name, op, v] => {
-            let op = match op {
-                "gt" | ">" => "gt",
-                "ge" | ">=" => "ge",
-                "lt" | "<" => "lt",
-                "le" | "<=" => "le",
-                "eq" | "==" | "=" => "eq",
-                "ne" | "!=" => "ne",
-                _ => return Err(want()),
-            };
-            let v: f64 = match num(v) {
-                Some(n) => n as f64,
-                None => v.parse().map_err(|_| want())?,
-            };
-            let def = table.iter().find(|d| d.name == name).cloned().ok_or_else(|| {
-                let all: Vec<String> = table.iter().map(|d| d.name.clone()).collect();
-                Answer::unknown("value", name, &all).next("remodel ram values")
+            let op = parse_op(op).ok_or_else(want)?;
+            let v = float_arg(v).ok_or_else(want)?;
+            Ok(Until::Value { def: find_def(table, name)?, op, v })
+        }
+        ["distance", names, "to", point, op, d] => {
+            let names: Vec<&str> = names.split(',').collect();
+            let to: Vec<f64> = point.split(',').map(float_arg).collect::<Option<_>>().ok_or_else(want)?;
+            if !(2..=3).contains(&names.len()) || names.len() != to.len() {
+                return Err(bad(format!(
+                    "until `{text}`: a distance wants as many value names as coordinates, two or three"
+                )));
+            }
+            let defs = names.iter().map(|n| find_def(table, n)).collect::<Result<Vec<_>, _>>()?;
+            Ok(Until::Distance { defs, to, op: parse_op(op).ok_or_else(want)?, d: float_arg(d).ok_or_else(want)? })
+        }
+        ["changes", name] => Ok(Until::Changes { def: find_def(table, name)?, start: None }),
+        ["screen", name] => {
+            let def = find_def(table, "screen").map_err(|_| {
+                bad("until screen: the game's value table has no value named `screen`").next("remodel ram values")
             })?;
-            Ok(Until::Value { def, op, v })
+            let screens: Vec<&tour::StateDef> = states.iter().filter(|s| s.value == "screen").collect();
+            let v = match screens.iter().find(|s| s.name == name) {
+                Some(s) => s.number as f64,
+                None => match float_arg(name) {
+                    Some(n) => n,
+                    None => {
+                        let known: Vec<String> = screens.iter().map(|s| s.name.clone()).collect();
+                        let e = if known.is_empty() {
+                            bad(format!(
+                                "until screen {name}: the value table names no screens; give the number (screen 7)"
+                            ))
+                        } else {
+                            Answer::unknown("screen", name, &known)
+                        };
+                        return Err(e.next("remodel ram values"));
+                    }
+                },
+            };
+            Ok(Until::Value { def, op: "eq", v })
         }
         _ => Err(want()),
     }
@@ -585,20 +896,53 @@ fn read_def(m: &Machine, def: &ValueDef) -> Option<(u32, Value)> {
     Some((raw, crate::ram::decode(def, raw)))
 }
 
+fn compare(op: &str, x: f64, v: f64) -> bool {
+    match op {
+        "gt" => x > v,
+        "ge" => x >= v,
+        "lt" => x < v,
+        "le" => x <= v,
+        "eq" => x == v,
+        _ => x != v,
+    }
+}
+
 impl Until {
+    /// Note the machine as the step starts (what `changes` compares with).
+    fn arm(&mut self, m: &Machine) {
+        if let Until::Changes { def, start } = self {
+            *start = m.bus.peek(def.addr, def.width);
+        }
+    }
+
+    fn distance(defs: &[ValueDef], to: &[f64], m: &Machine) -> Option<f64> {
+        let mut sum = 0.0;
+        for (d, t) in defs.iter().zip(to) {
+            let x = read_def(m, d)?.1.as_f64()?;
+            sum += (x - t) * (x - t);
+        }
+        Some(sum.sqrt())
+    }
+
     fn met(&self, m: &Machine, ran: u64) -> bool {
         match self {
             Until::Frames(n) => ran >= *n,
             Until::Value { def, op, v } => {
                 let Some(x) = read_def(m, def).and_then(|(_, val)| val.as_f64()) else { return false };
-                match *op {
-                    "gt" => x > *v,
-                    "ge" => x >= *v,
-                    "lt" => x < *v,
-                    "le" => x <= *v,
-                    "eq" => x == *v,
-                    _ => x != *v,
-                }
+                compare(op, x, *v)
+            }
+            Until::Distance { defs, to, op, d } => Self::distance(defs, to, m).is_some_and(|x| compare(op, x, *d)),
+            Until::Changes { def, start } => m.bus.peek(def.addr, def.width) != *start,
+        }
+    }
+
+    /// What the condition reads now, for the step's answer.
+    fn reading(&self, m: &Machine) -> Value {
+        match self {
+            Until::Frames(_) => Value::Null,
+            Until::Value { def, .. } | Until::Changes { def, .. } => read_def(m, def).map_or(Value::Null, |(_, v)| v),
+            Until::Distance { defs, to, .. } => {
+                Self::distance(defs, to, m).map_or(Value::Null, |d| json!((d * 1e4).round() / 1e4))
             }
         }
     }
@@ -622,7 +966,7 @@ fn check_held(items: &[String], game: &Game) -> Result<(), Answer> {
 // ------------------------------------------------------------------ the server's state
 
 /// The server's limits and where it writes.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Config {
     pub marks: usize,
     pub max_step: u64,
@@ -665,6 +1009,7 @@ pub struct Server<'a> {
     #[allow(clippy::vec_box)] // a Machine is large: moving the box is cheap
     spare: Vec<Box<Machine>>,
     table: Vec<ValueDef>,
+    states: Vec<tour::StateDef>,
 }
 
 fn rss_bytes() -> u64 {
@@ -677,6 +1022,7 @@ fn rss_bytes() -> u64 {
 impl<'a> Server<'a> {
     pub fn new(game: &'static Game, roms: Option<&'a RomSet>, cfg: Config) -> Server<'a> {
         let table = tour::value_table(romset::games::values(game)).unwrap_or_default();
+        let states = tour::state_table(romset::games::values(game)).unwrap_or_default();
         Server {
             game,
             roms,
@@ -687,6 +1033,7 @@ impl<'a> Server<'a> {
             looks: HashMap::new(),
             spare: Vec::new(),
             table,
+            states,
         }
     }
 
@@ -708,6 +1055,9 @@ impl<'a> Server<'a> {
             "session.forget" => self.with(args, Self::forget),
             "session.read" => self.with(args, Self::read),
             "session.poke" => self.with(args, Self::poke),
+            "session.watch" => self.with(args, Self::watch),
+            "session.disasm" => self.with(args, Self::disasm),
+            "session.list" => self.list(),
             "session.camera" => self.with(args, Self::camera),
             "session.render" => self.with(args, Self::render),
             "session.export" => self.with(args, Self::export),
@@ -776,6 +1126,29 @@ impl<'a> Server<'a> {
                 );
             }
         }
+        let from = s_arg(args, "from").unwrap_or("power-on").to_string();
+        let overlay = l_arg(args, "overlay");
+        if !overlay.is_empty() {
+            if !from.starts_with("tour:") {
+                return Err(bad(
+                    "open: `overlay` goes with from=tour:LABEL@FRAME (it is added on top of that recording)",
+                ));
+            }
+            for it in &overlay {
+                if it.starts_with("poke=") || it == "coin-start" || !it.contains('@') || tour::item_range(it).is_none()
+                {
+                    return Err(bad(format!(
+                        "overlay `{it}`: want NAME@FROM-TO (jumpfront@2560-3000, steer=0x80@100-200); no pokes"
+                    ))
+                    .next("remodel inputs"));
+                }
+                InputScript::parse(it, &game.controls)
+                    .map_err(|e| bad(format!("overlay `{it}`: {e}")).next("remodel inputs"))?;
+            }
+        }
+        if n_arg(args, "index_every") == Some(0) || n_arg(args, "checkpoint_every") == Some(0) {
+            return Err(bad("open: `index_every` and `checkpoint_every` are at least 1"));
+        }
         let roms = self.roms()?;
         if self.sessions.len() >= self.cfg.sessions {
             let ids: Vec<&str> = self.sessions.keys().map(String::as_str).collect();
@@ -787,7 +1160,6 @@ impl<'a> Server<'a> {
             .with_data(json!({"limit": self.cfg.sessions, "open": ids}))
             .next("session.close"));
         }
-        let from = s_arg(args, "from").unwrap_or("power-on").to_string();
         let t0 = Instant::now();
         let rss0 = rss_bytes();
         let id = format!("s{}", self.next_id);
@@ -854,19 +1226,47 @@ impl<'a> Server<'a> {
                     let known: Vec<String> = tours.iter().map(|t| t.label.clone()).collect();
                     return Err(Answer::unknown("tour", label, &known).next("remodel tour list"));
                 };
-                let (script, poked) = tour::build_script(game, &tours, label).map_err(bad)?;
+                let (rec_script, rec_poked) = tour::build_script(game, &tours, label).map_err(bad)?;
+                let mut tw: Vec<String> = Vec::new();
+                // The overlay: terms added on top of the recording up to the open frame.
+                let mut overlay = overlay;
+                let first = overlay.iter().filter_map(|i| tour::item_range(i).map(|r| r.0)).min();
+                if first.is_some_and(|a| a > frame) {
+                    tw.push(format!("the overlay starts after frame {frame}: nothing of it is applied"));
+                    overlay.clear();
+                }
+                if overlay.iter().filter_map(|i| tour::item_range(i).map(|r| r.1)).any(|b| b > frame) {
+                    tw.push(format!(
+                        "the overlay runs past frame {frame}: the session holds what you set with session.input from there, not the rest of it"
+                    ));
+                }
+                let first = overlay.iter().filter_map(|i| tour::item_range(i).map(|r| r.0)).min();
+                let (script, poked) = if overlay.is_empty() {
+                    (rec_script.clone(), rec_poked)
+                } else {
+                    let mut items = tour_items(game, &tours, label).map_err(bad)?;
+                    items.extend(overlay.iter().cloned());
+                    let s = InputScript::parse(&items.join(","), &game.controls).map_err(bad)?;
+                    let poked = s.pokes();
+                    (s, poked)
+                };
                 script.apply(0, &mut m.bus);
                 // The nearest checkpoint at or before the frame (made on the
-                // first open of a spine: one replay), or power-on.
-                let mut tw: Vec<String> = Vec::new();
+                // first open of a spine: one replay), or power-on. With an
+                // overlay, one before the overlay's first frame.
+                let reach = first.map_or(frame, |a| frame.min(a.saturating_sub(1)));
                 let mut from_ckpt = 0;
                 if matches!(t.length, tour::Length::Frames(_)) {
                     let dir = spine::dir_of(&self.spines_root(), label);
                     let key = spine::key(game, t, spine::native());
                     if spine::meta(&dir, key).is_none() {
                         let table = self.table.clone();
-                        let (ce, ie) = (self.cfg.checkpoint_every, self.cfg.index_every);
-                        let b = spine::build(roms, t, &script, &dir, ce, ie, &table).map_err(internal)?;
+                        let ce = n_arg(args, "checkpoint_every").unwrap_or(self.cfg.checkpoint_every);
+                        let ie = n_arg(args, "index_every").unwrap_or(self.cfg.index_every);
+                        if ce == 0 || ie == 0 {
+                            return Err(bad("open: `checkpoint_every` and `index_every` are at least 1"));
+                        }
+                        let b = spine::build(roms, t, &rec_script, &dir, ce, ie, &table).map_err(internal)?;
                         tw.push(format!(
                             "made the spine's checkpoints and index ({} checkpoints, {} rows, {:.1} s, once: {})",
                             b.meta.checkpoints.len(),
@@ -875,7 +1275,7 @@ impl<'a> Server<'a> {
                             dir.display()
                         ));
                     }
-                    if let Some((f, path)) = spine::nearest(&dir, key, frame) {
+                    if let Some((f, path)) = spine::nearest(&dir, key, reach) {
                         let loaded = std::fs::read(&path)
                             .map_err(|e| e.to_string())
                             .and_then(|d| model2::load_session(&mut m, None, &d));
@@ -906,7 +1306,28 @@ impl<'a> Server<'a> {
                     }
                 }
                 m.bus.uart_log.clear();
-                (Start::Tour(label.to_string(), frame), frame, vec![], poked, tw)
+                // An overlaid open exports as a branch from just before the
+                // overlay, with the recording's own terms from there to the
+                // open frame restated (and the overlay's) as the branch's own.
+                let (from_at, base) = match first {
+                    None => (frame, vec![]),
+                    Some(a) => {
+                        let f0 = a.saturating_sub(1);
+                        let mut base = Vec::new();
+                        for item in tour_items(game, &tours, label).map_err(bad)?.iter().chain(overlay.iter()) {
+                            let Some(cut) = tour::cut(item, frame) else { continue };
+                            if f0 > 0 {
+                                if let Some(t) = tour::tail(&cut, f0 + 1).map_err(bad)? {
+                                    base.push(t);
+                                }
+                            } else {
+                                base.push(cut);
+                            }
+                        }
+                        (f0, base)
+                    }
+                };
+                (Start::Tour(label.to_string(), from_at), frame, base, poked, tw)
             }
             other => {
                 return Err(bad(format!("from `{other}`: want power-on, scene:NAME or tour:LABEL@FRAME"))
@@ -928,6 +1349,11 @@ impl<'a> Server<'a> {
             smooth_on: false,
             poked,
             frames_run: 0,
+            watch: Vec::new(),
+            watch_limit: DEFAULT_WATCH_LIMIT,
+            pre: Vec::new(),
+            pre_frame: u64::MAX,
+            from: from.clone(),
         };
         let hash = s.hash();
         let (frame, ms) = (s.frame(), t0.elapsed().as_secs_f64() * 1e3);
@@ -966,6 +1392,18 @@ impl<'a> Server<'a> {
         Ok(a)
     }
 
+    /// The recording `follow` names: its label and its terms, pokes resolved.
+    fn follow_items(&self, follow: &str) -> Result<(String, Vec<String>), Answer> {
+        let label = follow.strip_prefix("tour:").unwrap_or(follow);
+        let tours = tour::load_paths(self.game, &self.cfg.tours).map_err(bad)?;
+        if !tours.iter().any(|t| t.label == label) {
+            let known: Vec<String> = tours.iter().map(|t| t.label.clone()).collect();
+            return Err(Answer::unknown("tour", label, &known).next("remodel tour list"));
+        }
+        let items = tour_items(self.game, &tours, label).map_err(bad)?;
+        Ok((label.to_string(), items))
+    }
+
     fn step(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
         let game = self.game;
         let frames = n_arg(args, "frames").unwrap_or(0);
@@ -980,52 +1418,118 @@ impl<'a> Server<'a> {
             .with_data(json!({"limit": self.cfg.max_step, "asked": frames}))
             .next(format!("session.step frames={}", self.cfg.max_step)));
         }
-        let until = s_arg(args, "until").map(|u| parse_until(u, &self.table)).transpose()?;
+        let mut until = s_arg(args, "until").map(|u| parse_until(u, &self.table, &self.states)).transpose()?;
+        let following = s_arg(args, "follow").map(|f| self.follow_items(f)).transpose()?;
+        // Held: the step's own inputs, else the session's; following a
+        // recording, only what the step is given (an overlay on top of it).
         let held = if args.get("inputs").is_some() {
             let items = l_arg(args, "inputs");
             check_held(&items, game)?;
             items
+        } else if following.is_some() {
+            Vec::new()
         } else {
             s.held.clone()
         };
+        // The first frame this step gives inputs to, and the last.
+        let (first, last) = (s.frame().max(s.start + 1), s.frame() + frames);
+        // A followed recording, the overlay and the session's pokes as one script.
+        let mut script = None;
+        if let Some((label, items)) = &following {
+            let mut terms: Vec<String> = Vec::new();
+            for it in items {
+                if it.starts_with("poke=") {
+                    // The recording's pokes become the session's, so the log (and
+                    // an export) carries them and `before_poke` knows them.
+                    let (what, _) = it.rsplit_once('@').unwrap_or((it, ""));
+                    let range = tour::item_range(it).filter(|_| !it.contains('/')).ok_or_else(|| {
+                        bad(format!("follow {label}: `{it}` repeats, and a repeating poke cannot be followed"))
+                    })?;
+                    let (from, to) = (range.0.max(first), range.1.min(last));
+                    let log = PokeLog { term: what.to_string(), from, to };
+                    if from <= to && !s.pokes.iter().any(|p| p.term == log.term && p.from == from && p.to == to) {
+                        s.pokes.push(log);
+                        s.poked = true;
+                    }
+                } else {
+                    terms.push(it.clone());
+                }
+            }
+            terms.extend(held.iter().map(|h| format!("{h}@{first}-{last}")));
+            terms.extend(s.pokes.iter().map(|p| format!("{}@{}-{}", p.term, p.from, p.to)));
+            script = Some(
+                InputScript::parse(&terms.join(","), &game.controls)
+                    .map_err(|e| bad(format!("follow {label}: {e}")))?,
+            );
+        }
+        if let Some(u) = &mut until {
+            u.arm(&s.m);
+        }
+        if !s.watch.is_empty() {
+            let ranges = s.watch.iter().map(|w| (w.start, w.end)).collect();
+            s.m.bus.watch =
+                Some(Box::new(model2::bus::Watch { ranges, hits: Vec::new(), cap: s.watch_limit, dropped: 0 }));
+        }
         let t0 = Instant::now();
-        // The frame about to run takes the step's inputs (not the start's).
-        if s.frame() > s.start {
-            s.apply(game, s.frame(), &held).map_err(internal)?;
-        }
-        // The display list of the last frames, for a camera.
-        if s.smooth_on && frames > DISPLAY_LEAD {
-            s.m.bus.geo.set_smooth(false);
-            s.smooth_on = false;
-        }
-        let (mut ran, mut why) = (0u64, "frames");
-        while ran < frames {
-            if !s.smooth_on && frames - ran <= DISPLAY_LEAD {
-                if crate::GEO_MODE.get().copied().unwrap_or_default() == model2::geo::GeoMode::Chip {
-                    s.m.bus.geo.set_mode(model2::geo::GeoMode::Native);
-                }
-                s.m.bus.geo.set_smooth(true);
-                s.smooth_on = true;
+        let run = (|| -> Result<(u64, &'static str), String> {
+            // The frame about to run takes the step's inputs (not the start's).
+            if s.frame() > s.start {
+                s.apply_with(game, s.frame(), &held, script.as_ref())?;
             }
-            s.run_frame().map_err(internal)?;
-            ran += 1;
-            let f = s.frame();
-            s.apply(game, f, &held).map_err(internal)?;
-            if let Some(u) = &until {
-                if u.met(&s.m, ran) {
-                    why = "until";
-                    break;
+            // The display list of the last frames, for a camera.
+            if s.smooth_on && frames > DISPLAY_LEAD {
+                s.m.bus.geo.set_smooth(false);
+                s.smooth_on = false;
+            }
+            let (mut ran, mut why) = (0u64, "frames");
+            while ran < frames {
+                if !s.smooth_on && frames - ran <= DISPLAY_LEAD {
+                    if crate::GEO_MODE.get().copied().unwrap_or_default() == model2::geo::GeoMode::Chip {
+                        s.m.bus.geo.set_mode(model2::geo::GeoMode::Native);
+                    }
+                    s.m.bus.geo.set_smooth(true);
+                    s.smooth_on = true;
+                }
+                s.run_frame()?;
+                ran += 1;
+                let f = s.frame();
+                s.apply_with(game, f, &held, script.as_ref())?;
+                if let Some(u) = &until {
+                    if u.met(&s.m, ran) {
+                        why = "until";
+                        break;
+                    }
                 }
             }
-        }
+            Ok((ran, why))
+        })();
+        let watch = s.m.bus.watch.take();
+        let (ran, why) = run.map_err(internal)?;
         s.frames_run += ran;
         let secs = t0.elapsed().as_secs_f64();
         let hash = s.hash();
-        Ok(Answer::done(json!({
+        let mut data = json!({
             "session": s.id, "frame": s.frame(), "state_hash": format!("{hash:016x}"),
             "frames_run": ran, "stopped": why, "held": held,
             "ms": (secs * 1e3).round(), "frames_per_second": (ran as f64 / secs.max(1e-9)).round(),
-        })))
+        });
+        if let Some((label, _)) = &following {
+            data["followed"] = json!(label);
+        }
+        if let Some(u) = until.as_ref().filter(|u| !matches!(u, Until::Frames(_))) {
+            data["until_reading"] = u.reading(&s.m);
+        }
+        let mut a = Answer::done(json!(null));
+        if let Some(w) = watch {
+            data["watch"] = watch_json(&s.watch, &w);
+            if w.dropped > 0 {
+                a = a.warn(format!(
+                    "{} writes over the watch's limit of {} were not kept (session.watch limit=...)",
+                    w.dropped, s.watch_limit
+                ));
+            }
+        }
+        Ok(a.with_data(data))
     }
 
     // ---------------------------------------------------------------- marks
@@ -1058,7 +1562,17 @@ impl<'a> Server<'a> {
                         m
                     }
                 };
-                Mark { name: name.to_string(), frame: 0, hash: 0, m, log: vec![], pokes: vec![], held: vec![] }
+                Mark {
+                    name: name.to_string(),
+                    frame: 0,
+                    hash: 0,
+                    m,
+                    log: vec![],
+                    pokes: vec![],
+                    held: vec![],
+                    pre: vec![],
+                    pre_frame: u64::MAX,
+                }
             }
         };
         s.m.bus.geo.sync();
@@ -1068,6 +1582,8 @@ impl<'a> Server<'a> {
         k.log = s.log.clone();
         k.pokes = s.pokes.clone();
         k.held = s.held.clone();
+        k.pre = s.pre.clone();
+        k.pre_frame = s.pre_frame;
         s.marks.push(k);
         let ms = t0.elapsed().as_secs_f64() * 1e3;
         Ok(Answer::done(
@@ -1093,6 +1609,8 @@ impl<'a> Server<'a> {
         s.log = k.log.clone();
         s.pokes = k.pokes.clone();
         s.held = k.held.clone();
+        s.pre = k.pre.clone();
+        s.pre_frame = k.pre_frame;
         // The display list recorded is not this frame's now.
         s.m.bus.geo.set_smooth(false);
         s.smooth_on = false;
@@ -1116,7 +1634,17 @@ impl<'a> Server<'a> {
 
     fn read(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
         let names = l_arg(args, "names");
-        let mut rows = Vec::new();
+        let format = match s_arg(args, "format") {
+            None | Some("json") => "json",
+            Some("compact") => "compact",
+            Some("tsv") => "tsv",
+            Some(o) => return Err(Answer::unknown("format", o, &["json".into(), "compact".into(), "tsv".into()])),
+        };
+        let before = match s_arg(args, "when") {
+            None | Some("after") => false,
+            Some("before_poke") => true,
+            Some(o) => return Err(Answer::unknown("when", o, &["after".into(), "before_poke".into()])),
+        };
         let all: Vec<String>;
         let names: &[String] = if names.is_empty() {
             all = self.table.iter().map(|d| d.name.clone()).collect();
@@ -1124,35 +1652,220 @@ impl<'a> Server<'a> {
         } else {
             &names
         };
+        // (key, the row as JSON, the value alone, whether a poke of this frame covers it)
+        let mut rows: Vec<(String, Value, Value, bool)> = Vec::new();
         for n in names {
             if let Some(d) = self.table.iter().find(|d| d.name == *n) {
-                let Some((raw, v)) = read_def(&s.m, d) else {
+                let Some(raw) = peek_at(s, d.addr, d.width, before) else {
                     return Err(bad(format!("value {n}: {:#x} is not mapped memory", d.addr)));
                 };
-                rows.push(
+                let v = crate::ram::decode(d, raw);
+                let covered = poke_covers(s, d.addr, d.width);
+                rows.push((
+                    n.clone(),
                     json!({"name": d.name, "addr": format!("{:#x}", d.addr), "width": d.width, "raw": raw, "value": v}),
-                );
+                    v,
+                    covered,
+                ));
                 continue;
             }
-            // ADDR[:b|w|l]
-            let (a, w) = n.split_once(':').unwrap_or((n, "l"));
-            let (Some(addr), Some(width)) =
-                (num(a).and_then(|a| u32::try_from(a).ok()), ["b", "w", "l"].iter().position(|x| *x == w))
-            else {
-                let table: Vec<String> = self.table.iter().map(|d| d.name.clone()).collect();
-                return Err(Answer::unknown("value", n, &table).next("remodel ram values"));
+            let table: Vec<String> = self.table.iter().map(|d| d.name.clone()).collect();
+            let raw_read = match parse_raw(n) {
+                Some(r) => r.map_err(|e| bad(format!("{n}: {e}")))?,
+                None => return Err(Answer::unknown("value", n, &table).next("remodel ram values")),
             };
-            let width = 1usize << width;
-            let Some(raw) = s.m.bus.peek(addr, width) else {
-                return Err(bad(format!("{n}: {addr:#x} is not mapped memory")));
-            };
-            rows.push(json!({"name": null, "addr": format!("{addr:#x}"), "width": width, "raw": raw, "value": raw}));
+            match raw_read {
+                RawRead::One { addr, width, kind } => {
+                    let Some(raw) = peek_at(s, addr, width, before) else {
+                        return Err(bad(format!("{n}: {addr:#x} is not mapped memory")));
+                    };
+                    let def = ValueDef { name: String::new(), addr, width, kind, note: String::new() };
+                    let v = crate::ram::decode(&def, raw);
+                    rows.push((
+                        n.clone(),
+                        json!({"name": null, "addr": format!("{addr:#x}"), "width": width, "raw": raw, "value": v}),
+                        v,
+                        poke_covers(s, addr, width),
+                    ));
+                }
+                RawRead::Range { addr, len, elem } => {
+                    let mut bytes = Vec::with_capacity(len);
+                    for i in 0..len as u32 {
+                        let a = addr.wrapping_add(i);
+                        let Some(b) = peek_at(s, a, 1, before) else {
+                            return Err(bad(format!(
+                                "{n}: {a:#x} is not mapped memory (the range stops at {addr:#x}+{i})"
+                            )));
+                        };
+                        bytes.push(b as u8);
+                    }
+                    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                    let mut row = json!({"name": null, "addr": format!("{addr:#x}"), "len": len, "hex": hex});
+                    let mut alone = json!(hex);
+                    if let Some((width, kind)) = elem {
+                        let def = ValueDef { name: String::new(), addr, width, kind, note: String::new() };
+                        let vals: Vec<Value> = bytes
+                            .chunks_exact(width)
+                            .map(|c| {
+                                let raw = c.iter().enumerate().fold(0u32, |a, (i, b)| a | (*b as u32) << (8 * i));
+                                crate::ram::decode(&def, raw)
+                            })
+                            .collect();
+                        row["width"] = json!(width);
+                        row["values"] = json!(vals);
+                        alone = json!(vals);
+                    }
+                    rows.push((n.clone(), row, alone, poke_covers(s, addr, len)));
+                }
+            }
         }
-        let mut a = Answer::done(json!({"session": s.id, "frame": s.frame(), "values": rows}));
+        let frame = s.frame();
+        let mut data = match format {
+            "compact" => {
+                let m: serde_json::Map<String, Value> = rows.iter().map(|r| (r.0.clone(), r.2.clone())).collect();
+                json!({"session": s.id, "frame": frame, "values": m})
+            }
+            "tsv" => {
+                let text: String = rows
+                    .iter()
+                    .map(|r| {
+                        let v = match &r.2 {
+                            Value::String(t) => t.clone(),
+                            Value::Array(a) => a.iter().map(Value::to_string).collect::<Vec<_>>().join(" "),
+                            o => o.to_string(),
+                        };
+                        format!("{}\t{v}\n", r.0)
+                    })
+                    .collect();
+                json!({"session": s.id, "frame": frame, "text": text})
+            }
+            _ => {
+                json!({"session": s.id, "frame": frame, "values": rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>()})
+            }
+        };
+        data["when"] = json!(if before { "before_poke" } else { "after" });
+        let mut a = Answer::done(json!(null));
+        let covered: Vec<&str> = rows.iter().filter(|r| r.3).map(|r| r.0.as_str()).collect();
+        if !covered.is_empty() && !before {
+            data["poked"] = json!(covered);
+            a = a.warn(format!(
+                "{} {} covered by a poke at frame {frame}: pokes apply at the start of a frame, so it reads as the poke wrote it, before the game has run that frame (which may rewrite it); `when=before_poke` reads it as the previous frame left it",
+                covered.join(", "),
+                if covered.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        if before && !(s.pre_frame == frame && !s.pre.is_empty()) {
+            a = a.warn("when=before_poke: no poke has applied to this frame, so there is nothing to read before (the values are as the machine is)");
+        }
         if self.table.is_empty() {
             a = a.warn(format!("{} has no named values yet: raw ADDR[:b|w|l] reads work", self.game.id));
         }
-        Ok(a)
+        Ok(a.with_data(data))
+    }
+
+    fn watch(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
+        if let Some(l) = n_arg(args, "limit") {
+            if l == 0 || l > 5000 {
+                return Err(bad("watch: `limit` is 1 to 5000"));
+            }
+            s.watch_limit = l as usize;
+        }
+        if args.get("what").is_some() {
+            let what = l_arg(args, "what");
+            if what.len() > 32 {
+                return Err(bad("watch: at most 32 things at once"));
+            }
+            let mut items = Vec::new();
+            for w in &what {
+                if let Some(d) = self.table.iter().find(|d| d.name == *w) {
+                    items.push(WatchItem {
+                        what: w.clone(),
+                        start: d.addr,
+                        end: d.addr + d.width as u32,
+                        def: Some(d.clone()),
+                    });
+                    continue;
+                }
+                let (a, l) = w.split_once(':').unwrap_or((w, "4"));
+                let len = match l {
+                    "b" => Some(1),
+                    "w" => Some(2),
+                    "l" => Some(4),
+                    n => num(n),
+                };
+                let (Some(addr), Some(len)) = (num(a).and_then(|a| u32::try_from(a).ok()), len) else {
+                    let table: Vec<String> = self.table.iter().map(|d| d.name.clone()).collect();
+                    return Err(Answer::unknown("value", w, &table).next("session.watch what=NAME or ADDR[:LEN]"));
+                };
+                if len == 0 || len > 65536 || addr.checked_add(len as u32).is_none() {
+                    return Err(bad(format!("watch `{w}`: a length of 1 to 65536 bytes")));
+                }
+                items.push(WatchItem { what: w.clone(), start: addr, end: addr + len as u32, def: None });
+            }
+            s.watch = items;
+        }
+        let watching: Vec<Value> = s
+            .watch
+            .iter()
+            .map(|w| json!({"what": w.what, "addr": format!("{:#x}", w.start), "len": w.end - w.start}))
+            .collect();
+        Ok(Answer::done(json!({"session": s.id, "watching": watching, "limit": s.watch_limit}))
+            .next(format!("session.step session={} frames=60   (the writes come back in `watch`)", s.id)))
+    }
+
+    fn disasm(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
+        let at = s_arg(args, "addr").unwrap_or("");
+        let addr = num(at)
+            .and_then(|a| u32::try_from(a).ok())
+            .ok_or_else(|| bad(format!("disasm: addr `{at}` is a number (0x1234)")))?;
+        let count = n_arg(args, "count").unwrap_or(16);
+        if count == 0 || count > 256 {
+            return Err(bad("disasm: `count` is 1 to 256"));
+        }
+        let back = n_arg(args, "back").unwrap_or(0);
+        if back > 1024 {
+            return Err(bad("disasm: `back` is at most 1024 bytes"));
+        }
+        let mut a = addr.saturating_sub(back as u32) & !3;
+        let mut lines = Vec::new();
+        let mut unmapped = false;
+        for _ in 0..count {
+            if s.m.bus.peek(a, 4).is_none() {
+                unmapped = true;
+                break;
+            }
+            let insn = i960::decode(a, |x| s.m.bus.peek(x, 4));
+            let mark = if a == addr { "=>" } else { "  " };
+            lines.push(format!("{mark} {a:#08x}  {:08x}  {insn}", insn.word));
+            a = insn.next();
+        }
+        let mut ans = Answer::done(json!({"session": s.id, "addr": format!("{addr:#x}"), "listing": lines}));
+        if unmapped {
+            ans = ans.warn(format!("{a:#x} is not mapped memory: the listing stops there"));
+        }
+        if back > 0 {
+            ans = ans.warn(
+                "`back` starts before the address: if it lands inside a two-word instruction the first lines are wrong",
+            );
+        }
+        Ok(ans)
+    }
+
+    fn list(&mut self) -> Result<Answer, Answer> {
+        let rows: Vec<Value> = self
+            .sessions
+            .values()
+            .map(|s| {
+                json!({
+                    "session": s.id, "from": s.from, "frame": s.frame(), "started": s.start,
+                    "marks": s.marks.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
+                    "held": s.held, "pokes": s.pokes.len(), "poked": s.poked,
+                    "watching": s.watch.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(),
+                    "camera": (!s.camera.is_empty()).then_some(&s.camera),
+                })
+            })
+            .collect();
+        Ok(Answer::done(json!({"sessions": rows, "limit": self.cfg.sessions})).next("session.open"))
     }
 
     fn poke(&mut self, s: &mut Session, args: &Value) -> Result<Answer, Answer> {
@@ -1186,7 +1899,8 @@ impl<'a> Server<'a> {
         if let Some(c) = s_arg(args, "camera") {
             let c = if c == "reset" { "" } else { c };
             if !c.is_empty() {
-                model2::photo::Spec::parse(c, 1.0).map_err(|e| bad(format!("camera: {e}")))?;
+                let words = crate::scene::expand_camera(c).map_err(|e| bad(format!("camera: {e}")))?;
+                model2::photo::Spec::parse(&words, 1.0).map_err(|e| bad(format!("camera: {e}")))?;
             }
             s.camera = c.to_string();
         }
@@ -1311,6 +2025,9 @@ impl<'a> Server<'a> {
         for w in d.warnings {
             a = a.warn(w);
         }
+        if camera.as_deref().is_some_and(|c| ["preset=side", "preset=top"].iter().any(|p| c.contains(p))) {
+            a = a.warn("a camera preset moves the eye by shares of the scene's scale and the game's world is not tested for walls: in an enclosed course (a hall, a tunnel) the eye can land inside a wall or the ceiling, and the picture is then empty or shows back faces; if so, try preset=chase or a smaller move (tilt=, orbit=, z=)");
+        }
         Ok(a)
     }
 
@@ -1352,7 +2069,14 @@ impl<'a> Server<'a> {
         match &s.kind {
             Start::PowerOn => {}
             Start::Scene => all.extend(s.base.iter().cloned()),
-            Start::Tour(label, frame) => all.push(format!("from={label}@{frame}")),
+            // An overlaid open branches from just before the overlay (or from
+            // power-on) and restates the recording from there as its own terms.
+            Start::Tour(label, frame) => {
+                if *frame > 0 {
+                    all.push(format!("from={label}@{frame}"));
+                }
+                all.extend(s.base.iter().cloned());
+            }
         }
         all.extend(terms);
         let line = format!("{label}|{}f|{}", s.frame(), all.join(","));
@@ -1533,7 +2257,7 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), VERBS.len());
-        assert_eq!(VERBS.len(), 15);
+        assert_eq!(VERBS.len(), 18);
         for v in VERBS {
             let mut a: Vec<&str> = v.args.iter().map(|a| a.name).collect();
             a.sort();
@@ -1579,11 +2303,11 @@ mod tests {
     #[test]
     fn until_words_are_strict() {
         let t = tour::value_table("speed|0x582f90:l:float|a note\nclock|0x5830b0:w|a note\n").unwrap();
-        assert!(matches!(parse_until("value speed gt 2.5", &t), Ok(Until::Value { op: "gt", .. })));
-        assert!(matches!(parse_until("frames 0x10", &t), Ok(Until::Frames(16))));
-        assert!(parse_until("value speed bigger 1", &t).is_err());
-        assert!(parse_until("value spede gt 1", &t).unwrap_err().error.as_ref().unwrap().contains("speed"));
-        assert!(parse_until("when speed", &t).is_err());
+        assert!(matches!(parse_until("value speed gt 2.5", &t, &[]), Ok(Until::Value { op: "gt", .. })));
+        assert!(matches!(parse_until("frames 0x10", &t, &[]), Ok(Until::Frames(16))));
+        assert!(parse_until("value speed bigger 1", &t, &[]).is_err());
+        assert!(parse_until("value spede gt 1", &t, &[]).unwrap_err().error.as_ref().unwrap().contains("speed"));
+        assert!(parse_until("when speed", &t, &[]).is_err());
     }
 
     #[test]
@@ -1766,6 +2490,18 @@ mod tests {
             let a = srv.call("session.render", &json!({"view": "540,16:9", "name": "t-cam", "look": "comic"}));
             assert!(a.ok(), "{:?}", a.error);
             assert_eq!(a.data["camera"], "orbit=20,tilt=-5");
+            // A preset is a camera too, and the ones that can end inside walls say so.
+            let a = srv.call("session.render", &json!({"view": "540,16:9", "name": "t-top", "camera": "preset=top"}));
+            assert!(a.ok(), "{:?}", a.error);
+            assert!(a.warnings.iter().any(|w| w.contains("inside a wall")), "{:?}", a.warnings);
+            let a = srv.call("session.camera", &json!({"camera": "preset=chase,fov=1.2"}));
+            assert!(a.ok() && a.data["camera"] == "preset=chase,fov=1.2", "{a:?}");
+            let a = srv.call("session.render", &json!({"view": "540,16:9", "name": "t-chase"}));
+            assert!(a.ok() && a.warnings.is_empty(), "{:?} {:?}", a.error, a.warnings);
+            let e = srv.call("session.camera", &json!({"camera": "preset=roof"}));
+            assert_eq!(e.code, Code::BadRequest);
+            assert!(e.message().contains("chase, side, top"), "{}", e.message());
+            assert!(srv.call("session.camera", &json!({"camera": "orbit=20,tilt=-5"})).ok());
             // A frame restored has no display list until a step.
             assert!(srv.call("session.mark", &json!({"name": "m"})).ok());
             assert!(srv.call("session.restore", &json!({"name": "m"})).ok());
@@ -1904,6 +2640,594 @@ mod tests {
         assert!(a.ok(), "{:?}", a.error);
         assert!(a.warnings.iter().any(|w| w.contains("made the spine's")), "{:?}", a.warnings);
         assert_eq!(hash_of(&a), want, "the same inputs, the same state");
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    // ------------------------------------------------------------ new verbs and options, no ROM
+
+    #[test]
+    fn the_richer_untils_parse_and_refuse() {
+        let t = tour::value_table(
+            "px|0x10:l:float|n\npy|0x14:l:float|n\npz|0x18:l:float|n\nscreen|0x1c:l|n\nracing|screen=7|a screen\n",
+        )
+        .unwrap();
+        assert_eq!(t.len(), 4, "a named state is not a value");
+        let s = tour::state_table("racing|screen=7|r\ntitle|screen=0x14|t\n").unwrap();
+        let u = parse_until("distance px,py,pz to 1,2.5,-3 lt 20", &t, &s).unwrap();
+        assert!(matches!(&u, Until::Distance { defs, to, op: "lt", d }
+            if defs.len() == 3 && *to == vec![1.0, 2.5, -3.0] && *d == 20.0));
+        assert!(matches!(parse_until("distance px,pz to 1,2 le 5", &t, &s), Ok(Until::Distance { .. })));
+        for bad in [
+            "distance px,py,pz to 1,2 lt 5",
+            "distance px to 1 lt 5",
+            "distance px,py to 1,2 near 5",
+            "distance px,py to 1,x lt 5",
+            "distance px,py,pz,px to 1,2,3,4 lt 5",
+            "changes",
+            "screen",
+        ] {
+            assert!(parse_until(bad, &t, &s).is_err(), "{bad}");
+        }
+        let e = parse_until("distance pxx,py to 1,2 lt 5", &t, &s).unwrap_err();
+        assert!(e.message().contains("did you mean: px"), "{}", e.message());
+        assert!(matches!(parse_until("changes px", &t, &s), Ok(Until::Changes { .. })));
+        assert!(parse_until("changes nope", &t, &s).is_err());
+        // screen: a name, a hex name, a number.
+        let at = |w: &str| match parse_until(w, &t, &s) {
+            Ok(Until::Value { op: "eq", v, .. }) => v,
+            o => panic!("{w}: {o:?}"),
+        };
+        assert_eq!((at("screen racing"), at("screen title"), at("screen 9")), (7.0, 20.0, 9.0));
+        let e = parse_until("screen raceing", &t, &s).unwrap_err();
+        assert!(e.message().contains("did you mean: racing"), "{}", e.message());
+        let e = parse_until("screen racing", &t, &[]).unwrap_err();
+        assert!(e.message().contains("names no screens"), "{}", e.message());
+        let no_screen = tour::value_table("px|0x10:l:float|n\n").unwrap();
+        assert!(parse_until("screen 1", &no_screen, &s).unwrap_err().message().contains("no value named `screen`"));
+        // The game's own table names its screens and still has all its values.
+        let g = romset::games::find("topskatr").unwrap();
+        let (vals, states) = (
+            tour::value_table(romset::games::values(g)).unwrap(),
+            tour::state_table(romset::games::values(g)).unwrap(),
+        );
+        assert!(vals.iter().any(|v| v.name == "screen") && vals.iter().all(|v| !v.name.contains('=')));
+        assert!(states.iter().any(|s| s.name == "racing" && s.value == "screen" && s.number == 7));
+        assert!(matches!(parse_until("screen racing", &vals, &states), Ok(Until::Value { v, .. }) if v == 7.0));
+    }
+
+    #[test]
+    fn raw_reads_take_kinds_and_ranges() {
+        let one = |s: &str| match parse_raw(s) {
+            Some(Ok(RawRead::One { addr, width, kind })) => (addr, width, kind),
+            o => panic!("{s}: {:?}", o.map(|r| r.is_ok())),
+        };
+        use tour::Kind::*;
+        assert_eq!(one("0x500000"), (0x500000, 4, Unsigned));
+        assert_eq!(one("0x500000:w"), (0x500000, 2, Unsigned));
+        assert_eq!(one("0x500000:l:float"), (0x500000, 4, Float));
+        assert_eq!(one("0x500000:float"), (0x500000, 4, Float));
+        assert_eq!(one("0x500000:b:signed"), (0x500000, 1, Signed));
+        assert_eq!(one("0x500000:signed:w"), (0x500000, 2, Signed));
+        let range = |s: &str| match parse_raw(s) {
+            Some(Ok(RawRead::Range { addr, len, elem })) => (addr, len, elem),
+            o => panic!("{s}: {:?}", o.map(|r| r.is_ok())),
+        };
+        assert_eq!(range("0x500000:16"), (0x500000, 16, None));
+        assert_eq!(range("0x500000..0x500020"), (0x500000, 32, None));
+        assert_eq!(range("0x500000:16:l:float"), (0x500000, 16, Some((4, Float))));
+        assert_eq!(range("0x500000:8:w"), (0x500000, 8, Some((2, Unsigned))));
+        for bad in ["0x500000:w:float", "0x500000:6:l", "0x500000:0", "0x500000:99999", "0x500000:q", "0x500000:b:w"] {
+            assert!(matches!(parse_raw(bad), Some(Err(_))), "{bad}");
+        }
+        // Not an address: a name for the table to find.
+        assert!(parse_raw("speed").is_none());
+        assert!(parse_raw("").is_none());
+    }
+
+    #[test]
+    fn new_verbs_check_their_arguments() {
+        let ok = |v: &str, a: Value| validate(find_verb(v).unwrap(), &a).map_err(|e| e.message());
+        assert!(ok("session.watch", json!({})).is_ok());
+        assert!(ok("session.watch", json!({"what": ["clock", "0x500000:16"], "limit": 50})).is_ok());
+        assert!(ok("session.watch", json!({"what": "clock"})).unwrap_err().contains("a list of strings"));
+        assert!(ok("session.watch", json!({"limit": "x"})).unwrap_err().contains("a whole number"));
+        assert!(ok("session.watch", json!({"mark": 1})).unwrap_err().contains("unknown argument"));
+        assert!(ok("session.disasm", json!({})).unwrap_err().contains("`addr` is needed"));
+        assert!(ok("session.disasm", json!({"addr": "0x1000", "count": 4, "back": 8})).is_ok());
+        assert!(ok("session.disasm", json!({"addr": 4096})).unwrap_err().contains("a string"));
+        assert!(ok("session.list", json!({})).is_ok());
+        assert!(ok("session.list", json!({"session": "s1"})).unwrap_err().contains("unknown argument"));
+        assert!(ok("session.step", json!({"frames": 3, "follow": "tour:x", "inputs": ["start"]})).is_ok());
+        assert!(ok("session.step", json!({"frames": 3, "follow": 4})).unwrap_err().contains("a string"));
+        assert!(ok("session.open", json!({"from": "tour:x@5", "overlay": ["start@1-2"], "index_every": 10})).is_ok());
+        assert!(ok("session.open", json!({"overlay": "start@1-2"})).unwrap_err().contains("a list of strings"));
+        assert!(ok("session.open", json!({"index_every": "k"})).is_err());
+        assert!(ok("session.read", json!({"names": ["0x1:float"], "format": "compact", "when": "before_poke"})).is_ok());
+        assert!(ok("session.read", json!({"format": 1})).is_err());
+        // A command line builds the same arguments.
+        let v = find_verb("session.watch").unwrap();
+        let a = args_from_pairs(v, &["what=clock".into(), "what=0x500000:16".into(), "limit=9".into()]).unwrap();
+        assert_eq!(a, json!({"what": ["clock", "0x500000:16"], "limit": 9}));
+        // `what=` (an empty value) is an empty list: it clears the watch.
+        assert_eq!(args_from_pairs(v, &["what=".into()]).unwrap(), json!({"what": []}));
+        let v = find_verb("session.open").unwrap();
+        let a =
+            args_from_pairs(v, &["from=tour:a@9".into(), "overlay=start@1-2".into(), "overlay=selright@3-4".into()]);
+        assert_eq!(a.unwrap(), json!({"from": "tour:a@9", "overlay": ["start@1-2", "selright@3-4"]}));
+    }
+
+    #[test]
+    fn a_verb_has_help_from_the_table() {
+        for v in VERBS {
+            let h = help(v);
+            assert!(h.starts_with(v.name) && h.contains(v.about), "{}", v.name);
+            for a in v.args {
+                assert!(h.contains(a.name) && h.contains(a.about), "{} {}", v.name, a.name);
+            }
+            assert_eq!(h.matches("required").count(), v.args.iter().filter(|a| a.required).count(), "{}", v.name);
+        }
+        let h = help(find_verb("session.step").unwrap());
+        assert!(h.contains("follow") && h.contains("until") && h.contains("whole number"), "{h}");
+        assert!(help(find_verb("session.list").unwrap()).contains("no arguments"));
+    }
+
+    #[test]
+    fn the_server_without_roms_refuses_new_verbs_plainly() {
+        let mut srv = Server::new(romset::games::find("topskatr").unwrap(), None, Config::default());
+        // No session: watch, disasm and read say so; list needs none.
+        for v in ["session.watch", "session.list"] {
+            let a = srv.call(v, &json!({}));
+            if v == "session.list" {
+                assert!(a.ok());
+                assert_eq!(a.data["sessions"], json!([]));
+            } else {
+                assert!(a.message().contains("no session is open"), "{}", a.message());
+            }
+        }
+        assert!(srv.call("session.disasm", &json!({"addr": "0x1000"})).message().contains("no session is open"));
+        // Overlay and index options are checked before the ROM is wanted.
+        let e = srv.call("session.open", &json!({"overlay": ["start@1-2"]}));
+        assert_eq!(e.code, Code::BadRequest);
+        assert!(e.message().contains("from=tour:LABEL@FRAME"), "{}", e.message());
+        for bad in ["start", "poke=0x500000:1@5-6", "nonesuch@1-2", "start@x-y", "coin-start"] {
+            let e = srv.call("session.open", &json!({"from": "tour:x@9", "overlay": [bad]}));
+            assert_eq!(e.code, Code::BadRequest, "{bad}");
+            assert!(e.message().contains("overlay"), "{bad}: {}", e.message());
+        }
+        let e = srv.call("session.open", &json!({"from": "tour:x@9", "index_every": 0}));
+        assert_eq!(e.code, Code::BadRequest, "{}", e.message());
+        // A good overlay gets as far as the missing ROM.
+        let e = srv.call("session.open", &json!({"from": "tour:x@9", "overlay": ["start@1-2"]}));
+        assert_eq!(e.code, Code::Missing);
+    }
+
+    // ------------------------------------------------------------ with the ROM
+
+    /// The game, its ROMs and a scratch folder (None without the ROM).
+    fn rom_env(tag: &str) -> Option<(&'static Game, RomSet, PathBuf)> {
+        let game = romset::games::find("topskatr").unwrap();
+        let rom = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rom");
+        let roms = RomSet::load(game, &rom, false).ok()?;
+        let out =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../out/scratch/{tag}-test-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        std::env::set_var("REMODEL_LOCK_DIR", out.join("locks"));
+        Some((game, roms, out))
+    }
+
+    /// The state hash `tour run` ends label `label` on, from `files`.
+    fn replay_hash(game: &Game, roms: &RomSet, files: &[PathBuf], label: &str, dir: &Path) -> String {
+        let tours = tour::load_paths(game, files).unwrap();
+        let (script, poked) = tour::build_script(game, &tours, label).unwrap();
+        std::fs::create_dir_all(dir.join("states")).unwrap();
+        let t = tours.iter().find(|t| t.label == label).unwrap();
+        let (row, _) = tour::run_one(roms, t, &script, dir, poked).unwrap();
+        row["state_hash"].as_str().unwrap().to_string()
+    }
+
+    fn ok(a: Answer) -> Answer {
+        assert!(a.ok(), "{:?} {:?}", a.error, a.data);
+        a
+    }
+
+    /// A watch changes nothing and sees what the game writes (skipped
+    /// without the ROM): the same state hash with and without, the clock's
+    /// writes one a frame with the frame, the writer's address and the
+    /// value, and a poke of the session's own is not among them.
+    #[test]
+    fn a_watch_changes_nothing_and_reports_the_clocks_writes() {
+        let Some((game, roms, out)) = rom_env("watch") else { return };
+        let cs = out.join("cs.tours");
+        std::fs::write(&cs, "cs|4000f|coin-start\n").unwrap();
+        let cfg = Config { tours: vec![cs.clone()], out: out.clone(), ..Config::default() };
+        let mut srv = Server::new(game, Some(&roms), cfg);
+        let go = crate::scene::recipes(game, None).unwrap().iter().find(|r| r.name == "race-course").unwrap().frame;
+        ok(srv.call("session.open", &json!({})));
+        let a = ok(srv.call("session.step", &json!({"frames": go, "follow": "tour:cs"})));
+        assert_eq!(a.data["followed"], "cs");
+        ok(srv.call("session.mark", &json!({"name": "go"})));
+        let plain = ok(srv.call("session.step", &json!({"frames": 120, "follow": "cs"})));
+        assert!(plain.data.get("watch").is_none());
+        ok(srv.call("session.restore", &json!({"name": "go"})));
+        let w = ok(srv.call("session.watch", &json!({"what": ["clock", "0x5830b0:4"]})));
+        assert_eq!(w.data["watching"][0]["len"], 2);
+        assert_eq!(w.data["watching"][1]["len"], 4);
+        let watched = ok(srv.call("session.step", &json!({"frames": 120, "follow": "cs"})));
+        assert_eq!(hash_of(&watched), hash_of(&plain), "a watch must not change the emulation");
+        let hits = watched.data["watch"]["hits"].as_array().unwrap();
+        assert!(hits.len() >= 100, "the clock is written every frame: {}", hits.len());
+        assert_eq!(watched.data["watch"]["dropped"], 0);
+        let named: Vec<&Value> = hits.iter().filter(|h| h["name"] == "clock").collect();
+        assert!(named.len() >= 100, "{} writes to the clock by name", named.len());
+        assert!(hits.iter().all(|h| h["ip"].as_str().unwrap() != "0x0" && h["frame"].as_u64().unwrap() >= go));
+        let frames: Vec<u64> = hits.iter().map(|h| h["frame"].as_u64().unwrap()).collect();
+        assert!(frames.windows(2).all(|p| p[0] <= p[1]) && frames[0] >= go && *frames.last().unwrap() <= go + 120);
+        // The clock counts down by one a frame: the values written fall, by their raw word.
+        let raw: Vec<u64> = named
+            .iter()
+            .map(|h| u64::from_str_radix(h["raw"].as_str().unwrap().trim_start_matches("0x"), 16).unwrap())
+            .collect();
+        assert!(raw.first() > raw.last(), "{raw:?}");
+        // The limit keeps the first writes and counts the rest.
+        ok(srv.call("session.restore", &json!({"name": "go"})));
+        ok(srv.call("session.watch", &json!({"limit": 5})));
+        let few = ok(srv.call("session.step", &json!({"frames": 120, "follow": "cs"})));
+        assert_eq!(hash_of(&few), hash_of(&plain));
+        assert_eq!(few.data["watch"]["kept"], 5);
+        assert!(
+            few.data["watch"]["dropped"].as_u64().unwrap() >= 95 && few.warnings.iter().any(|w| w.contains("not kept"))
+        );
+        // A poke of the session's own is not the program's write: the same
+        // writes with a poke (of the value the word holds) as without.
+        ok(srv.call("session.restore", &json!({"name": "go"})));
+        ok(srv.call("session.watch", &json!({"what": ["0x5dc090:4"], "limit": 1000})));
+        let free = ok(srv.call("session.step", &json!({"frames": 3, "follow": "cs"})));
+        ok(srv.call("session.restore", &json!({"name": "go"})));
+        ok(srv.call("session.poke", &json!({"what": "0x5dc090:7:l", "frames": 1})));
+        let poked = ok(srv.call("session.step", &json!({"frames": 3, "follow": "cs"})));
+        assert_eq!(poked.data["watch"]["writes"], free.data["watch"]["writes"], "{:?}", poked.data["watch"]);
+        // Clearing it: the step carries no `watch`.
+        ok(srv.call("session.watch", &json!({"what": []})));
+        let none = ok(srv.call("session.step", &json!({"frames": 3, "follow": "cs"})));
+        assert!(none.data.get("watch").is_none());
+        // Disassembly: the code at the writer's address reads as i960.
+        let ip = hits[0]["ip"].as_str().unwrap().to_string();
+        let d = ok(srv.call("session.disasm", &json!({"addr": ip, "count": 6, "back": 8})));
+        let listing = d.data["listing"].as_array().unwrap();
+        assert_eq!(listing.len(), 6);
+        assert!(listing.iter().any(|l| l.as_str().unwrap().starts_with("=>")), "{listing:?}");
+        assert!(listing.iter().any(|l| l.as_str().unwrap().contains(" st")), "the writer is a store: {listing:?}");
+        // The list shows the session and its marks.
+        let l = ok(srv.call("session.list", &json!({})));
+        assert_eq!(l.data["sessions"][0]["marks"], json!(["go"]));
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Following a recording gives the tour's own state, and with an overlay
+    /// the state of a hand-written branch (skipped without the ROM); an open
+    /// with an overlay is the tour with the overlay's terms, and its export
+    /// replays to its hash.
+    #[test]
+    fn following_a_recording_and_its_overlay_replay_as_tours() {
+        let Some((game, roms, out)) = rom_env("follow") else { return };
+        let spine = out.join("rec.tours");
+        std::fs::write(&spine, "rec|2000f|coin-start,selright@1300-1310,jumpfront@1500-1700\n").unwrap();
+        let hand = out.join("hand.tours");
+        std::fs::write(
+            &hand,
+            "plain|1650f|coin-start,selright@1300-1310,jumpfront@1500-1700\n\
+             ovl|1650f|coin-start,selright@1300-1310,jumpfront@1500-1700,selright@1200-1400\n\
+             hand|1650f|from=rec@1400,jumpfront@1500-1700,selright@1401-1650\n",
+        )
+        .unwrap();
+        let files = vec![spine.clone(), hand.clone()];
+        let cfg = Config {
+            tours: files.clone(),
+            spines: Some(out.join("spines")),
+            checkpoint_every: 400,
+            index_every: 100,
+            out: out.clone(),
+            ..Config::default()
+        };
+        let mut srv = Server::new(game, Some(&roms), cfg);
+        let dir = out.join("run");
+        let want = |label: &str| replay_hash(game, &roms, &files, label, &dir);
+
+        // From power-on, following the recording equals the plain tour.
+        ok(srv.call("session.open", &json!({})));
+        let a = ok(srv.call("session.step", &json!({"frames": 1650, "follow": "tour:rec"})));
+        assert_eq!(hash_of(&a), want("plain"), "follow equals the tour's replay");
+        assert_eq!(a.data["followed"], "rec");
+        // In pieces, too: the log is the same and the export replays.
+        ok(srv.call("session.close", &json!({})));
+        ok(srv.call("session.open", &json!({})));
+        for n in [500, 700, 450] {
+            ok(srv.call("session.step", &json!({"frames": n, "follow": "rec"})));
+        }
+        let a = ok(srv.call("session.step", &json!({"frames": 1, "follow": "rec"})));
+        let exp = ok(srv.call("session.export", &json!({"label": "again", "file": "again"})));
+        let again = PathBuf::from(exp.data["file"].as_str().unwrap());
+        assert_eq!(hash_of(&a), exp.data["state_hash"].as_str().unwrap());
+        assert_eq!(
+            replay_hash(game, &roms, std::slice::from_ref(&again), "again", &dir),
+            hash_of(&a),
+            "the followed log replays"
+        );
+        // An unknown recording names the near ones.
+        let e = srv.call("session.step", &json!({"frames": 1, "follow": "tour:rek"}));
+        assert!(e.message().contains("did you mean: rec"), "{}", e.message());
+        ok(srv.call("session.close", &json!({})));
+
+        // From a spine: follow with an overlay held on top equals the hand-written branch.
+        let o = ok(srv.call("session.open", &json!({"from": "tour:rec@1400"})));
+        assert_eq!(o.data["checkpoint"], 1200);
+        let a = ok(srv.call("session.step", &json!({"frames": 250, "follow": "rec", "inputs": ["selright"]})));
+        assert_eq!(a.data["frame"], 1650);
+        assert_eq!(a.data["held"], json!(["selright"]));
+        assert_eq!(hash_of(&a), want("hand"), "follow with an overlay equals a hand-written branch");
+        let exp = ok(srv.call("session.export", &json!({"label": "viaf", "file": "viaf"})));
+        let line = exp.data["line"].as_str().unwrap();
+        assert!(line.starts_with("viaf|1650f|from=rec@1400,"), "{line}");
+        let viaf = PathBuf::from(exp.data["file"].as_str().unwrap());
+        assert_eq!(replay_hash(game, &roms, &[viaf], "viaf", &dir), hash_of(&a));
+        ok(srv.call("session.close", &json!({})));
+
+        // Open with an overlay: the tour with its terms added; the checkpoint is one before it.
+        let o = ok(srv.call("session.open", &json!({"from": "tour:rec@1650", "overlay": ["selright@1200-1400"]})));
+        assert_eq!(o.data["checkpoint"], 800, "{o:?}");
+        assert_eq!(hash_of(&o), want("ovl"), "an overlaid open is the tour with the overlay");
+        // Stepping on, then exporting: a branch from before the overlay, replaying to the session's hash.
+        ok(srv.call("session.input", &json!({"inputs": ["start"]})));
+        let a = ok(srv.call("session.step", &json!({"frames": 30})));
+        let exp = ok(srv.call("session.export", &json!({"label": "viao", "file": "viao"})));
+        let line = exp.data["line"].as_str().unwrap();
+        assert!(line.starts_with("viao|1680f|from=rec@1199,"), "{line}");
+        assert!(line.contains("selright@1200-1400"), "{line}");
+        let viao = PathBuf::from(exp.data["file"].as_str().unwrap());
+        assert_eq!(replay_hash(game, &roms, &[viao], "viao", &dir), hash_of(&a), "{line}");
+        // An overlay that starts after the open frame changes nothing, and says so.
+        ok(srv.call("session.close", &json!({})));
+        let o = ok(srv.call("session.open", &json!({"from": "tour:rec@1650", "overlay": ["start@1700-1800"]})));
+        assert!(o.warnings.iter().any(|w| w.contains("starts after")), "{:?}", o.warnings);
+        assert_eq!(hash_of(&o), want("plain"));
+        // One that runs past it says the session holds its own inputs from there.
+        ok(srv.call("session.close", &json!({})));
+        let o = ok(srv.call("session.open", &json!({"from": "tour:rec@1650", "overlay": ["selright@1600-1800"]})));
+        assert!(o.warnings.iter().any(|w| w.contains("runs past")), "{:?}", o.warnings);
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Each `until` form stops where it should (skipped without the ROM).
+    #[test]
+    fn each_until_form_stops_where_expected() {
+        let Some((game, roms, out)) = rom_env("until") else { return };
+        let cs = out.join("cs.tours");
+        std::fs::write(&cs, "cs|4000f|coin-start\n").unwrap();
+        let cfg = Config { tours: vec![cs.clone()], out: out.clone(), ..Config::default() };
+        let mut srv = Server::new(game, Some(&roms), cfg);
+        // screen NAME: from power-on to the first frame on the racing screen.
+        ok(srv.call("session.open", &json!({})));
+        let a = ok(srv.call("session.step", &json!({"frames": 3600, "follow": "cs", "until": "screen racing"})));
+        assert_eq!(a.data["stopped"], "until", "{a:?}");
+        let at = a.data["frame"].as_u64().unwrap();
+        assert!((3000..3300).contains(&at), "the race loads about frame 3150: {at}");
+        assert_eq!(a.data["until_reading"], 7);
+        let r = ok(srv.call("session.read", &json!({"names": ["screen"]})));
+        assert_eq!(r.data["values"][0]["value"], 7);
+        // One frame short of it, the screen is something else.
+        ok(srv.call("session.close", &json!({})));
+        ok(srv.call("session.open", &json!({})));
+        let b = ok(srv.call("session.step", &json!({"frames": at - 1, "follow": "cs"})));
+        assert_ne!(ok(srv.call("session.read", &json!({"names": ["screen"]}))).data["values"][0]["value"], 7, "{b:?}");
+        // changes NAME: the clock runs once the race has started.
+        ok(srv.call("session.step", &json!({"frames": 40, "follow": "cs"})));
+        let before = ok(srv.call("session.read", &json!({"names": ["clock"]}))).data["values"][0]["value"].clone();
+        let c = ok(srv.call("session.step", &json!({"frames": 200, "follow": "cs", "until": "changes clock"})));
+        assert_eq!(c.data["stopped"], "until", "{c:?}");
+        assert_ne!(c.data["until_reading"], before);
+        assert!(c.data["frames_run"].as_u64().unwrap() <= 2, "{c:?}");
+        // distance: back to a mark, and out to where the skater is 60 frames on.
+        ok(srv.call("session.step", &json!({"frames": 30, "follow": "cs"})));
+        ok(srv.call("session.mark", &json!({"name": "m"})));
+        ok(srv.call("session.step", &json!({"frames": 60, "follow": "cs"})));
+        let p = ok(srv.call("session.read", &json!({"names": ["pos-x", "pos-y", "pos-z"], "format": "compact"})));
+        let (x, y, z) =
+            (p.data["values"]["pos-x"].clone(), p.data["values"]["pos-y"].clone(), p.data["values"]["pos-z"].clone());
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let until = format!("distance pos-x,pos-y,pos-z to {x},{y},{z} lt 0.001");
+        let d = ok(srv.call("session.step", &json!({"frames": 200, "follow": "cs", "until": until})));
+        assert_eq!(d.data["stopped"], "until", "{d:?}");
+        assert_eq!(d.data["frames_run"], 60, "{d:?}");
+        assert_eq!(d.data["until_reading"], 0.0);
+        // Two coordinates: the distance over x and z alone.
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let until = format!("distance pos-x,pos-z to {x},{z} lt 0.001");
+        let d = ok(srv.call("session.step", &json!({"frames": 200, "follow": "cs", "until": until})));
+        assert_eq!(d.data["frames_run"], 60, "{d:?}");
+        // A point never reached: the step runs its frames.
+        ok(srv.call("session.restore", &json!({"name": "m"})));
+        let d = ok(srv.call(
+            "session.step",
+            &json!({"frames": 10, "follow": "cs", "until": "distance pos-x,pos-z to 99999,99999 lt 1"}),
+        ));
+        assert_eq!(d.data["stopped"], "frames");
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Reads: floats, signed words, ranges, the compact forms, and a value a
+    /// poke holds, as the frame left it and after the poke (skipped without
+    /// the ROM).
+    #[test]
+    fn reads_take_floats_ranges_and_the_poke_timing() {
+        let Some((game, roms, out)) = rom_env("read") else { return };
+        let cs = out.join("cs.tours");
+        std::fs::write(&cs, "cs|4000f|coin-start\n").unwrap();
+        let cfg = Config { tours: vec![cs], out: out.clone(), ..Config::default() };
+        let mut srv = Server::new(game, Some(&roms), cfg);
+        ok(srv.call("session.open", &json!({})));
+        ok(srv.call("session.step", &json!({"frames": 3400, "follow": "cs"})));
+        // A named float and the same word read raw as a float.
+        let r =
+            ok(srv
+                .call("session.read", &json!({"names": ["speed", "0x582f90:float", "0x582f90:l:float", "0x582f90"]})));
+        let v = &r.data["values"];
+        assert!(v[0]["value"].as_f64().unwrap() > 0.5, "{r:?}");
+        assert_eq!(v[0]["value"], v[1]["value"]);
+        assert_eq!(v[1]["value"], v[2]["value"]);
+        assert_eq!(v[3]["raw"], v[0]["raw"]);
+        // Signed: -1 is the skater object's +0xcc word.
+        let r = ok(srv.call("session.read", &json!({"names": ["0x582fdc:signed", "0x582fdc:l", "skater-cc"]})));
+        assert_eq!(r.data["values"][0]["value"], r.data["values"][2]["value"]);
+        // A range: a hex dump, the same bytes as the words, and as floats.
+        let r = ok(srv.call(
+            "session.read",
+            &json!({"names": ["0x582f90:8", "0x582f90..0x582f98", "0x582f90:8:l:float", "0x582f90:8:w"]}),
+        ));
+        let v = &r.data["values"];
+        assert_eq!(v[0]["hex"].as_str().unwrap().len(), 16);
+        assert_eq!(v[0]["hex"], v[1]["hex"]);
+        assert_eq!(v[2]["values"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            v[2]["values"][0],
+            ok(srv.call("session.read", &json!({"names": ["speed"]}))).data["values"][0]["value"]
+        );
+        assert_eq!(v[3]["values"].as_array().unwrap().len(), 4);
+        let e = srv.call("session.read", &json!({"names": ["0x582f90:5000"]}));
+        assert_eq!(e.code, Code::BadRequest);
+        let e = srv.call("session.read", &json!({"names": ["0x10000000:4"]}));
+        assert!(e.message().contains("not mapped"), "{}", e.message());
+        // Compact and tsv.
+        let c = ok(srv.call("session.read", &json!({"names": ["clock", "speed", "0x582f90:4"], "format": "compact"})));
+        assert!(c.data["values"].is_object() && c.data["values"]["clock"].is_u64(), "{c:?}");
+        assert!(c.data["values"]["0x582f90:4"].is_string());
+        let t = ok(srv.call("session.read", &json!({"names": ["clock", "speed"], "format": "tsv"})));
+        let text = t.data["text"].as_str().unwrap();
+        assert!(text.starts_with("clock\t") && text.lines().count() == 2, "{text:?}");
+        assert_eq!(srv.call("session.read", &json!({"format": "xml"})).code, Code::BadRequest);
+        assert_eq!(srv.call("session.read", &json!({"when": "never"})).code, Code::BadRequest);
+        // The poke timing: a poke is applied at once for the frame about to run.
+        let screen_now =
+            ok(srv.call("session.read", &json!({"names": ["screen"]}))).data["values"][0]["value"].as_u64().unwrap();
+        assert_ne!(screen_now, 13);
+        let nothing = ok(srv.call("session.read", &json!({"names": ["screen"], "when": "before_poke"})));
+        assert!(nothing.warnings.iter().any(|w| w.contains("no poke has applied")), "{:?}", nothing.warnings);
+        ok(srv.call("session.poke", &json!({"what": "0x5dc090:13:l", "frames": 2})));
+        let after = ok(srv.call("session.read", &json!({"names": ["screen", "clock"]})));
+        assert_eq!(after.data["values"][0]["value"], 13, "the poke is there as soon as it is made");
+        assert!(after.warnings.iter().any(|w| w.contains("before_poke")), "{:?}", after.warnings);
+        assert_eq!(after.data["poked"], json!(["screen"]));
+        assert_eq!(after.data["when"], "after");
+        let before = ok(srv.call("session.read", &json!({"names": ["screen", "clock"], "when": "before_poke"})));
+        assert_eq!(before.data["values"][0]["value"], screen_now, "as the frame left it");
+        assert!(before.warnings.is_empty(), "{:?}", before.warnings);
+        // A raw read of the poked bytes, and a range over them.
+        let raw = ok(srv.call("session.read", &json!({"names": ["0x5dc090:b", "0x5dc08f:4"], "when": "before_poke"})));
+        assert_eq!(raw.data["values"][0]["value"], screen_now & 0xff);
+        // After a step the poke has applied again to the next frame: the value
+        // the previous frame left is whatever the game made of it, the poked one is 13.
+        ok(srv.call("session.step", &json!({"frames": 1, "follow": "cs"})));
+        let after = ok(srv.call("session.read", &json!({"names": ["screen"]})));
+        assert_eq!(after.data["values"][0]["value"], 13);
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Where two saved states differ: the first runs of differing bytes.
+    fn diff_runs(a: &[u8], b: &[u8]) -> String {
+        if a.len() != b.len() {
+            return format!("{} against {} bytes", a.len(), b.len());
+        }
+        let (mut runs, mut total, mut i) = (Vec::new(), 0usize, 0usize);
+        while i < a.len() {
+            if a[i] != b[i] {
+                let s = i;
+                while i < a.len() && a[i] != b[i] {
+                    i += 1;
+                }
+                total += i - s;
+                if runs.len() < 8 {
+                    runs.push(format!("{s:#x}+{}", i - s));
+                }
+            } else {
+                i += 1;
+            }
+        }
+        format!("{total} bytes differ of {}, in runs at {}", a.len(), runs.join(" "))
+    }
+
+    /// A restore after pokes is the machine a fresh replay makes, all of it:
+    /// the saved state byte for byte, and the same state on after more frames
+    /// (skipped without the ROM). The notes' one unexplained observation was
+    /// a task missing after a restore in a session that had used pokes.
+    #[test]
+    fn a_restore_after_pokes_equals_a_fresh_replay() {
+        let Some((game, roms, out)) = rom_env("restore") else { return };
+        let cs = out.join("cs.tours");
+        std::fs::write(&cs, "cs|4000f|coin-start\n").unwrap();
+        let cfg = Config { tours: vec![cs], out: out.clone(), sessions: 3, ..Config::default() };
+        let mut srv = Server::new(game, Some(&roms), cfg);
+        // The two machines are the same, all of it: the hash, and every byte of the
+        // saved state, but the render and palette RAM write counts. Those are versions
+        // for a renderer and only ever grow in a copy (`Model2Bus::copy_from`), so a
+        // machine restored after more frames than a fresh one ran carries bigger ones
+        // (at most two small counters, 3 bytes here); they are no part of the state hash.
+        let same = |srv: &mut Server, a: &str, b: &str, what: &str| {
+            let (sa, ha, va) = {
+                let s = srv.sessions.get_mut(a).unwrap();
+                (s.m.save_state(), s.hash(), s.m.bus.video_ram_versions())
+            };
+            let (sb, hb, vb) = {
+                let s = srv.sessions.get_mut(b).unwrap();
+                (s.m.save_state(), s.hash(), s.m.bus.video_ram_versions())
+            };
+            assert_eq!(ha, hb, "{what}: the hash");
+            assert_eq!(sa.len(), sb.len(), "{what}: the size of the saved state");
+            let differing = sa.iter().zip(&sb).filter(|(x, y)| x != y).count();
+            if va == vb {
+                assert_eq!(differing, 0, "{what}: the machine differs from a fresh replay's: {}", diff_runs(&sa, &sb));
+            } else {
+                assert!(differing <= 16, "{what}: more than the two version counters differ: {}", diff_runs(&sa, &sb));
+            }
+        };
+        let step = |srv: &mut Server, id: &str, n: u64| {
+            ok(srv.call("session.step", &json!({"session": id, "frames": n, "follow": "cs"})))
+        };
+        // Session A runs to 3400 (in the race), marks, pokes things, runs on; session B is the fresh replay.
+        let a = ok(srv.call("session.open", &json!({}))).data["session"].as_str().unwrap().to_string();
+        let b = ok(srv.call("session.open", &json!({}))).data["session"].as_str().unwrap().to_string();
+        step(&mut srv, &a, 3400);
+        step(&mut srv, &b, 3400);
+        ok(srv.call("session.mark", &json!({"session": a, "name": "m"})));
+        // Pokes of a flag, a position and the clock; a step with them; a second poke; more steps.
+        for what in ["0x5830b0:0x0e10:w", "0x583034:0x42c80000:l", "0x5ce960:1:l", "0x5830ac:19:l"] {
+            ok(srv.call("session.poke", &json!({"session": a, "what": what, "frames": 20})));
+        }
+        step(&mut srv, &a, 50);
+        ok(srv.call("session.poke", &json!({"session": a, "what": "0x5dc090:0:l", "frames": 5})));
+        step(&mut srv, &a, 120);
+        // Restore, and A must be B: every byte of the saved state, and the hash.
+        ok(srv.call("session.restore", &json!({"session": a, "name": "m"})));
+        same(&mut srv, &a, &b, "after the restore");
+        // On, with the same inputs: the same state.
+        step(&mut srv, &a, 200);
+        step(&mut srv, &b, 200);
+        same(&mut srv, &a, &b, "200 frames after the restore");
+        // And with a poke held across the restore: a mark taken while pokes are pending.
+        ok(srv.call("session.poke", &json!({"session": a, "what": "0x5830b0:0x0e10:w", "frames": 40})));
+        ok(srv.call("session.poke", &json!({"session": b, "what": "0x5830b0:0x0e10:w", "frames": 40})));
+        step(&mut srv, &a, 10);
+        ok(srv.call("session.mark", &json!({"session": a, "name": "p"})));
+        step(&mut srv, &a, 60);
+        ok(srv.call("session.restore", &json!({"session": a, "name": "p"})));
+        step(&mut srv, &a, 80);
+        step(&mut srv, &b, 90);
+        same(&mut srv, &a, &b, "a mark taken under a pending poke, restored");
+        // The task list the check walks: the same words after the restore as in the replay.
+        let tasks = |srv: &mut Server, id: &str| {
+            ok(srv.call("session.read", &json!({"session": id, "names": ["0x582660..0x582760"], "format": "tsv"}))).data
+                ["text"]
+                .clone()
+        };
+        assert_eq!(tasks(&mut srv, &a), tasks(&mut srv, &b));
         let _ = std::fs::remove_dir_all(&out);
     }
 }

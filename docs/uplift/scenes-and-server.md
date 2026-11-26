@@ -4,7 +4,7 @@ Shared words, roles and rules: [README.md](README.md). Status: the MVP
 slice at the end is built (2026-11-21) and its user-facing parts are in
 [../uplift-studio.md](../uplift-studio.md), "Scenes". The server and the
 live session's slice 2 are built (2026-11-26; "Slice 2 as built" below,
-[../uplift-studio.md](../uplift-studio.md), "Live sessions"); spines from a person's recording (slice 4) the same day, "Slice 4 as built". The rest
+[../uplift-studio.md](../uplift-studio.md), "Live sessions"); spines from a person's recording (slice 4) the same day, "Slice 4 as built"; what the first real use missed (watch, disasm, following, reads, until, presets) the same day, "Slice 5 as built". The rest
 (`scene what/where/sheet/clip`, `--asset`, `--overlay`, facts, the side
 channel, `session.what`) is still a design.
 
@@ -479,7 +479,7 @@ other command.
   `scene make` does), so it is there after any step and missing after `open`
   or `restore` until the next step (the render says so, code 3). The game's
   geometrizer needs a native implementation (the chip-run games have none).
-- **Not built:** `session.what`; `until screen NAME`; `session.export`'s
+- **Not built:** `session.what`; `session.export`'s
   `scene: NAME`; a cache of opened packs (each render builds its pack layers
   again; the GPU, the looks and the machines are kept warm); light-gun aim
   in the log (the export says so in a warning); a named pipe on Windows.
@@ -540,10 +540,90 @@ measured numbers in [../uplift-studio.md](../uplift-studio.md), "Spines".
   (`tour::Common::tours` is a list), so a branch whose spine is in another file
   runs and counts. A branch's map is a replay from power-on, so its reads include
   its spine's, and `coverage` unions them.
-- **Not built:** `until screen NAME`, spans over a derived value (a speed from
+- **Not built:** spans over a derived value (a speed from
   positions), a nearest-neighbour structure (the scan is 645 rows for a 19,000
   frame run), and a cache shared between worktrees.
 
+### Slice 5 as built (2026-11-26): what the first real use missed
+
+The field notes ([session-field-notes.md](session-field-notes.md)) listed what a
+long task against the server lacked; this slice builds it. The verb table
+(`session.rs`) grew `session.watch`, `session.disasm` and `session.list`, and
+`step`, `open`, `read`, `camera` gained arguments; the command line gained
+`remodel call VERB --help`. Nothing in the code names a game: the screens are
+lines of the game's value table.
+
+- **Watch.** `Model2Bus::watch` (was a single address for `REMODEL_WATCH`) is an
+  `Option<Box<Watch>>`: ranges, a cap and the hits, tested once in `mem_write`,
+  where the old test was. Each hit is (cycle, ip, address, value, size, frame);
+  the frame is `bus.frames` when the write happens. `ip` is `cur_ip`, which the
+  interpreter sets before each instruction and recompiled code and the JIT set
+  through `Host::at` on the paths that reach the bus (the JIT's inline memory path
+  never reaches it, so the bus turns it off while a watch is set:
+  `fast_pages`). `Model2Bus::poke` takes the watch out for its write, so a
+  session's pokes are not the program's writes. The watch is in the session, put
+  on the bus for the frames of a step and taken off after (so it is not in a
+  mark or a state, and `restore` does not touch it). **Measured**
+  (2026-11-26, Top Skater, release, this machine, medians of five and three
+  runs, frames a second): boot from power-on, base build 437 and 440, this build
+  439 and 441, a watch on the clock 436; the race (frames 3300 to 6300 of the
+  coin-start tour), interpreter, 305 and 313 without a watch, 309 with one;
+  `--jit`, 804 without and 580 with (the fast path off). The state hash was the
+  same with and without, on the interpreter and under `--jit` (a test and a
+  one-off check).
+- **Disassembly.** `session.disasm` uses the i960 crate's `decode` (it had a
+  disassembler already, in `Insn`'s `Display`) over `bus.peek`, so it reads ROM
+  or RAM code as the machine holds it, up to 256 instructions; the listing is an
+  answer (the repo never holds listings). Starting before the address can land
+  inside an eight-byte instruction (the answer says so).
+- **Following.** `step follow` builds one `InputScript` per step from the
+  recording's terms (`tour::inputs`, named pokes resolved), the held `inputs` as
+  `NAME@first-last` and the session's pokes, and applies it each frame, the log
+  recording what was applied (so the export is explicit terms and replays). The
+  recording's pokes become the session's. `open overlay` runs the recording plus
+  the overlay terms from a checkpoint before the overlay's first frame; the
+  export is `from=LABEL@(A-1)` with the recording's terms for frames A to the open
+  frame (`tour::cut` and the new `tour::tail`) and the overlay as the branch's
+  own, since the format wants a branch's terms after its branch point; an overlay
+  from frame 1 exports with no `from=`. An overlay past the open frame is not
+  carried (a warning). A repeating term that began before A cannot be restated
+  and the export says so (it cannot start late).
+- **Reads.** `parse_raw` takes `ADDR[:LEN][:b|w|l][:signed|float]` and
+  `ADDR..END`. `when=before_poke` works from `Session::pre`: each time the
+  pokes of a frame apply, the bytes they cover are noted first, and a read
+  substitutes them. It is kept in a mark and restored. A read warns when a poke of the current frame covers
+  a value it returns.
+- **`until`.** `distance`, `changes` (compares raw bytes with the step's start,
+  armed at the step) and `screen` (a `NAME|VALUE=NUMBER|note` line of the value
+  table, `tour::state_table`; Top Skater names six screens). The step's answer has
+  `until_reading`.
+- **Spine granularity.** `serve --index-every K --checkpoint-every N` (the
+  `Config` fields existed) and `open`'s `index_every` and `checkpoint_every`.
+- **Camera presets.** `scene::CAMERA_PRESETS`, expanded wherever a camera is
+  parsed: `chase` (`tilt=14,z=-0.3`), `side` (`orbit=90,tilt=6,z=-0.2`), `top`
+  (`tilt=55,z=-0.25`), shares of the scene's scale. Photo mode's tilt is positive
+  for an eye above (checked on a race frame: `tilt=-30` puts the eye under the
+  floor, looking up, which is what the notes found). The game draws little behind
+  its own camera, so a view from further back shows a bare floor there; in a hall
+  the eye can end inside a wall or ceiling (no geometry is tested: the render
+  warns for `side` and `top`).
+- **The restore question.** The notes' one unexplained observation (a task
+  missing after a restore in a session with pokes) did not reproduce. A test
+  runs two sessions, restores one to a mark after pokes, steps and restores
+  again, and compares the whole saved machine state (`Machine::save_state`,
+  not just the state hash) with a fresh replay of the same inputs: right after the restore,
+  200 frames later, and after a mark taken with a poke pending. It is equal
+  except for three bytes of the render and palette RAM *version* counters, which a copy only
+  ever grows (so a renderer re-uploads) and which are no part of the state hash;
+  the test allows those two counters and nothing else. So `restore` is not the
+  cause; the notes' own explanation (every later result came from a fresh
+  session) stands. An unconfirmed guess: the walk read the list from a mark
+  taken before the task existed. The pokes' own state (their log and the
+  bytes they overwrote) is part of a mark; the machine's is a full copy
+  (`copy_from` with fresh marks, so nothing is skipped).
+- **Not built:** `spine.where --refine` (re-stepping around the best rows),
+  `remodel call --batch`, an append mode for `session.export file=` (the shared
+  tours file the notes lost lines in), and the `ip` of writes the copro makes.
 ### Open questions (session)
 
 - **Step speed.** Unthrottled stepping with no drawing should run well

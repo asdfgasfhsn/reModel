@@ -119,3 +119,26 @@ of the time went to the missing pieces below, not to the search itself.
 3. Float and range reads, compact output.
 4. Say what a poke can and cannot do, and read before the poke applies.
 5. A `session.list`, `until` with more tests, a camera preset.
+
+## Addressed (2026-11-26, the same day)
+
+What the list above asked for, and where it went (design: scenes-and-server.md,
+"Slice 5 as built"; user-facing: ../uplift-studio.md, "Live sessions").
+
+| Missing | Now |
+|---|---|
+| 1. Applying a recording's inputs | `session.step follow: tour:LABEL`, with `inputs` as an overlay on top |
+| 2. Changing a recording's start | `session.open overlay: [jumpfront@2560-3000]`; exports as a branch carrying it |
+| 3. Why the game did not do something | `session.watch` (writes, with frame, value and the i960 `ip`) and `session.disasm`; no cost when unset, no change to any state hash. Not built: a PC trace, breakpoints |
+| 4. Pokes and the frame | Stated in the verb text, the docs ("Pokes") and a warning on reads a poke covers; `session.read when: before_poke` |
+| 5. Raw reads | `:float`, `:signed`, ranges (`ADDR:LEN`, `ADDR..END`), `format: compact` and `tsv` |
+| 6. `until` | `distance NX,NY,NZ to X,Y,Z lt D`, `changes NAME`, `screen NAME` (the value table names screens); `until_reading` in the answer |
+| 7. Spine query resolution | The granularity is reachable (`serve --index-every`, `open index_every`); `spine.where --refine` is not built |
+| 8. The camera | `preset=chase\|side\|top`; tilt is positive for an eye above (checked), and the doc says so; the eye can still land in a wall |
+| 9. Command line | `remodel call VERB --help`; `session.list`. Not built: `call --batch` |
+| 10. Sessions not freed | `session.list` shows what is open |
+
+The unexplained restore observation did not reproduce: a test restores after
+pokes and compares the whole machine with a fresh replay (equal but for the
+renderer's version counters); see "The restore question" in the design doc. Not
+addressed: the shared tours file (an append mode for `session.export file=`).

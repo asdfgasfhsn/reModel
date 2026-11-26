@@ -133,7 +133,7 @@ if r["result"]["serverInfo"]["name"] != "remodel":
 rpc("notifications/initialized", notify=True)
 tools = [t["name"] for t in rpc("tools/list")["result"]["tools"]]
 want = ["session.open", "session.input", "session.step", "session.mark", "session.restore", "session.forget",
-        "session.read", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "scene.render"]
+        "session.read", "session.watch", "session.disasm", "session.list", "session.poke", "session.camera", "session.render", "session.export", "session.close", "spine.index", "spine.where", "scene.render"]
 if tools != want:
     fail(f"tools/list {tools}")
 if "error" not in rpc("tools/call", {"name": "session.nonesuch", "arguments": {}}):
@@ -234,6 +234,34 @@ if bad.returncode != 2 or json.loads(bad.stdout)["code"] != 2:
 print("remodel call over the socket: the same envelope, exit codes 0 and 2")
 if oct(os.stat(sock).st_mode & 0o777) != "0o600":
     fail("the socket is not mode 0600")
+
+# Verb help from the table, the session list, a watch that changes nothing, a disassembly.
+hp = subprocess.run(base + ["call", "session.step", "--help"], capture_output=True, text=True, env=env)
+if hp.returncode != 0 or "follow" not in hp.stdout or "until" not in hp.stdout:
+    fail(f"remodel call VERB --help: {hp.stdout}{hp.stderr}")
+lst = need("session.list")
+if sid not in [s["session"] for s in lst["sessions"]]:
+    fail(f"session.list does not show {sid}: {lst}")
+need("session.mark", session=sid, name="chk")
+need("session.input", session=sid, inputs=[])
+plain = need("session.step", session=sid, frames=30)
+need("session.restore", session=sid, name="chk")
+need("session.input", session=sid, inputs=[])
+need("session.watch", session=sid, what=["0x500000:0x10000"], limit=50)
+watched = need("session.step", session=sid, frames=30)
+need("session.watch", session=sid, what=[])
+if watched["state_hash"] != plain["state_hash"]:
+    fail("a watch changed the state hash")
+hits = watched["watch"]["hits"]
+if not hits:
+    fail("a watch of the work RAM saw no writes in 30 frames")
+dis = need("session.disasm", session=sid, addr=hits[0]["ip"], count=4)
+if len(dis["listing"]) != 4:
+    fail(f"disasm: {dis}")
+rng = need("session.read", session=sid, names=["0x500000:16", "0x500000:4:l:float"], format="compact")
+if len(rng["values"]["0x500000:16"]) != 32:
+    fail(f"a range read: {rng}")
+print(f"watch: {watched['watch']['writes']} writes in 30 frames, state hash unchanged; disasm at {hits[0]['ip']}: {dis['listing'][0].strip()}")
 
 if measure:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

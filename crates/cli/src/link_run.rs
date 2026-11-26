@@ -435,7 +435,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
                 l.beat_until = a.beat_until;
             }
             if let Some((_, ad)) = a.watch.filter(|w| w.0 == i) {
-                m.bus.watch = Some((ad, Vec::new()));
+                m.bus.watch = Some(Box::new(model2::bus::Watch::word(ad)));
             }
             if a.trace == Some(i) {
                 m.bus.link_trace = Some(Vec::new());
@@ -689,8 +689,8 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         }
     }
     if let Some((n, ad)) = a.watch {
-        if let Some((_, hits)) = ms.get(n).and_then(|m| m.bus.watch.as_ref()) {
-            for &(t, ip, addr, v, sz) in hits.iter().take(400) {
+        if let Some(hits) = ms.get(n).and_then(|m| m.bus.watch.as_ref()).map(|w| &w.hits) {
+            for &(t, ip, addr, v, sz, _) in hits.iter().take(400) {
                 say(
                     &mut log,
                     format!(

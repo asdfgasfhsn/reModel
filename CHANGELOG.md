@@ -15,6 +15,27 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Live sessions, from the first real use (docs/uplift/session-field-notes.md):
+  `session.watch` reports the writes to named values or `ADDR[:LEN]` during a
+  step, each with the frame, the size, the value and the i960 instruction that
+  wrote (a watch never changes the emulation: the state hashes are the same with
+  and without; no measurable cost when none is set, and about 1% with one on the
+  interpreter; a watch turns the JIT's fast memory path off, 804 to 580 frames a
+  second on `--jit`), and `session.disasm` lists the main CPU's code at an
+  address. `session.step follow: tour:LABEL` applies a recording's inputs for
+  the frames stepped, with `inputs` added on top as an overlay; `session.open
+  overlay` opens a recording with extra held inputs (`jumpfront@2560-3000`) and
+  exports as a branch that carries them. Reads take `:float` and `:signed`,
+  ranges (`ADDR:LEN`, `ADDR..END`, as a hex dump or typed values), `format`
+  `compact` and `tsv`, and `when: before_poke` (a poke applies at the start of
+  the frame, so a read right after a step shows the poked value, which the answer
+  now says). `until` takes `distance NX,NY,NZ to X,Y,Z lt D`, `changes NAME` and
+  `screen NAME` (a game's value table may name its screens:
+  `racing|screen=7|note`). `session.list`; `remodel call VERB --help` prints the
+  verb's arguments; `--index-every` and `--checkpoint-every` on `serve` (and per
+  open) set a spine's granularity; camera `preset=chase|side|top` for
+  third-person renders. A test restores after pokes and compares the whole
+  machine with a fresh replay: equal but for the renderer's version counters.
 - Spines: a person's recording (a tour from power-on) opens fast at any
   frame and can be searched. `remodel spine index LABEL` replays it once and
   keeps a machine state every 600 frames and the game's named values every 30

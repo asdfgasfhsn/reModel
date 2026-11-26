@@ -209,9 +209,10 @@ pub struct Model2Bus {
     pub geo_words: u64,
     /// When set, geo port writes (address, value) are recorded here.
     pub geo_trace: Option<Vec<(u32, u32)>>,
-    /// Write watch (debugging): an address, and the (cycle, ip, address,
-    /// value, size) of every memory write touching its 32-bit word.
-    pub watch: Option<(u32, Vec<WatchHit>)>,
+    /// Write watch (debugging; `session.watch`): see [`Watch`]. Never part
+    /// of the state, and no memory or emulation changes because of it. One
+    /// `Option` test on each memory write when it is `None`.
+    pub watch: Option<Box<Watch>>,
     /// The catalogue's texture upload watch (`crate::texwatch`); render
     /// side only, never part of the state.
     pub tex_watch: Option<Box<crate::texwatch::TexWatch>>,
@@ -1145,19 +1146,21 @@ impl Model2Bus {
     /// asked for by a tour or script that names it). False, and nothing
     /// written, where the address is not writable memory.
     pub fn poke(&mut self, addr: u32, v: u32, n: usize) -> bool {
-        match self.find(addr) {
+        // A poke is not the program's write: a watch does not see it.
+        let watch = self.watch.take();
+        let done = match self.find(addr) {
             Some((m, _)) if self.mems[m].writable => self.mem_write(addr, v, n),
             _ => false,
-        }
+        };
+        self.watch = watch;
+        done
     }
 
     #[inline]
     fn mem_write(&mut self, addr: u32, v: u32, n: usize) -> bool {
         let Some((m, off)) = self.find(addr) else { return false };
-        if let Some((w, log)) = &mut self.watch {
-            if addr & !3 == *w & !3 {
-                log.push((self.now, self.cur_ip, addr, v, n));
-            }
+        if let Some(w) = &mut self.watch {
+            w.note(self.now, self.frames, self.cur_ip, addr, v, n);
         }
         if !self.code_gens.is_empty() {
             self.count_code_write(m, off, n);
@@ -1751,7 +1754,40 @@ pub struct LinkHit {
 }
 
 /// A watched write: (cycle, ip, address, value, size in bytes).
-pub type WatchHit = (u64, u32, u32, u32, usize);
+pub type WatchHit = (u64, u32, u32, u32, usize, u64);
+
+/// A write watch: the address ranges to watch (`[start, end)`), and the
+/// (cycle, ip, address, value, size, frame) of every memory write that
+/// touches one, up to `cap` of them (`dropped` counts the rest). The frame
+/// is the one being run: the machine's frame counter when the write
+/// happened. `ip` is the i960 instruction that wrote (the block's start on
+/// recompiled code that does not report it).
+#[derive(Clone, Debug, Default)]
+pub struct Watch {
+    pub ranges: Vec<(u32, u32)>,
+    pub hits: Vec<WatchHit>,
+    pub cap: usize,
+    pub dropped: u64,
+}
+
+impl Watch {
+    /// The 32-bit word at `addr` (what `REMODEL_WATCH` watches), unbounded.
+    pub fn word(addr: u32) -> Watch {
+        Watch { ranges: vec![(addr & !3, (addr & !3).wrapping_add(4))], hits: Vec::new(), cap: usize::MAX, dropped: 0 }
+    }
+
+    #[inline]
+    fn note(&mut self, now: u64, frame: u64, ip: u32, addr: u32, v: u32, n: usize) {
+        let end = addr.wrapping_add(n as u32);
+        if self.ranges.iter().any(|&(a, b)| addr < b && end > a) {
+            if self.hits.len() < self.cap {
+                self.hits.push((now, ip, addr, v, n, frame));
+            } else {
+                self.dropped += 1;
+            }
+        }
+    }
+}
 
 struct Fnv(u64);
 

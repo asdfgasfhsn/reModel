@@ -228,7 +228,7 @@ pub fn near(name: &str, all: &[&str]) -> String {
 
 /// An input item's first and last frame (`name@from-to[/n]`); None for a
 /// term that is not one (the checks leave it to `InputScript::parse`).
-fn item_range(item: &str) -> Option<(u64, u64)> {
+pub fn item_range(item: &str) -> Option<(u64, u64)> {
     let (_, frames) = item.rsplit_once('@')?;
     let frames = frames.split_once('/').map_or(frames, |(f, _)| f);
     match frames.split_once('-') {
@@ -254,6 +254,25 @@ pub fn cut(item: &str, frame: u64) -> Option<String> {
     }
     let _ = range;
     Some(format!("{what}@{from}-{frame}{}", every.map(|n| format!("/{n}")).unwrap_or_default()))
+}
+
+/// `item` as it applies from `frame` on: unchanged if it starts by then
+/// (nothing earlier is in it), started there if it began before, dropped if
+/// it ended before. A repeating item that began before `frame` cannot be
+/// started late (its beat is counted from its first frame): an error.
+pub fn tail(item: &str, frame: u64) -> Result<Option<String>, String> {
+    let Some((what, frames)) = item.rsplit_once('@') else { return Ok(Some(item.to_string())) };
+    let Some((from, to)) = item_range(item) else { return Ok(Some(item.to_string())) };
+    if to < frame {
+        return Ok(None);
+    }
+    if from >= frame {
+        return Ok(Some(item.to_string()));
+    }
+    if frames.contains('/') {
+        return Err(format!("{item} repeats from before frame {frame}, and cannot start late"));
+    }
+    Ok(Some(format!("{what}@{frame}-{to}")))
 }
 
 /// All of a tour's inputs, in order: its `from=` parent's up to the branch
@@ -328,14 +347,59 @@ pub struct ValueDef {
     pub note: String,
 }
 
+/// A named state of a named value: a line `NAME|VALUE=NUMBER|note` of the
+/// value table (`racing|screen=7|...`), so `until screen racing` and the
+/// like read it. Numbers may be hex.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateDef {
+    pub name: String,
+    pub value: String,
+    pub number: i64,
+    pub note: String,
+}
+
+/// The game's named states (the `NAME|VALUE=NUMBER|note` lines of the value
+/// table), in file order. [`value_table`] skips them.
+pub fn state_table(text: &str) -> Result<Vec<StateDef>, String> {
+    let mut out: Vec<StateDef> = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut p = line.splitn(3, '|');
+        let (Some(name), Some(spec), Some(note)) = (p.next(), p.next(), p.next()) else { continue };
+        let Some((value, num)) = spec.trim().split_once('=') else { continue };
+        let want = || format!("values:{}: want NAME|VALUE=NUMBER|NOTE for a named state", n + 1);
+        let name = name.trim();
+        let number = match num.trim().strip_prefix("0x") {
+            Some(h) => i64::from_str_radix(h, 16).ok(),
+            None => num.trim().parse().ok(),
+        };
+        let Some(number) = number else { return Err(want()) };
+        if !name_ok(name) || !name_ok(value.trim()) || note.trim().is_empty() {
+            return Err(want());
+        }
+        if out.iter().any(|s| s.name == name && s.value == value.trim()) {
+            return Err(format!("values:{}: state {name} of {} twice", n + 1, value.trim()));
+        }
+        out.push(StateDef { name: name.into(), value: value.trim().into(), number, note: note.trim().into() });
+    }
+    Ok(out)
+}
+
 /// The game's named values (`NAME|ADDR:WIDTH[:signed|:float]|what it is and
 /// how it was found`, `#` comments; WIDTH is `b`, `w` or `l`, a byte, a
-/// 16-bit word, a 32-bit long, little-endian), in file order.
+/// 16-bit word, a 32-bit long, little-endian), in file order. A line
+/// `NAME|VALUE=NUMBER|note` is a named state ([`state_table`]), not a value.
 pub fn value_table(text: &str) -> Result<Vec<ValueDef>, String> {
     let mut out: Vec<ValueDef> = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.split('|').nth(1).is_some_and(|spec| spec.contains('=')) {
             continue;
         }
         let want = || format!("values:{}: want NAME|ADDR:b|w|l[:signed|:float]|NOTE", n + 1);
@@ -757,6 +821,37 @@ mod tests {
     use super::*;
 
     const COIN: &str = "coin1@10-12,start@20-22";
+
+    #[test]
+    fn named_states_are_lines_of_the_value_table() {
+        let text = "# c\nscreen|0x5dc090:l|the mode\nracing|screen=7|racing\ntitle|screen=0x14|title\n";
+        assert_eq!(value_table(text).unwrap().len(), 1, "a state is not a value");
+        let s = state_table(text).unwrap();
+        assert_eq!(
+            s.iter().map(|s| (s.name.as_str(), s.value.as_str(), s.number)).collect::<Vec<_>>(),
+            vec![("racing", "screen", 7), ("title", "screen", 20)]
+        );
+        for bad in ["r|screen=x|n", "r|screen=7|", "r r|screen=7|n", "r|screen=7|n\nr|screen=8|n", "r|=7|n"] {
+            assert!(state_table(bad).is_err(), "{bad}");
+        }
+        // Values and states may be mixed in any order, and a file of values has no states.
+        assert!(state_table("a|0x10:l|n\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tail_starts_an_item_late() {
+        assert_eq!(tail("start@10-20", 15).unwrap().as_deref(), Some("start@15-20"));
+        assert_eq!(tail("start@10-20", 10).unwrap().as_deref(), Some("start@10-20"));
+        assert_eq!(tail("start@30-40", 15).unwrap().as_deref(), Some("start@30-40"));
+        assert_eq!(tail("start@10-20", 21).unwrap(), None);
+        assert_eq!(tail("steer=0x80@5-9", 8).unwrap().as_deref(), Some("steer=0x80@8-9"));
+        assert_eq!(tail("start@12", 12).unwrap().as_deref(), Some("start@12"));
+        assert_eq!(tail("trigger1@20-100/20", 10).unwrap().as_deref(), Some("trigger1@20-100/20"));
+        assert!(tail("trigger1@0-100/20", 10).unwrap_err().contains("cannot start late"));
+        // `cut` and `tail` split an item with nothing lost or doubled.
+        assert_eq!(cut("start@10-20", 14).as_deref(), Some("start@10-14"));
+        assert_eq!(tail("start@10-20", 15).unwrap().as_deref(), Some("start@15-20"));
+    }
 
     /// A tour starts from another's inputs up to its branch point; the
     /// parent's longer holds are cut there and its later ones dropped.

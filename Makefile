@@ -665,7 +665,7 @@ scene-check: release ## The scene acceptance test, per SCENE_CHECK_GAMES (defaul
 # The live-session server (docs/uplift/scenes-and-server.md, "The live session").
 SERVE_OPTS      ?= --no-stdio
 SERVE_CHECK_OUT ?= out/scratch/serve-check
-serve: release ## The live-session server for GAME on a Unix socket, out/serve/GAME.sock (SERVE_OPTS="--marks N --max-step N --sessions N --tours FILE --no-stdio"; an agent starts it itself over stdin/stdout, see docs/uplift-studio.md, "Live sessions"); call it with `remodel call session.open`
+serve: release ## The live-session server for GAME on a Unix socket, out/serve/GAME.sock (SERVE_OPTS="--marks N --max-step N --sessions N --tours FILE --index-every K --checkpoint-every N --no-stdio"; an agent starts it itself over stdin/stdout, see docs/uplift-studio.md, "Live sessions"); call it with `remodel call session.open`
 	$(RUN) serve --socket $(SERVE_OPTS)
 SPINE ?=
 SPINE_OPTS ?=

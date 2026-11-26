@@ -759,11 +759,44 @@ pub struct Posed {
     pub warnings: Vec<String>,
 }
 
+/// The camera presets: third-person views relative to the game's own camera,
+/// as photo mode's words. The numbers are shares of the scene's scale (the
+/// distance to what the game's camera looks at), so they hold in any game.
+/// Photo mode's tilt is positive upward for the eye: a positive tilt raises it above
+/// what the game looks at and looks down, a negative one puts it under, looking up.
+pub const CAMERA_PRESETS: &[(&str, &str, &str)] = &[
+    ("chase", "tilt=14,z=-0.3", "behind and a little above: the game's view pulled back"),
+    ("side", "orbit=90,tilt=6,z=-0.2", "a quarter turn round to the side, a little above"),
+    ("top", "tilt=55,z=-0.25", "above, looking down"),
+];
+
+/// A camera spec with its `preset=NAME` (or bare `NAME`) words replaced by
+/// the preset's: `preset=side,fov=1.3` is `orbit=90,tilt=-6,z=-0.3,fov=1.3`.
+/// Anything else is left for photo mode's parser.
+pub fn expand_camera(spec: &str) -> Result<String, String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in spec.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+        let name = w.strip_prefix("preset=").or_else(|| CAMERA_PRESETS.iter().any(|p| p.0 == w).then_some(w));
+        match name {
+            None => out.push(w.to_string()),
+            Some(n) => match CAMERA_PRESETS.iter().find(|p| p.0 == n) {
+                Some(p) => out.push(p.1.to_string()),
+                None => {
+                    let known: Vec<&str> = CAMERA_PRESETS.iter().map(|p| p.0).collect();
+                    return Err(format!("unknown camera preset `{n}` (one of {})", known.join(", ")));
+                }
+            },
+        }
+    }
+    Ok(out.join(","))
+}
+
 /// A frame's display list seen from the camera `spec` (`model2::photo::Spec`)
 /// by the native geometrizer: no ROM, no machine.
 pub fn pose_frame(frame: &model2::smooth::Frame, spec: &str, lit: bool) -> Result<Posed, Answer> {
     let scale = model2::photo::scene_scale(frame.plan.transforms());
-    let spec = model2::photo::Spec::parse(spec, scale)
+    let spec = expand_camera(spec).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
+    let spec = model2::photo::Spec::parse(&spec, scale)
         .map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
     let (stream, side) = model2::photo::render(frame, &spec.camera, 1.0, lit);
     Ok(Posed { stream, side, near: spec.near_plane(scale), hud: spec.hud, warnings: spec.warnings })
@@ -1171,7 +1204,8 @@ pub fn render_scene(
     let (camera, crop, packs) = (&req.camera, req.crop, &req.packs);
     if let Some(spec) = camera {
         // A wrong word is a wrong request whatever the scene holds.
-        model2::photo::Spec::parse(spec, 1.0).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
+        let spec = expand_camera(spec).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
+        model2::photo::Spec::parse(&spec, 1.0).map_err(|e| Answer::fail(Code::BadRequest, format!("--camera: {e}")))?;
     }
     let overlay = req.overlay.then_some("miss");
     if overlay.is_some() && packs.is_empty() {
@@ -1261,6 +1295,23 @@ pub fn render_scene(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_presets_expand_to_photo_mode_words() {
+        assert_eq!(expand_camera("").unwrap(), "");
+        assert_eq!(expand_camera("orbit=30,tilt=-8").unwrap(), "orbit=30,tilt=-8");
+        for (name, words, _) in CAMERA_PRESETS {
+            assert_eq!(expand_camera(&format!("preset={name}")).unwrap(), *words);
+            assert_eq!(expand_camera(name).unwrap(), *words, "a bare name is the preset too");
+            // Every preset is words photo mode takes.
+            assert!(!model2::photo::Spec::parse(words, 1.0).unwrap().camera.is_identity(), "{name}");
+        }
+        let side = CAMERA_PRESETS.iter().find(|p| p.0 == "side").unwrap().1;
+        assert_eq!(expand_camera("preset=side,fov=1.3").unwrap(), format!("{side},fov=1.3"));
+        assert_eq!(expand_camera("fov=1.3, preset=top").unwrap(), format!("fov=1.3,{}", CAMERA_PRESETS[2].1));
+        let e = expand_camera("preset=sdie").unwrap_err();
+        assert!(e.contains("unknown camera preset `sdie`") && e.contains("chase, side, top"), "{e}");
+    }
 
     fn pose(dir: &Path, spec: &str, lit: bool) -> Result<Posed, Answer> {
         pose_frame(&display_frame(dir)?, spec, lit)
