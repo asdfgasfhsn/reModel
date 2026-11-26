@@ -258,15 +258,21 @@ enum PolyRam<'a> {
     Before(&'a [u32], &'a mut Vec<crate::smooth::Access>),
 }
 
+/// The word-address mask for polygon ROM `rom`: its size rounded up to a
+/// power of two.
+fn rom_mask(rom: &[u32]) -> u32 {
+    (rom.len().next_power_of_two().max(1) - 1) as u32
+}
+
 impl<'a> GeoExt<'a> {
     pub(crate) fn new(ram: &'a mut [u32], rom: &'a [u32]) -> Self {
-        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        let rom_mask = rom_mask(rom);
         GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false, map: None }
     }
 
     /// Polygon RAM `ram`, unchanged: writes go to `overlay`.
     pub(crate) fn overlay(ram: &'a [u32], overlay: &'a mut HashMap<u32, u32>, rom: &'a [u32]) -> Self {
-        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        let rom_mask = rom_mask(rom);
         GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false, map: None }
     }
 
@@ -274,7 +280,7 @@ impl<'a> GeoExt<'a> {
     /// frame before left): reads and writes, and each object or direct
     /// data block begun ([`GeoExt::block`]), are noted in `log`.
     pub(crate) fn before(ram: &'a [u32], log: &'a mut Vec<crate::smooth::Access>, rom: &'a [u32]) -> Self {
-        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        let rom_mask = rom_mask(rom);
         GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false, map: None }
     }
 
@@ -364,6 +370,42 @@ enum Phase {
     /// reading the list or drawing, spins on a flag, or has run
     /// `MAX_STEPS_PER_FRAME`; checked every 256 instructions.
     Frame { start: u64, last_activity: u64 },
+}
+
+/// One frame of a native geometrizer (`run` is its `run_frame`) over `list`
+/// and polygon memory `poly`: the raster words it makes (no NOPs) and
+/// whether it wrote polygon RAM.
+fn native_frame<'a>(
+    run: impl FnOnce(&mut crate::geo_native::Io),
+    list: &'a mut ListDma<'_>,
+    poly: GeoExt<'a>,
+    latch: &'a mut u32,
+    tap: Option<&'a mut crate::smooth::Tap>,
+    light: Option<&'a mut crate::light::Tap>,
+) -> (Vec<u32>, bool) {
+    let mut out = Vec::new();
+    let mut io = crate::geo_native::Io { list, poly, latch, out: &mut out, tap, light };
+    run(&mut io);
+    let wrote = io.poly.wrote;
+    out.retain(|&w| w != RASTER_NOP);
+    (out, wrote)
+}
+
+impl CheckReport {
+    /// A check frame's part common to both chips: count it with the two
+    /// run times (chip, native) and compare the chip's raster `stream`
+    /// (frame `frame`) with the native one. True if they differ.
+    fn stream(&mut self, frame: u64, (chip_ms, native_ms): (f32, f32), stream: &[u32], native: &[u32]) -> bool {
+        self.frames += 1;
+        self.words += stream.len() as u64;
+        self.times.push((chip_ms, native_ms));
+        let Some(i) = first_difference(stream, native) else { return false };
+        self.differing += 1;
+        if self.first.is_none() {
+            self.first = Some(Mismatch::at(frame, i, stream, native));
+        }
+        true
+    }
 }
 
 /// The list DMA: buffer RAM from the read pointer, following jump words.
@@ -1630,19 +1672,11 @@ impl Engine {
         let mut light = self.light_tap();
         let Some(n) = self.native.as_deref_mut() else { return };
         let before = tap.is_some().then(|| (crate::smooth::Native::B(Box::new(n.clone())), self.poly_latch));
-        let mut out = Vec::new();
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
-        let mut io = crate::geo_native::Io {
-            list: &mut list,
-            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref()),
-            latch: &mut self.poly_latch,
-            out: &mut out,
-            tap: tap.as_mut(),
-            light: light.as_mut(),
-        };
-        n.run_frame(&mut io);
-        let wrote = io.poly.wrote;
-        self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        let poly = GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref());
+        let (out, wrote) =
+            native_frame(|io| n.run_frame(io), &mut list, poly, &mut self.poly_latch, tap.as_mut(), light.as_mut());
+        self.stream.extend(out);
         self.finish_light(light);
         if let (Some(s), Some((native, latch)), Some(tap)) = (self.smooth.as_deref_mut(), before, tap) {
             s.pending = Some((native, latch, tap.into_list(), wrote));
@@ -1660,24 +1694,14 @@ impl Engine {
         let mut light = self.light_tap();
         let Some(n) = self.native.as_deref_mut() else { return };
         let t = Stopwatch::start();
-        let (mut out, mut words, mut fed) = (Vec::new(), 0, Vec::new());
+        let (mut words, mut fed) = (0, Vec::new());
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut words, &mut fed);
-        let mut io = crate::geo_native::Io {
-            list: &mut list,
-            poly: GeoExt::new(&mut self.check_poly, &self.poly_rom),
-            latch: &mut self.check_latch,
-            out: &mut out,
-            tap: None,
-            light: light.as_mut(),
-        };
-        n.run_frame(&mut io);
-        let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();
+        let poly = GeoExt::new(&mut self.check_poly, &self.poly_rom);
+        let (native, _) =
+            native_frame(|io| n.run_frame(io), &mut list, poly, &mut self.check_latch, None, light.as_mut());
         let native_ms = t.elapsed().as_secs_f32() * 1e3;
         let c = &mut self.check;
-        c.frames += 1;
-        c.words += self.stream.len() as u64;
-        c.times.push((sharc_ms, native_ms));
-        let mut resync = false;
+        let mut resync = c.stream(self.frames, (sharc_ms, native_ms), &self.stream, &native);
         if words != self.list_words {
             c.list_differing += 1;
             resync = true;
@@ -1686,13 +1710,6 @@ impl Engine {
             c.state_differing += 1;
             resync = true;
             c.first_state.get_or_insert((self.frames, POLY_ADDRESS_LATCH, self.poly_latch, self.check_latch));
-        }
-        if let Some(i) = first_difference(&self.stream, &native) {
-            c.differing += 1;
-            resync = true;
-            if c.first.is_none() {
-                c.first = Some(Mismatch::at(self.frames, i, &self.stream, &native));
-            }
         }
         // The program's state words: the transform, lights and parameters,
         // the vertex ring (0x30020-0x300FF) and the edge vertex.
@@ -1730,19 +1747,10 @@ impl Engine {
         let mut light = self.light_tap();
         let Some(n) = self.native_tgp.as_deref_mut() else { return };
         let before = tap.is_some().then(|| crate::smooth::Native::C(Box::new(n.clone())));
-        let (mut out, mut latch) = (Vec::new(), 0);
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
-        let mut io = crate::geo_native::Io {
-            list: &mut list,
-            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref()),
-            latch: &mut latch,
-            out: &mut out,
-            tap: tap.as_mut(),
-            light: light.as_mut(),
-        };
-        n.run_frame(&mut io);
-        let wrote = io.poly.wrote;
-        self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        let poly = GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref());
+        let (out, wrote) = native_frame(|io| n.run_frame(io), &mut list, poly, &mut 0, tap.as_mut(), light.as_mut());
+        self.stream.extend(out);
         self.finish_light(light);
         if let (Some(s), Some(native), Some(tap)) = (self.smooth.as_deref_mut(), before, tap) {
             s.pending = Some((native, 0, tap.into_list(), wrote));
@@ -1760,34 +1768,16 @@ impl Engine {
         let mut light = self.light_tap();
         let Some(n) = self.native_tgp.as_deref_mut() else { return };
         let t = Stopwatch::start();
-        let (mut out, mut words, mut fed, mut latch) = (Vec::new(), 0, Vec::new(), 0);
+        let (mut words, mut fed) = (0, Vec::new());
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut words, &mut fed);
-        let mut io = crate::geo_native::Io {
-            list: &mut list,
-            poly: GeoExt::new(&mut self.check_poly, &self.poly_rom),
-            latch: &mut latch,
-            out: &mut out,
-            tap: None,
-            light: light.as_mut(),
-        };
-        n.run_frame(&mut io);
-        let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();
+        let poly = GeoExt::new(&mut self.check_poly, &self.poly_rom);
+        let (native, _) = native_frame(|io| n.run_frame(io), &mut list, poly, &mut 0, None, light.as_mut());
         let native_ms = t.elapsed().as_secs_f32() * 1e3;
-        let mut resync = false;
         let c = &mut self.check;
-        c.frames += 1;
-        c.words += self.stream.len() as u64;
-        c.times.push((chip_ms, native_ms));
+        let mut resync = c.stream(self.frames, (chip_ms, native_ms), &self.stream, &native);
         if fed.len() != self.list_consumed {
             c.list_differing += 1;
             resync = true;
-        }
-        if let Some(i) = first_difference(&self.stream, &native) {
-            c.differing += 1;
-            resync = true;
-            if c.first.is_none() {
-                c.first = Some(Mismatch::at(self.frames, i, &self.stream, &native));
-            }
         }
         if let Some((addr, a, b)) = n.compare(&self.tgp) {
             c.state_differing += 1;
@@ -1809,7 +1799,7 @@ impl Engine {
 
     fn process(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
-        let mut pos = read_ptr as usize & (buffer.len() - 1) & !3;
+        let mut dma = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
         // Polygon RAM's words (as the JIT's lockstep sees them).
         #[cfg(not(target_arch = "wasm32"))]
         let len = self.poly_ram.len() as u32;
@@ -1837,20 +1827,11 @@ impl Engine {
         let step = crate::recomp::geo(self.tgp.program_hash).unwrap_or(|t, e| t.step(e));
         let mut last_activity = self.tgp.steps;
         loop {
-            while self.tgp.fifo_in.len() < FIFO_FILL && self.list_words < MAX_LIST_WORDS {
-                let w = u32::from_le_bytes(buffer[pos..pos + 4].try_into().unwrap());
-                if self.jumps.binary_search(&(pos as u32)).is_ok() {
-                    // A jump: the DMA continues at the target and the
-                    // geometrizer never sees the word (stcc links its list
-                    // from parts this way).
-                    pos = w as usize & (buffer.len() - 1) & !3;
-                    self.list_words += 1;
-                    continue;
-                }
+            // (A jump word is followed by the DMA and the geometrizer never
+            // sees it: stcc links its list from parts this way.)
+            while self.tgp.fifo_in.len() < FIFO_FILL {
+                let Some(w) = dma.next() else { break };
                 self.tgp.fifo_in.push_back(w);
-                self.fed.push(w);
-                pos = (pos + 4) & (buffer.len() - 1);
-                self.list_words += 1;
             }
             let mut fault = None;
             // On the JIT, the same 256 words (without the trace below, a
@@ -1876,7 +1857,7 @@ impl Engine {
                 if pc == TS_COMMAND_ERROR_PC && self.first_error_trace.is_empty() {
                     let at = self.tgp.steps as usize % PC_TRACE_LEN + 1;
                     self.first_error_trace = [&self.pc_trace[at..], &self.pc_trace[..at]].concat();
-                    self.first_error = Some((self.frames, self.fed.clone()));
+                    self.first_error = Some((self.frames, dma.fed.clone()));
                 }
             }
             if let Some(pc) = fault {
@@ -1893,7 +1874,7 @@ impl Engine {
             }
         }
         // The DMA stops at END; words read ahead of it are not consumed.
-        self.list_consumed = self.fed.len() - self.tgp.fifo_in.len();
+        self.list_consumed = dma.fed.len() - self.tgp.fifo_in.len();
         self.tgp.fifo_in.clear();
         self.scan_light();
     }
