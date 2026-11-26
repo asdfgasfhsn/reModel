@@ -367,6 +367,45 @@ const MISS_KEY: u64 = u64::MAX;
 /// id (None: none, a stand-in) and the address modes of a filtered image.
 type SlotKey = (Option<u64>, Option<u64>, usize);
 
+/// A draw of polygons: runs of polygons in the same window and depth mode,
+/// and with the same pack image (`slot`; NO_SLOT: any, as a polygon not
+/// replaced reads no image), and material (a polygon with one is never in a
+/// run without).
+struct Run {
+    vertices: std::ops::Range<u32>,
+    window: usize,
+    mode: Mode,
+    clip: (f32, f32, f32, f32),
+    slot: u32,
+}
+
+/// What `Renderer::prep_polys` reads of a frame.
+#[derive(Clone, Copy)]
+struct PrepIn<'a> {
+    polys: &'a [Poly],
+    placed: &'a [Placed],
+    slots: &'a Slots,
+    look_polys: &'a [look::PolyLook],
+    q: Quality,
+    id_pass: bool,
+    lit_frame: bool,
+    depth_on: bool,
+    temporal: Option<&'a TemporalPass<'a>>,
+    share: bool,
+    vertex_bytes: u64,
+}
+
+/// What `Renderer::prep_polys` makes of it.
+struct PolyPrep {
+    verts: Vec<u8>,
+    table: Vec<u8>,
+    table_t: Vec<u8>,
+    outline_dir: Vec<u8>,
+    outline_points: Vec<u8>,
+    runs: Vec<Run>,
+    spans: Vec<look::Span>,
+}
+
 /// What a frame's polygons bind in group 1 (`Renderer::pack_slots`).
 struct Slots {
     /// Per placed polygon: the slot of its bind group in `groups`
@@ -2418,10 +2457,6 @@ impl Renderer {
         let id_pass = ids.is_some();
         debug_assert!(!(id_pass && temporal.is_some()));
         let vertex_bytes = if temporal.is_some() { VERTEX_BYTES_T } else { VERTEX_BYTES };
-        let mut verts: Vec<u8> = Vec::new();
-        let mut table: Vec<u8> = Vec::new();
-        // Temporal: each polygon's real clip rectangle (`clip_t`).
-        let mut table_t: Vec<u8> = Vec::new();
         let q = self.quality;
         // Smooth shading: the lit pipelines only for frames with a lit
         // polygon.
@@ -2437,7 +2472,6 @@ impl Renderer {
         // The ID pass after this one reuses the polygons' IDs, the pack
         // slots, the vertices and the polygon table (`look::IdShare`).
         let share = self.share_ids && !id_pass && temporal.is_none() && slots.mat_variant.is_none();
-        let mut spans: Vec<look::Span> = Vec::new();
         let t_look = self.tick();
         let look_polys = match &look {
             Some(l) => self.look_polys(polys, placed, src, l, id_pass || share, versions.map(|v| v.0)),
@@ -2449,19 +2483,228 @@ impl Renderer {
         // (`Slots::mat_variant`); every polygon of such a frame has an
         // outline entry.
         let variant = slots.variant;
+        let mat_slot = |s: u32| s != NO_SLOT && slots.mat_slot[s as usize];
+        let PolyPrep { verts, table, table_t, mut outline_dir, outline_points, runs, spans } =
+            Self::prep_polys(&PrepIn {
+                polys,
+                placed,
+                slots: &slots,
+                look_polys: &look_polys,
+                q,
+                id_pass,
+                lit_frame,
+                depth_on,
+                temporal,
+                share,
+                vertex_bytes,
+            });
+        self.lap(t0, |p| &mut p.prep3d);
+        let t0 = self.tick();
+        let render = self.ram_buffer(0, src.render_ram, versions.map(|v| v.0));
+        let palette = self.ram_buffer(1, src.palette, versions.map(|v| v.1));
+        let d = &self.device;
+        let buffer = |label, contents: &[u8], usage| {
+            d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
+        };
+        let table = buffer("polys", &table, wgpu::BufferUsages::STORAGE);
+        let vertices = buffer("vertices", &words(&verts), wgpu::BufferUsages::VERTEX);
+        outline_dir.extend(outline_points);
+        // Temporal: the real clip rectangles after the outlines (`clip_t`;
+        // a buffer of their own would be a fifth storage buffer, more than
+        // the portable limits have).
+        let clip_base = (outline_dir.len() / 16) as u32;
+        outline_dir.extend(table_t);
+        // The ID pass: each polygon's ID and tag words, at `id_base`.
+        let id_base = (outline_dir.len() / 16) as u32;
+        if id_pass {
+            for l in &look_polys {
+                outline_dir.extend(le([l.id, l.tag, 0, 0].map(u32::to_le_bytes)));
+            }
+        }
+        if outline_dir.is_empty() {
+            outline_dir.resize(16, 0);
+        }
+        let outlines = buffer("outlines", &outline_dir, wgpu::BufferUsages::STORAGE);
+
+        // The output size (also for the temporal pass, which is placed in
+        // output pixels and drawn at its own size through the viewport).
+        let mut screen = le([view.width as f32, view.height as f32, view.sx, view.sy].map(f32::to_le_bytes));
+        // The look's toon and halftone (raster.wgsl `Screen`); toon.w is
+        // where the ID pass's entries are.
+        let mut look_words = toon;
+        look_words[3] = f32::from_bits(id_base);
+        screen.extend(le(look_words.map(f32::to_le_bytes)));
+        let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: screen.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: render.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: palette.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: outlines.as_entire_binding() },
+        ];
+        let screen_t = temporal.map(|tp| buffer("screen t", &tp.screen_t(clip_base), wgpu::BufferUsages::UNIFORM));
+        if let Some(screen_t) = &screen_t {
+            entries.push(wgpu::BindGroupEntry { binding: 5, resource: screen_t.as_entire_binding() });
+        }
+        let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("raster"),
+            layout: if temporal.is_some() { &self.raster_layout_t } else { &self.raster_layout },
+            entries: &entries,
+        });
+        let samples = if temporal.is_some() || id_pass { 1 } else { q.msaa.max(1) };
+        let msaa = (samples > 1).then(|| self.kept_attachment("3d msaa", w, h, samples, FORMAT));
+        let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
+        let depth_label = if temporal.is_some() { "3d depth t" } else { "3d depth" };
+        let depth_label = if id_pass { "look depth" } else { depth_label };
+        let depth = depth_on.then(|| self.kept_attachment(depth_label, w, h, samples, DEPTH_FORMAT));
+        let depth_view = depth.as_ref().map(|t| t.create_view(&Default::default()));
+        let is_t = temporal.is_some();
+        // Depth-only draws need no luma: never lit.
+        let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
+        let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if id_pass {
+            [Mode::Test, Mode::DepthWrite, Mode::Background].map(|m| (m, self.id_pipeline(m, variant))).into()
+        } else if q.depth {
+            [Mode::Test, Mode::DepthWrite, Mode::Background]
+                .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t, shading(m))))
+                .into()
+        } else {
+            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant, is_t, shading(Mode::Plain)))]
+        };
+        // The material pipelines, for the runs with a material.
+        let mat_pipelines: Vec<(Mode, wgpu::RenderPipeline)> = match slots.mat_variant {
+            Some(v) => pipelines.iter().map(|(m, _)| (*m, self.raster_pipeline(samples, *m, v, is_t, 0))).collect(),
+            None => Vec::new(),
+        };
+        let clear_pipeline = if id_pass {
+            Some(self.id_pipeline(Mode::Clear, variant))
+        } else {
+            q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0))
+        };
+        let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant));
+        self.pack_stats.draws = runs.len() as u32;
+        let colour = Some(wgpu::RenderPassColorAttachment {
+            view: msaa_view.as_ref().unwrap_or(target),
+            depth_slice: None,
+            resolve_target: msaa_view.as_ref().map(|_| target),
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: if msaa_view.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+            },
+        });
+        // Temporal: the aux target too, cleared to 0 (nothing drawn).
+        let aux = temporal.map(|tp| wgpu::RenderPassColorAttachment {
+            view: tp.aux,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+        });
+        let id_colours = ids.map(|iz| {
+            let clear =
+                wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+            [target, iz].map(|view| {
+                Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: clear })
+            })
+        });
+        let attachments = [colour, aux];
+        self.lap(t0, |p| &mut p.resources3d);
+        let t0 = self.tick();
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("3d layer"),
+            color_attachments: match &id_colours {
+                Some(c) => c,
+                None if is_t => &attachments,
+                None => &attachments[..1],
+            },
+            depth_stencil_attachment: depth_view.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_bind_group(0, &bind, &[]);
+        if let Some(dummy) = &dummy {
+            pass.set_bind_group(1, dummy, &[]);
+        }
+        let mut bound = NO_SLOT;
+        // Group 1 holds a material's bind group (the material pipelines'
+        // layout): the image pipelines need theirs back first.
+        let mut bound_mat = false;
+        let unbind_mat = |pass: &mut wgpu::RenderPass, bound: &mut u32, bound_mat: &mut bool| {
+            if *bound_mat {
+                *bound_mat = false;
+                *bound = NO_SLOT;
+                if let Some(dummy) = &dummy {
+                    pass.set_bind_group(1, dummy, &[]);
+                }
+            }
+        };
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        for (k, run) in runs.iter().enumerate() {
+            // Each window starts with an empty depth buffer where it draws
+            // (the first has the pass's clear).
+            if let (Some(clear), true) = (&clear_pipeline, k > 0 && runs[k - 1].window != run.window) {
+                // Temporal: the rectangle in internal pixels, one more each
+                // side for the jitter.
+                let clip = temporal.map_or(run.clip, |tp| {
+                    let (sx, sy) = tp.rs;
+                    (run.clip.0 * sx - 1.0, run.clip.1 * sy - 1.0, run.clip.2 * sx + 1.0, run.clip.3 * sy + 1.0)
+                });
+                let (x0, y0) = (clip.0.floor().max(0.0) as u32, clip.1.floor().max(0.0) as u32);
+                let (x1, y1) = ((clip.2.ceil().max(0.0) as u32).min(w), (clip.3.ceil().max(0.0) as u32).min(h));
+                if x1 > x0 && y1 > y0 {
+                    unbind_mat(&mut pass, &mut bound, &mut bound_mat);
+                    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                    pass.set_pipeline(clear);
+                    pass.draw(0..3, 0..1);
+                    pass.set_scissor_rect(0, 0, w, h);
+                }
+            }
+            let with_mat = mat_slot(run.slot);
+            if !with_mat {
+                unbind_mat(&mut pass, &mut bound, &mut bound_mat);
+            }
+            let list = if with_mat { &mat_pipelines } else { &pipelines };
+            if let Some((_, pipeline)) = list.iter().find(|(m, _)| *m == run.mode) {
+                pass.set_pipeline(pipeline);
+            }
+            if run.slot != NO_SLOT && run.slot != bound {
+                bound = run.slot;
+                bound_mat = with_mat;
+                pass.set_bind_group(1, &slots.groups[run.slot as usize], &[]);
+            }
+            pass.draw(run.vertices.clone(), 0..1);
+        }
+        drop(pass);
+        if share {
+            self.id_share = Some(look::IdShare {
+                slots,
+                polys: look_polys,
+                spans,
+                vertices: vertices.clone(),
+                table: table.clone(),
+                render: render.clone(),
+                palette: palette.clone(),
+                variant,
+            });
+        }
+        self.lap(t0, |p| &mut p.pass3d);
+    }
+
+    /// The 3D layer's polygons as buffers' contents (`encode_3d`): the
+    /// vertices (a triangle fan each), the polygon table, the outline
+    /// directory and points, and the draw runs in order.
+    fn prep_polys(i: &PrepIn) -> PolyPrep {
+        let PrepIn { polys, placed, slots, look_polys, q, id_pass, lit_frame, depth_on, temporal, share, vertex_bytes } =
+            *i;
+        let mut verts: Vec<u8> = Vec::new();
+        let mut table: Vec<u8> = Vec::new();
+        // Temporal: each polygon's real clip rectangle (`clip_t`).
+        let mut table_t: Vec<u8> = Vec::new();
+        let mut spans: Vec<look::Span> = Vec::new();
+        // Material maps: every polygon of such a frame has an outline entry.
         let mat_frame = slots.mat_variant.is_some();
         let mat_slot = |s: u32| s != NO_SLOT && slots.mat_slot[s as usize];
-        // Draws: runs of polygons in the same window and depth mode, and
-        // with the same pack image (`slot`; NO_SLOT: any, as a polygon not
-        // replaced reads no image), and material (a polygon with one is
-        // never in a run without).
-        struct Run {
-            vertices: std::ops::Range<u32>,
-            window: usize,
-            mode: Mode,
-            clip: (f32, f32, f32, f32),
-            slot: u32,
-        }
         let mut runs: Vec<Run> = Vec::new();
         let push = |runs: &mut Vec<Run>, vertices: std::ops::Range<u32>, window: usize, mode: Mode, clip, slot: u32| {
             match runs.last_mut() {
@@ -2682,197 +2925,7 @@ impl Renderer {
         if table.is_empty() {
             table.resize(64, 0);
         }
-        self.lap(t0, |p| &mut p.prep3d);
-        let t0 = self.tick();
-        let render = self.ram_buffer(0, src.render_ram, versions.map(|v| v.0));
-        let palette = self.ram_buffer(1, src.palette, versions.map(|v| v.1));
-        let d = &self.device;
-        let buffer = |label, contents: &[u8], usage| {
-            d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
-        };
-        let table = buffer("polys", &table, wgpu::BufferUsages::STORAGE);
-        let vertices = buffer("vertices", &words(&verts), wgpu::BufferUsages::VERTEX);
-        outline_dir.extend(outline_points);
-        // Temporal: the real clip rectangles after the outlines (`clip_t`;
-        // a buffer of their own would be a fifth storage buffer, more than
-        // the portable limits have).
-        let clip_base = (outline_dir.len() / 16) as u32;
-        outline_dir.extend(table_t);
-        // The ID pass: each polygon's ID and tag words, at `id_base`.
-        let id_base = (outline_dir.len() / 16) as u32;
-        if id_pass {
-            for l in &look_polys {
-                outline_dir.extend(le([l.id, l.tag, 0, 0].map(u32::to_le_bytes)));
-            }
-        }
-        if outline_dir.is_empty() {
-            outline_dir.resize(16, 0);
-        }
-        let outlines = buffer("outlines", &outline_dir, wgpu::BufferUsages::STORAGE);
-
-        // The output size (also for the temporal pass, which is placed in
-        // output pixels and drawn at its own size through the viewport).
-        let mut screen = le([view.width as f32, view.height as f32, view.sx, view.sy].map(f32::to_le_bytes));
-        // The look's toon and halftone (raster.wgsl `Screen`); toon.w is
-        // where the ID pass's entries are.
-        let mut look_words = toon;
-        look_words[3] = f32::from_bits(id_base);
-        screen.extend(le(look_words.map(f32::to_le_bytes)));
-        let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
-        let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: screen.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: render.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: palette.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 4, resource: outlines.as_entire_binding() },
-        ];
-        let screen_t = temporal.map(|tp| buffer("screen t", &tp.screen_t(clip_base), wgpu::BufferUsages::UNIFORM));
-        if let Some(screen_t) = &screen_t {
-            entries.push(wgpu::BindGroupEntry { binding: 5, resource: screen_t.as_entire_binding() });
-        }
-        let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("raster"),
-            layout: if temporal.is_some() { &self.raster_layout_t } else { &self.raster_layout },
-            entries: &entries,
-        });
-        let samples = if temporal.is_some() || id_pass { 1 } else { q.msaa.max(1) };
-        let msaa = (samples > 1).then(|| self.kept_attachment("3d msaa", w, h, samples, FORMAT));
-        let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
-        let depth_label = if temporal.is_some() { "3d depth t" } else { "3d depth" };
-        let depth_label = if id_pass { "look depth" } else { depth_label };
-        let depth = depth_on.then(|| self.kept_attachment(depth_label, w, h, samples, DEPTH_FORMAT));
-        let depth_view = depth.as_ref().map(|t| t.create_view(&Default::default()));
-        let is_t = temporal.is_some();
-        // Depth-only draws need no luma: never lit.
-        let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
-        let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if id_pass {
-            [Mode::Test, Mode::DepthWrite, Mode::Background].map(|m| (m, self.id_pipeline(m, variant))).into()
-        } else if q.depth {
-            [Mode::Test, Mode::DepthWrite, Mode::Background]
-                .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t, shading(m))))
-                .into()
-        } else {
-            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant, is_t, shading(Mode::Plain)))]
-        };
-        // The material pipelines, for the runs with a material.
-        let mat_pipelines: Vec<(Mode, wgpu::RenderPipeline)> = match slots.mat_variant {
-            Some(v) => pipelines.iter().map(|(m, _)| (*m, self.raster_pipeline(samples, *m, v, is_t, 0))).collect(),
-            None => Vec::new(),
-        };
-        let clear_pipeline = if id_pass {
-            Some(self.id_pipeline(Mode::Clear, variant))
-        } else {
-            q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0))
-        };
-        let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant));
-        self.pack_stats.draws = runs.len() as u32;
-        let colour = Some(wgpu::RenderPassColorAttachment {
-            view: msaa_view.as_ref().unwrap_or(target),
-            depth_slice: None,
-            resolve_target: msaa_view.as_ref().map(|_| target),
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                store: if msaa_view.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
-            },
-        });
-        // Temporal: the aux target too, cleared to 0 (nothing drawn).
-        let aux = temporal.map(|tp| wgpu::RenderPassColorAttachment {
-            view: tp.aux,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-        });
-        let id_colours = ids.map(|iz| {
-            let clear =
-                wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
-            [target, iz].map(|view| {
-                Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: clear })
-            })
-        });
-        let attachments = [colour, aux];
-        self.lap(t0, |p| &mut p.resources3d);
-        let t0 = self.tick();
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("3d layer"),
-            color_attachments: match &id_colours {
-                Some(c) => c,
-                None if is_t => &attachments,
-                None => &attachments[..1],
-            },
-            depth_stencil_attachment: depth_view.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
-                view,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        });
-        pass.set_bind_group(0, &bind, &[]);
-        if let Some(dummy) = &dummy {
-            pass.set_bind_group(1, dummy, &[]);
-        }
-        let mut bound = NO_SLOT;
-        // Group 1 holds a material's bind group (the material pipelines'
-        // layout): the image pipelines need theirs back first.
-        let mut bound_mat = false;
-        let unbind_mat = |pass: &mut wgpu::RenderPass, bound: &mut u32, bound_mat: &mut bool| {
-            if *bound_mat {
-                *bound_mat = false;
-                *bound = NO_SLOT;
-                if let Some(dummy) = &dummy {
-                    pass.set_bind_group(1, dummy, &[]);
-                }
-            }
-        };
-        pass.set_vertex_buffer(0, vertices.slice(..));
-        for (k, run) in runs.iter().enumerate() {
-            // Each window starts with an empty depth buffer where it draws
-            // (the first has the pass's clear).
-            if let (Some(clear), true) = (&clear_pipeline, k > 0 && runs[k - 1].window != run.window) {
-                // Temporal: the rectangle in internal pixels, one more each
-                // side for the jitter.
-                let clip = temporal.map_or(run.clip, |tp| {
-                    let (sx, sy) = tp.rs;
-                    (run.clip.0 * sx - 1.0, run.clip.1 * sy - 1.0, run.clip.2 * sx + 1.0, run.clip.3 * sy + 1.0)
-                });
-                let (x0, y0) = (clip.0.floor().max(0.0) as u32, clip.1.floor().max(0.0) as u32);
-                let (x1, y1) = ((clip.2.ceil().max(0.0) as u32).min(w), (clip.3.ceil().max(0.0) as u32).min(h));
-                if x1 > x0 && y1 > y0 {
-                    unbind_mat(&mut pass, &mut bound, &mut bound_mat);
-                    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
-                    pass.set_pipeline(clear);
-                    pass.draw(0..3, 0..1);
-                    pass.set_scissor_rect(0, 0, w, h);
-                }
-            }
-            let with_mat = mat_slot(run.slot);
-            if !with_mat {
-                unbind_mat(&mut pass, &mut bound, &mut bound_mat);
-            }
-            let list = if with_mat { &mat_pipelines } else { &pipelines };
-            if let Some((_, pipeline)) = list.iter().find(|(m, _)| *m == run.mode) {
-                pass.set_pipeline(pipeline);
-            }
-            if run.slot != NO_SLOT && run.slot != bound {
-                bound = run.slot;
-                bound_mat = with_mat;
-                pass.set_bind_group(1, &slots.groups[run.slot as usize], &[]);
-            }
-            pass.draw(run.vertices.clone(), 0..1);
-        }
-        drop(pass);
-        if share {
-            self.id_share = Some(look::IdShare {
-                slots,
-                polys: look_polys,
-                spans,
-                vertices: vertices.clone(),
-                table: table.clone(),
-                render: render.clone(),
-                palette: palette.clone(),
-                variant,
-            });
-        }
-        self.lap(t0, |p| &mut p.pass3d);
+        PolyPrep { verts, table, table_t, outline_dir, outline_points, runs, spans }
     }
 
     fn texture(&self, label: &str, w: u32, h: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
