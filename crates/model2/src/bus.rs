@@ -62,6 +62,10 @@ impl Mem {
         }
         state::State::load(&mut self.writes, r)
     }
+    fn save(&self, w: &mut state::Writer) {
+        state::State::save(&self.data, w);
+        state::State::save(&self.writes, w);
+    }
     fn zeroed(size: usize) -> Self {
         Mem { data: vec![0; size], writable: true, writes: 0 }
     }
@@ -899,8 +903,13 @@ impl Model2Bus {
     }
 
     fn io_read32(&mut self, addr: u32) -> Option<u32> {
-        if let Some(v) = self.io_read32_2b(addr).or_else(|| self.io_read32_2a(addr)).or_else(|| self.io_read32_m2(addr))
-        {
+        let board_hit = match self.board {
+            Board::Model2B => self.io_read32_2b(addr),
+            Board::Model2A => self.io_read32_2a(addr),
+            Board::Model2 => self.io_read32_2a(addr).or_else(|| self.io_read32_m2(addr)),
+            Board::Model2C | Board::Unconfirmed => None,
+        };
+        if let Some(v) = board_hit {
             self.log(addr, None);
             return Some(v);
         }
@@ -1033,7 +1042,13 @@ impl Model2Bus {
         if let (Some(t), 0x0080_0000..=0x0080_7fff) = (self.geo_trace.as_mut(), addr) {
             t.push((addr, v));
         }
-        if self.io_write32_2b(addr, v) || self.io_write32_2a(addr, v) || self.io_write32_m2(addr, v, lanes) {
+        let board_hit = match self.board {
+            Board::Model2B => self.io_write32_2b(addr, v),
+            Board::Model2A => self.io_write32_2a(addr, v),
+            Board::Model2 => self.io_write32_2a(addr, v) || self.io_write32_m2(addr, v, lanes),
+            Board::Model2C | Board::Unconfirmed => false,
+        };
+        if board_hit {
             self.log(addr, Some(v));
             return true;
         }
@@ -1872,179 +1887,152 @@ fn pop_result(
     }
 }
 
+/// `$save` when expanding for saving, `$load` for loading.
+macro_rules! pick {
+    (save, $save:block, $load:block) => {
+        $save
+    };
+    (load, $save:block, $load:block) => {
+        $load
+    };
+}
+
+/// Fields that are always there, saved or loaded in the order listed.
+macro_rules! plain {
+    (save, $bus:ident, $io:ident; $($f:ident),+) => {
+        $(state::State::save(&$bus.$f, $io);)+
+    };
+    (load, $bus:ident, $io:ident; $($f:ident),+) => {
+        $(state::State::load(&mut $bus.$f, $io)?;)+
+    };
+}
+
+/// Parts only some boards and games have: saved and loaded where there.
+macro_rules! present {
+    (save, $bus:ident, $io:ident; $f:ident) => {
+        if let Some(x) = &$bus.$f {
+            x.save($io);
+        }
+    };
+    (load, $bus:ident, $io:ident; $f:ident) => {
+        if let Some(x) = &mut $bus.$f {
+            x.load($io)?;
+        }
+    };
+}
+
+/// The RAMs `$range` of `mems` covers (only the writable ones if `$writable`).
+macro_rules! mems {
+    (save, $bus:ident, $io:ident; $range:expr, $writable:expr) => {
+        for m in $bus.mems[$range].iter().filter(|m| !$writable || m.writable) {
+            m.save($io);
+        }
+    };
+    (load, $bus:ident, $io:ident; $range:expr, $writable:expr) => {
+        for m in $bus.mems[$range].iter_mut().filter(|m| !$writable || m.writable) {
+            m.load($io)?;
+        }
+    };
+}
+
+/// What a bus saves and loads, in one list so that the two can't drift
+/// apart (`save_parts` and `load_parts` expand it as `save` and `load`).
+/// `$all` is false for [`Parts::Small`]. The order is the state's layout
+/// (`STATE_FORMAT`): new parts go last.
+macro_rules! bus_state {
+    ($m:ident, $bus:ident, $io:ident, $all:ident) => {
+        // The RAMs the games' memory tests don't touch.
+        if $all {
+            mems!($m, $bus, $io; ..$bus.test_rams, true);
+        }
+        pick!($m,
+            { [$bus.now, $bus.frames, $bus.next_vblank].save($io); },
+            {
+                let mut t = [0u64; 3];
+                t.load($io)?;
+                [$bus.now, $bus.frames, $bus.next_vblank] = t;
+            });
+        plain!($m, $bus, $io; irq_request, irq_enable, raised_lines, timers, copro_ctrl, copro_uploading,
+            copro_program, copro_upload_half, copro_booted);
+        pick!($m,
+            { if $all { $bus.geo.save($io); } else { $bus.geo.save_front($io); } },
+            { if $all { $bus.geo.load($io)?; } else { $bus.geo.load_front($io)?; } });
+        if $all {
+            plain!($m, $bus, $io; tgp);
+        }
+        plain!($m, $bus, $io; tgp_fault, tgp_stalled, copro_result_hash, uart_log);
+        pick!($m,
+            { (($bus.frame_toggle as u8) | ($bus.video_30hz as u8) << 1).save($io); },
+            {
+                let mut video = 0u8;
+                video.load($io)?;
+                ($bus.frame_toggle, $bus.video_30hz) = (video & 1 != 0, video & 2 != 0);
+            });
+        plain!($m, $bus, $io; board_ctrl, inputs, io_analog_channel, analog, io_latch, eeprom);
+        // Only games with a drive board have one, or a gun interface.
+        present!($m, $bus, $io; drive);
+        present!($m, $bus, $io; gun);
+        // The geometrizer's list jumps, then the memory-test RAMs.
+        pick!($m,
+            { $bus.geo.jumps().save($io); },
+            {
+                let mut jumps: Vec<(u32, u32)> = Vec::new();
+                jumps.load($io)?;
+                $bus.geo.set_jumps(jumps);
+            });
+        if $all {
+            mems!($m, $bus, $io; $bus.test_rams.., false);
+        }
+        // Then the UART's transmitter, and on 2B the copro SHARC.
+        plain!($m, $bus, $io; uart);
+        if $all {
+            present!($m, $bus, $io; sharc);
+        }
+        // The protection device (games with one), on 2A the TGP interface,
+        // and on the original Model 2 its I/O registers.
+        present!($m, $bus, $io; protection);
+        present!($m, $bus, $io; tgp2a);
+        pick!($m,
+            { if let Some(r) = &$bus.m2_io { (**r).save($io); } },
+            { if let Some(regs) = &mut $bus.m2_io { (**regs).load($io)?; } });
+        // Last, and only if there is one: the native geometrizer's halt. A
+        // state without it, from before or from a geometrizer that is
+        // running, is one that is not halted (the one part a state in the
+        // current format may lack).
+        if $all {
+            pick!($m,
+                { if let Some(halt) = $bus.geo.halt() { halt.save($io); } },
+                {
+                    let mut halt = [0u32; 2];
+                    let halted = !$io.done();
+                    if halted {
+                        halt.load($io)?;
+                    }
+                    $bus.geo.set_halt(halted.then_some(halt));
+                });
+        }
+    };
+}
+
 impl Model2Bus {
     fn save_parts(&self, w: &mut state::Writer, parts: Parts) {
         use state::State as _;
-        let all = parts == Parts::All;
-        if all {
-            for m in self.mems[..self.test_rams].iter().filter(|m| m.writable) {
-                m.data.save(w);
-                m.writes.save(w);
-            }
-        }
-        [self.now, self.frames, self.next_vblank].save(w);
-        self.irq_request.save(w);
-        self.irq_enable.save(w);
-        self.raised_lines.save(w);
-        self.timers.save(w);
-        self.copro_ctrl.save(w);
-        self.copro_uploading.save(w);
-        self.copro_program.save(w);
-        self.copro_upload_half.save(w);
-        self.copro_booted.save(w);
-        if all {
-            self.geo.save(w);
-        } else {
-            self.geo.save_front(w);
-        }
-        if all {
-            self.tgp.save(w);
-        }
-        self.tgp_fault.save(w);
-        self.tgp_stalled.save(w);
-        self.copro_result_hash.save(w);
-        self.uart_log.save(w);
-        (self.frame_toggle as u8 | (self.video_30hz as u8) << 1).save(w);
-        self.board_ctrl.save(w);
-        self.inputs.save(w);
-        self.io_analog_channel.save(w);
-        self.analog.save(w);
-        self.io_latch.save(w);
-        state::State::save(&self.eeprom, w);
-        // Only games with a drive board have one (older states load).
-        if let Some(d) = &self.drive {
-            d.save(w);
-        }
-        // Likewise the gun interface, for gun games only.
-        if let Some(g) = &self.gun {
-            g.save(w);
-        }
-        // Last, so states from before list jumps were modelled still load.
-        self.geo.jumps().save(w);
-        // After that, the memory-test RAMs.
-        if all {
-            for m in &self.mems[self.test_rams..] {
-                m.data.save(w);
-                m.writes.save(w);
-            }
-        }
-        // Then the UART's transmitter.
-        self.uart.save(w);
-        // And on 2B, the copro SHARC.
-        if let Some(c) = self.sharc.as_ref().filter(|_| all) {
-            c.save(w);
-        }
-        // Then the protection device, for games with one.
-        if let Some(p) = &self.protection {
-            p.save(w);
-        }
-        // And on 2A, the TGP interface.
-        if let Some(t) = &self.tgp2a {
-            t.save(w);
-        }
-        // And on the original Model 2, its I/O registers.
-        if let Some(r) = &self.m2_io {
-            (**r).save(w);
-        }
-        // Last, and only if there is one: the native geometrizer's halt
-        // (a state without it, from before or from a geometrizer that is
-        // running, is one that is not halted).
-        if let Some(halt) = self.geo.halt().filter(|_| all) {
-            halt.save(w);
-        }
+        let (bus, all) = (self, parts == Parts::All);
+        bus_state!(save, bus, w, all);
     }
 
     fn load_parts(&mut self, r: &mut state::Reader, parts: Parts) -> Result<(), state::Error> {
         use state::State as _;
-        let (all, test_rams) = (parts == Parts::All, self.test_rams);
+        let (bus, all) = (self, parts == Parts::All);
+        bus_state!(load, bus, r, all);
         if all {
-            for m in self.mems[..test_rams].iter_mut().filter(|m| m.writable) {
-                m.load(r)?;
-            }
-        }
-        let mut t = [0u64; 3];
-        t.load(r)?;
-        [self.now, self.frames, self.next_vblank] = t;
-        self.irq_request.load(r)?;
-        self.irq_enable.load(r)?;
-        self.raised_lines.load(r)?;
-        self.timers.load(r)?;
-        self.copro_ctrl.load(r)?;
-        self.copro_uploading.load(r)?;
-        self.copro_program.load(r)?;
-        self.copro_upload_half.load(r)?;
-        self.copro_booted.load(r)?;
-        if all {
-            self.geo.load(r)?;
-        } else {
-            self.geo.load_front(r)?;
-        }
-        if all {
-            self.tgp.load(r)?;
             #[cfg(not(target_arch = "wasm32"))]
-            self.tgp_jit.reset();
-        }
-        self.tgp_fault.load(r)?;
-        self.tgp_stalled.load(r)?;
-        self.copro_result_hash.load(r)?;
-        self.uart_log.load(r)?;
-        let mut video = 0u8;
-        video.load(r)?;
-        (self.frame_toggle, self.video_30hz) = (video & 1 != 0, video & 2 != 0);
-        self.board_ctrl.load(r)?;
-        self.inputs.load(r)?;
-        self.io_analog_channel.load(r)?;
-        self.analog.load(r)?;
-        self.io_latch.load(r)?;
-        state::State::load(&mut self.eeprom, r)?;
-        if let Some(d) = &mut self.drive {
-            d.load(r)?;
-        }
-        if let Some(g) = &mut self.gun {
-            g.load(r)?;
-        }
-        let mut jumps: Vec<(u32, u32)> = Vec::new();
-        if !r.done() {
-            jumps.load(r)?;
-        }
-        self.geo.set_jumps(jumps);
-        if all {
-            for m in &mut self.mems[test_rams..] {
-                if r.done() {
-                    *m = Mem::zeroed(m.data.len());
-                } else {
-                    m.load(r)?;
-                }
+            bus.tgp_jit.reset();
+            // Memory may have been reallocated.
+            #[cfg(not(target_arch = "wasm32"))]
+            if !bus.fast.is_empty() {
+                bus.make_fast_pages();
             }
-        }
-        self.uart = Uart::default();
-        if !r.done() {
-            self.uart.load(r)?;
-        }
-        if let Some(c) = self.sharc.as_mut().filter(|_| all) {
-            c.load(r)?;
-        }
-        if let Some(p) = &mut self.protection {
-            p.load(r)?;
-        }
-        if let Some(t) = &mut self.tgp2a {
-            t.load(r)?;
-        }
-        if let Some(regs) = &mut self.m2_io {
-            (**regs).load(r)?;
-        }
-        if all {
-            let mut halt = [0u32; 2];
-            let halted = !r.done();
-            if halted {
-                halt.load(r)?;
-            }
-            self.geo.set_halt(halted.then_some(halt));
-        }
-        // Memory may have been reallocated.
-        #[cfg(not(target_arch = "wasm32"))]
-        if all && !self.fast.is_empty() {
-            self.make_fast_pages();
         }
         Ok(())
     }
