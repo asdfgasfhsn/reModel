@@ -253,7 +253,7 @@ as a poke from power-on and drawing frames of the held run (save-state
 marks, drawn with `run --load-state`). The table is
 `crates/romset/src/games/pokes/vf2.txt`; the tour `cheats` holds all three
 (`make ram-pokes GAME=vf2`). All three are work-RAM values (RAM `0x500000`
-bank), one program ROM set.
+bank). The same three apply to `vf2o`, `vf2a` and `vf2b` (below).
 
 | Poke | Address | Width, value | What |
 |---|---|---|---|
@@ -288,3 +288,31 @@ bank), one program ROM set.
 - Only fights mean anything: the values are set every frame from power-on,
   harmlessly outside one. Untested: other characters' health scaling
   (every fight seen starts at `0xb0`), two-player mode, a later stage.
+
+### Variants (`vf2o`, `vf2a`, `vf2b`)
+
+The pokes are shared by the three alternative versions (the table is
+matched on their ids too). They have no tours of their own, so each was
+checked with the parent's inputs from a scratch tours file (the same
+frame counts, no changes; not shipped).
+
+- *Confirmed (health, P1), all three:* the idle-P1 tour above, `ram show` of
+  `0x510b2c` at frames 1500, 1950, 2100, 2500, 2900, 3300: `vf2o` and
+  `vf2a` read `0xb0, 0x5b, 0x5b, 0, 0x98, 0x62` (the two are identical
+  here), `vf2b` `0xb0, 0x7a, 0x7a, 0, 0, 0x92`: full at the start of the
+  round, falling to 0 under the CPU's hits (the hits land at other frames
+  than in `vf2`: `0xb0, 0xb0, 0x8b, 0x37, 0, 0xb0`). Held from power-on it
+  reads `0xb0` at every one of those frames.
+- *Confirmed (health, P2), all three:* the coin-start run (P1 attacks),
+  `0x512b2c` at 1600, 2100, 2400, 2800: `vf2o`/`vf2a` `0xb0, 0x31, 0x7, 0`
+  (the parent's values), `vf2b` `0x9e, 0x2c, 0x2, 0xb0`; held, `0xb0` at
+  every frame including 3300.
+- *Confirmed (timer), all three:* `0x500028` reads `0x60c` at 1950 and
+  `0x576` at 2100 in each (150 frames, as in `vf2`), falling by the frames
+  elapsed; held at `0x76a` it stays at `0x769`/`0x76a` through 3300.
+- *Pictures, all three:* states saved from the held runs (idle P1 at frame
+  2600, coin-start at 2400, `tour run` marks drawn with `run --load-state`)
+  show both bars full, Akira on the floor in the idle run, the clock at
+  29" and RING OUT in the attacking run with both bars still full.
+- Untested as in the parent: other characters, two-player mode, later
+  stages; the three versions' round timer at time-over.

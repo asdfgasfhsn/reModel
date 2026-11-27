@@ -153,6 +153,16 @@ lives (hearts, and "06") and a six-chamber cylinder at the start of play.
   1590-6000 firing every 20 frames, and the picture at 2000 shows a full
   cylinder and no RELOAD. With both held together a render at frame 4500 is
   still stage 1, HUD 06, cylinder full.
+- *Confirmed (by running it), `vcopa` (Rev A):* the same two addresses.
+  With the parent's `stand-still` and `fire` inputs (a scratch tours
+  file, the same frame counts, not shipped) `0x50ee70` reads
+  6, 5, 3, 2, 1, 0 at frames 1500, 1800, 1920, 2040, 2100, 2400, the
+  parent's sequence, and `0x50ee38` reads 6, 4, 3, 2, 1, 0 at
+  1590-2000 where `vcop` reads the same. Held (`lives-held`, `ammo-held`)
+  they read 6 at every frame sampled (1500-12000 and 1590-6000), and states
+  from a run holding both (frames 2000 and 4500) and from `lives-held`
+  (3000 and 9000), drawn with `run --load-state`, show stage 1 with the
+  HUD at 06 and a full cylinder.
 - Only meaningful in play (the values are the in-play HUD's). Player 2's
   copies were not looked for (*unconfirmed*; the struct's other player is
   probably a fixed distance away, not tested).
