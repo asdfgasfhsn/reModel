@@ -237,6 +237,9 @@ pub enum Row {
 pub enum Action {
     Take,
     Leave,
+    /// Quick save the frame shown (F5): after a scrub back, a moment the
+    /// game has passed.
+    Save,
 }
 
 const SHADINGS: [Option<gpu::Shading>; 4] =
@@ -577,6 +580,7 @@ pub const SCRIPT_KEYS: &[&str] = &[
     "near",
     "res",
     "name",
+    "save",
 ];
 
 impl Mode {
@@ -1249,6 +1253,7 @@ impl crate::Play {
         let action = match code {
             KeyCode::Escape | KEY => Some(Action::Leave),
             KeyCode::Enter | KeyCode::Space | KeyCode::NumpadEnter => Some(Action::Take),
+            KeyCode::F5 => Some(Action::Save),
             KeyCode::KeyH => {
                 m.ui = !m.ui;
                 None
@@ -1383,7 +1388,41 @@ impl crate::Play {
                 Ok(t) => self.menu.notify(t),
                 Err(e) => self.menu.error(format!("Photo failed: {e}")),
             },
+            Action::Save => self.save_moment(),
         }
+    }
+
+    /// Quick save the frame photo mode shows. At live (or ahead of the
+    /// game, run-ahead's frames, or with no history) that is the game's own
+    /// quick save; scrubbed back, it is the studio's machine, run again from
+    /// the history to that frame, so the save is the game as it was then.
+    /// Its sound boards' state isn't kept for past frames, so the save has
+    /// none and a load keeps the sound going as it is.
+    fn save_moment(&mut self) {
+        let (Some(m), Some(s)) = (&self.photo, &mut self.session) else { return };
+        let real = s.machine.frames;
+        let back = m.range.is_some() && m.frame < real;
+        let Some(st) = s.studio.as_mut().filter(|_| back) else { return self.save_slot(0) };
+        let data = model2::save_session_parts(st.machine(), None);
+        let before = (m.live - m.frame) as f64 / model2::pacing::FPS;
+        let path = s.slot_path(0);
+        let result = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, data));
+        println!(
+            "save          {} frame {} ({before:.2} s before live): {} ({})",
+            s.game.id,
+            m.frame,
+            path.display(),
+            result.as_ref().map_or_else(|e| format!("failed: {e}"), |_| "ok".into())
+        );
+        match result {
+            Ok(()) => {
+                // No picture of a past frame to hand: the slot's old one goes.
+                let _ = std::fs::remove_file(crate::saves::thumb_path(&path));
+                self.menu.notify(format!("Quick saved, {before:.2} s before live"));
+            }
+            Err(e) => self.menu.error(format!("Save failed: {e}")),
+        }
+        self.slot_cache = None;
     }
 
     /// `--photo`'s next session, when the game has reached its frame:
@@ -1426,6 +1465,7 @@ impl crate::Play {
                     }
                 }
                 "name" => name = Some(v.clone()),
+                "save" => self.save_moment(),
                 _ => {
                     if let Err(e) = self.photo.as_mut().unwrap().script(k, v) {
                         eprintln!("{e}");

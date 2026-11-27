@@ -293,11 +293,32 @@ fn the_time_strip_scrubs() {
     r.press(Nav::Left);
     assert_eq!(r.m.wanted, Some(599));
     r.m.wanted = None;
-    // From the mouse: halfway along is halfway back.
-    let mid = 50.0 + 640.0 - 50.0;
-    r.click(pos2(mid, r.m.dock.top + 50.0));
+    // From the mouse: halfway along is halfway back (the strip runs from
+    // its oldest label's left to the end of "Live").
+    let x0 = r.texts().iter().find(|t| t.0.starts_with('−')).unwrap().1.x;
+    let x1 = r.at("Live").x + 30.0;
+    r.click(pos2((x0 + x1) / 2.0, r.m.dock.top + 50.0));
     let at = r.m.wanted.unwrap();
     assert!((280..=320).contains(&at), "{at}");
+}
+
+/// The Time tab's button beside the strip saves the moment shown, from
+/// the mouse and from the pad (down from the strip, then A).
+#[test]
+fn the_time_tab_saves_the_moment_shown() {
+    let mut r = Rig::new();
+    r.m.tab = Tab::Time;
+    r.frame(vec![]).frame(vec![]);
+    assert!(r.shows("Save this moment") && r.shows("F5"), "{:?}", r.texts());
+    let at = r.at("Save this moment");
+    r.click(at + vec2(20.0, 10.0));
+    assert_eq!(r.actions, [Action::Save]);
+    r.actions.clear();
+    let strip = r.at("Live");
+    r.click(strip + vec2(-100.0, 30.0));
+    r.actions.clear();
+    r.press(Nav::Down).press(Nav::Accept);
+    assert_eq!(r.actions, [Action::Save]);
 }
 
 #[test]

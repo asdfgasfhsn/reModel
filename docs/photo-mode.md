@@ -71,7 +71,15 @@ tab).
 - **Time**: the time scrub, a strip over the last seconds (`--photo-history`,
   10 by default; click or drag along it, or left and right for a frame): the
   frame shown is run again from the history, so it is exactly what the game
-  showed then. "Live" is the frame photo mode opened on.
+  showed then. "Live" is the frame photo mode opened on. **Save this
+  moment** (F5, or down from the strip and A on a pad) quick saves the frame
+  shown: scrubbed back, that is the game as it was then (the studio's
+  machine, the same state the game had, checked byte for byte against a
+  save made at that frame), for catching a moment only seen once it has
+  passed, such as a glitch to report. The sound boards' state isn't kept
+  for past frames, so such a save has none (loading it keeps the sound
+  going as it is) and no picture on the slots page. At live it is the
+  game's own quick save.
 - **Focus**: **Depth of field**, with **Focus distance** (in the scene's
   scale; it starts on what is a little below the middle of the picture, where
   third-person games put the player, and a double-click on the picture sets it
@@ -119,6 +127,7 @@ prints a `photo` line and closes it. Keys:
 | `near` | near clip in percent of the scene's scale |
 | `res` | `window`, `1080`, `1440`, `4k`, `8k` or a height |
 | `name` | the file's name (without `.png`) |
+| `save` | quick save the frame shown, as the Time tab's **Save this moment** (any value; after `back`, a moment the game has passed) |
 
 With `--fast` (as `make photo-check` uses) the player runs the game as fast
 as it goes and draws nothing, so a scripted run doesn't depend on the

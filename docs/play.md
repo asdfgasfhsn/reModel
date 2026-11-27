@@ -1625,7 +1625,7 @@ The player's own keys are the same for every game:
 | Key | |
 |---|---|
 | Esc | menu (the game pauses while it's open) |
-| F5, F9 | quick save, quick load |
+| F5, F9 | quick save, quick load (in photo mode, F5 saves the frame shown, also one scrubbed back to: `docs/photo-mode.md`, "Time") |
 | F8 | photo mode (docs/photo-mode.md): a dock along the bottom edge (tabs Camera, Time, Focus, Look, Effects, Frame; LB and RB switch them, Y hides it, the red shutter takes the photo, B leaves), never a panel over the picture |
 | F11 | fullscreen |
 

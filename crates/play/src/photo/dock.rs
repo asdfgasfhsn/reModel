@@ -108,6 +108,8 @@ struct Out {
     adjust: Vec<(Row, i32)>,
     take: bool,
     leave: bool,
+    /// Save this moment (the Time tab's button).
+    save: bool,
     hide: bool,
     grid: bool,
     tab: Option<Tab>,
@@ -244,7 +246,11 @@ impl Mode {
                 let gap = 8.0 * s;
                 let cw = (cells_row.width() - gap * (COLUMNS - 1) as f32) / COLUMNS as f32;
                 if let (Some(t), Some(c)) = (&time, cells.first()) {
-                    time_cell(ui, &mut dock.focus, cells_row, c, t, (range.map_or(0, |r| r.0), live), &mut out);
+                    // The strip, and the last column's button to save the moment shown.
+                    let (strip, button) = cells_row.split_left_right_at_x(cells_row.right() - cw - gap);
+                    let button = Rect::from_min_max(pos2(button.left() + gap, button.top()), button.max);
+                    time_cell(ui, &mut dock.focus, strip, c, t, (range.map_or(0, |r| r.0), live), &mut out);
+                    save_cell(ui, &mut dock.focus, button, &mut out);
                 } else {
                     for (i, c) in cells.iter().enumerate() {
                         let r = Rect::from_min_size(
@@ -278,6 +284,9 @@ impl Mode {
         }
         if out.leave {
             actions.push(Action::Leave);
+        }
+        if out.save {
+            actions.push(Action::Save);
         }
         if let Some(f) = out.scrub {
             self.wanted = Some(f);
@@ -455,6 +464,25 @@ fn time_cell(
             let f = ((at.x - strip.left()) / strip.width().max(1.0)).clamp(0.0, 1.0);
             out.scrub = Some(oldest + (f * live.saturating_sub(oldest) as f32).round() as u64);
         }
+    }
+}
+
+/// The Time tab's "Save this moment": a quick save (F5) of the frame shown,
+/// which after a scrub back is a moment the game has already passed.
+fn save_cell(ui: &mut Ui, focus: &mut PadFocus, rect: Rect, out: &mut Out) {
+    let s = theme::scale(ui.ctx());
+    let id = ui.make_persistent_id("photo-save");
+    let r = ui.interact(rect, id, Sense::click());
+    out.cells.push(id);
+    let p = ui.painter();
+    p.rect_filled(rect, theme::ROW_RADIUS * s, Color32::from_white_alpha(if r.hovered() { 26 } else { 14 }));
+    p.text(pos2(rect.center().x, rect.top() + 8.0 * s), Align2::CENTER_TOP, "Save this moment", semibold(s), TEXT);
+    p.text(pos2(rect.center().x, rect.bottom() - 8.0 * s), Align2::CENTER_BOTTOM, "F5", font(s), TEXT_DIM);
+    if focus.is_on(id) {
+        theme::focus_ring(p, rect, s, theme::ROW_RADIUS);
+    }
+    if focus.register(ui, &r) {
+        out.save = true;
     }
 }
 
