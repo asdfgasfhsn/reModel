@@ -286,8 +286,6 @@ pub struct View<'a> {
 pub struct CheatRow {
     /// What the page calls it ("Time never runs out").
     pub label: String,
-    /// The small line under it: the note's first sentence.
-    pub note: String,
     pub on: bool,
 }
 
@@ -1688,11 +1686,7 @@ mod tests {
             let mut rig = Rig::new(id);
             rig.cheats = romset::pokes::cheats(rig.game)
                 .into_iter()
-                .map(|p| CheatRow {
-                    label: p.cheat.clone().unwrap_or_default(),
-                    note: p.short_note().to_string(),
-                    on: false,
-                })
+                .map(|p| CheatRow { label: p.cheat.clone().unwrap_or_default(), on: false })
                 .collect();
             assert!(!rig.cheats.is_empty(), "{id} has cheats");
             rig.frame(&[], Vec::new());

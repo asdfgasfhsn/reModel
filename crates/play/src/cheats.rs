@@ -36,7 +36,6 @@ pub fn rows(defs: &[Poke], held: &[Hold]) -> Vec<CheatRow> {
     defs.iter()
         .map(|p| CheatRow {
             label: p.cheat.clone().unwrap_or_else(|| p.name.clone()),
-            note: p.short_note().to_string(),
             on: held.iter().any(|h| h.name == p.name),
         })
         .collect()
@@ -71,7 +70,7 @@ mod tests {
         // A name the table doesn't have (a save from another table) is ignored.
         assert_eq!(holds(&defs, &["gone".to_string()]).len(), 0);
         let r = rows(&defs, &h);
-        assert_eq!((r[0].label.as_str(), r[0].note.as_str(), r[0].on), ("Time never runs out", "Held at 60 s.", true));
+        assert_eq!((r[0].label.as_str(), r[0].on), ("Time never runs out", true));
         assert_eq!((r[1].label.as_str(), r[1].on), ("Free continues", true));
         assert!(!rows(&defs, &[])[0].on);
     }

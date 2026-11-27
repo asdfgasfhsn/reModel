@@ -1,6 +1,7 @@
 //! The Cheats page (the pause menu's Cheats row, for a game whose poke table
-//! has cheats: `romset::pokes`): one toggle row for each, with what it does
-//! in small text, and a note that they are off each time a game starts.
+//! has cheats: `romset::pokes`): one toggle row for each, its label alone
+//! (the table's note is for developers), and a note that they are off each
+//! time a game starts.
 //! Focus: `Menu::cheats_focus`.
 
 use super::*;
@@ -15,11 +16,11 @@ pub(super) const NOTE: [(&str, bool); 3] = [
 /// What the pause menu's Cheats row says in a network game.
 pub(super) const NET_NOTE: &str = "Not in a network game: every machine must run the same game.";
 
-/// A cheat's row: its label over its small line, a switch on the right.
+/// A cheat's row: its label, a switch on the right.
 /// Clicked, or activated from the pad.
 fn cheat_row(ui: &mut egui::Ui, focus: &mut Focus, id: egui::Id, c: &CheatRow) -> bool {
     let s = theme::scale(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0 * s), Sense::hover());
     let r = ui.interact(rect, id, Sense::click());
     let p = ui.painter().clone();
     if focus.is_on(id) {
@@ -30,17 +31,13 @@ fn cheat_row(ui: &mut egui::Ui, focus: &mut Focus, id: egui::Id, c: &CheatRow) -
     let pad = 20.0 * s;
     let switch = Rect::from_center_size(pos2(rect.right() - pad - 21.0 * s, rect.center().y), vec2(42.0 * s, 24.0 * s));
     let width = (switch.left() - 14.0 * s - rect.left() - pad).max(10.0);
-    let line = |text: &str, font: FontId, color: Color32| {
-        let mut job = egui::text::LayoutJob::single_section(text.to_string(), egui::TextFormat::simple(font, color));
-        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-        ui.fonts_mut(|f| f.layout_job(job))
-    };
-    let g1 = line(&c.label, FontId::new(18.0 * s, theme::semibold()), theme::TEXT);
-    let g2 = line(&c.note, FontId::new(14.0 * s, FontFamily::Proportional), theme::TEXT_DIM);
-    let top = rect.center().y - (g1.size().y + 2.0 * s + g2.size().y) / 2.0;
-    let h1 = g1.size().y;
-    p.galley(pos2(rect.left() + pad, top), g1, theme::TEXT);
-    p.galley(pos2(rect.left() + pad, top + h1 + 2.0 * s), g2, theme::TEXT_DIM);
+    let mut job = egui::text::LayoutJob::single_section(
+        c.label.clone(),
+        egui::TextFormat::simple(FontId::new(18.0 * s, theme::semibold()), theme::TEXT),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+    let g = ui.fonts_mut(|f| f.layout_job(job));
+    p.galley(pos2(rect.left() + pad, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
     let (fill, knob, x) = if c.on {
         (theme::YELLOW, Color32::from_rgb(17, 17, 17), switch.right() - 12.0 * s)
     } else {
