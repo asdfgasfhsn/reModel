@@ -1,0 +1,7 @@
+# Top Skater Japan and USA pokes (topskatrj, topskatru): only the lines checked on those sets (see pokes/topskatr.txt for the parent's, docs/games/topskatr.md, Cheats).
+# (docs/uplift/content-coverage.md, "Pokes"). Work RAM writes found by running
+# the game with `remodel ram search`; held by a tour (`poke=NAME@from-to`),
+# or, with a last `|cheat: LABEL` field (crates/romset/src/pokes.rs), offered as
+# a cheat in the player's Esc menu; never applied otherwise. Addresses are
+# the same on the parent, Japan and USA program sets.
+hold-clock|0x5830b0:0x0e10:w|The course's remaining time, in frames (60 a second), held at 60 s so TIME UP never comes. Found by search: it read 20 s left (0x4b3) at frame 5000 of a coin start that picks the first skater, 15 s at 5300 and 0x30f at 5420; the only word that fell by exactly 300 then 120.|cheat: Time never runs out

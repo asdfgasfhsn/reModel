@@ -188,6 +188,18 @@ when a tour says `poke=NAME@from-to`.
 - *Unconfirmed:* whether the address holds for the other skaters and
   courses (the search used one skater on the first course), and what the
   other word, `0x5CDDDC`, is.
+- *Confirmed (2026-11-28), the Japan and USA sets (`topskatrj`,
+  `topskatru`):* the same search (coin start, first skater, frames 5000,
+  5300, 5420, `dec=300` then `dec=120`, words) gives the same two candidates
+  with the same values (`0x5830B0`: `0x4B3`, `0x387`, `0x30F`; `0x5CDDDC`:
+  `0xECD1`, `0xEBA5`, `0xEB2D`). Holding `0x5830B0` at `0x0E10` from frame
+  3300 reads `0xE0F` (the frame's own count-down) at frames 3500, 6000, 9500
+  and 11000, and the picture at 9500 shows the course with "59 LIMIT"; the
+  same run without the poke is back in the attract loop by then. So both
+  variants have the cheat **Time never runs out**, from
+  `pokes/topskatr-variants.txt`. The `skater-id-6`/`-7` lines are not in that
+  file: they are partial on the parent and were not tried on the variants.
+  Run by hand with `--input`; no tours are shipped for the variants.
 
 ## Pack gates on the Top Skater showcase pack (2026-11-22)
 

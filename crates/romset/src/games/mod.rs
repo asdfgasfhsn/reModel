@@ -102,7 +102,8 @@ pub fn tours(game: &Game) -> &'static str {
 pub fn pokes(game: &Game) -> &'static str {
     match game.id {
         "topskatr" => include_str!("pokes/topskatr.txt"),
-        "srallyc" => include_str!("pokes/srallyc.txt"),
+        "topskatrj" | "topskatru" => include_str!("pokes/topskatr-variants.txt"),
+        "srallyc" | "srallycb" | "srallyp" => include_str!("pokes/srallyc.txt"),
         "vf2" => include_str!("pokes/vf2.txt"),
         "hotd" => include_str!("pokes/hotd.txt"),
         "daytona" => include_str!("pokes/daytona.txt"),

@@ -423,3 +423,21 @@ otherwise. Tours: `crates/romset/src/games/tours/srallyc.txt`.
   - Not tried: later stages (the scripted driving ends at the first
     stage's clear), and whether the clear time or rank screen changes
     (the HUD's total time still runs).
+
+### The other releases (srallycb Rev B, srallyp Pro Drivin' prototype)
+
+Both share `pokes/srallyc.txt` (`romset::games::pokes`), so `hold-clock` is
+offered as a cheat for them too. *Confirmed* on each (2026-11-28), with the
+`drive` tour's inputs run by hand (`--input`, no tour file is shipped for the
+variants, as tours are frame counts of the parent):
+
+- `ram search` at frames 3000, 3060, 3120, 3180 (`dec=60` each) gives exactly
+  one long on each: `0x20b0b0`, `0xd3e -> 0xd02 -> 0xcc6 -> 0xc8a`, the same
+  address and values as the parent (the prototype's different liveries and
+  scenery do not move it).
+- Rendered frame 10000 of the drive without the poke: srallycb shows GAME
+  OVER; srallyp shows RETIRED (rank 1st, Forest RETIRED, the clock ran out).
+  With `poke=0x20b0b0:0xe10:l@0-15000` both are still on the stage with the
+  HUD clock at 60, and at frame 14000 both show "FOREST STAGE CLEAR! TRY NEXT
+  STAGE!".
+- Not tried: later stages on either; the prototype's other stages.
