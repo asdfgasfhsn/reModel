@@ -246,6 +246,28 @@ same board.
   so each needs a layout check and the Turbo, GTX and Maxx sets are
   patches on other hardware revisions (unconfirmed).
 
+## Cheats
+
+Pokes in `crates/romset/src/games/pokes/daytona.txt` (`make ram-pokes
+GAME=daytona`); a tour holds one with `poke=NAME@from-to`.
+
+- **`hold-clock`** (*confirmed by running it*): the race clock is the word
+  at `0x5010d0`, a countdown that falls by 1 a frame and shows as value/64
+  seconds (0x0f00 = 60). Found with `make ram-search GAME=daytona
+  TOUR=coin-start RAM_ARGS="--at 3100,3300,3600,3900 --rule dec,dec,dec
+  --width w"`: the clock read 42, 39, 35 on screen at 3100, 3300, 3600 and
+  this word read 0xaba, 0x9f2, 0x8c6 (2746, 2546, 2246; /64 = 42.9, 39.8,
+  35.1). Held at 0x0f00 from power-on (tour `clock-held`) the game still
+  reaches mission select and a race; at frame 6600 the race is on with 59 on
+  the clock and the lap time counting, while the unpoked `coin-start` has run
+  the clock out (the word reads 0xffff from about frame 5850) and is back in
+  attract by then. Only meaningful in a race. Unconfirmed: what the word
+  does at an extended-time checkpoint (the held value overwrites any added
+  time, which does no harm), and that the held clock leaves a finished
+  8-lap race's result unchanged (no race was steered to the flag).
+- Not found: a credit or continue cheat. Not looked for (the brief was the
+  clock and anything cheap).
+
 ## Linked play (experimental)
 
 Up to **eight** cabinets (`docs/hw/link-board.md` section 10; run them with

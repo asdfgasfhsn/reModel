@@ -7,3 +7,6 @@ bench|600000000|coin-start
 coin-start|6000f|coin-start
 # The attract loop on its own.
 attract|5000f|
+# The race clock held from power-on (poke hold-clock): the same run as
+# coin-start, which ends its race near frame 5700 when the clock runs out.
+clock-held|9000f|coin-start,poke=hold-clock@0-8999

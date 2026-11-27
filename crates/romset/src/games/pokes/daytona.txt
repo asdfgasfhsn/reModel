@@ -1,0 +1,5 @@
+# Daytona USA's pokes: NAME|ADDR:VALUE[:b|:w|:l]|what it does, how it was found|cheat: label
+# (docs/uplift/content-coverage.md, "Pokes"). Work RAM writes found by running
+# the game with `remodel ram search`; held by a tour (`poke=NAME@from-to`),
+# never applied otherwise. Addresses are for the game's one program ROM set.
+hold-clock|0x5010d0:0x0f00:w|The race clock, a frame countdown shown as value/64 seconds (0x0f00 reads 60), held at 60 s so the race never ends on time. Found by search on the coin-start tour: the clock read 42, 39 and 35 at frames 3100, 3300 and 3600 and the one word that fell by 200 then 300 (a frame at a time) was this. Checked: held from power-on (tour clock-held) the game still shows the mission select and starts the race; at frame 6600 the race is still on with 59 on the clock and the lap time counting, where the same run unpoked has hit 0 at about frame 5850 and is back in attract. It only means something in a race (elsewhere the word is unused or rewritten)|cheat: Time never runs out

@@ -104,6 +104,7 @@ pub fn pokes(game: &Game) -> &'static str {
         "srallyc" => include_str!("pokes/srallyc.txt"),
         "vf2" => include_str!("pokes/vf2.txt"),
         "hotd" => include_str!("pokes/hotd.txt"),
+        "daytona" => include_str!("pokes/daytona.txt"),
         _ => "",
     }
 }
