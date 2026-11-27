@@ -127,3 +127,32 @@ bezel). The second game on the original Model 2 board
    was seen, but no stage has been cleared in a scripted run.
 2. The sound by ear against a cabinet (as `daytona`'s).
 3. The OUTPUT TEST (lamps, `0x1C0001E`) and the gun's recoil, if any.
+
+## Cheats
+
+Both are work-RAM bytes of player 1's state, found with `make ram-search`
+on tours (`stand-still`, `fire` in `crates/romset/src/games/tours/vcop.txt`)
+and listed in `crates/romset/src/games/pokes/vcop.txt`. The HUD shows 6
+lives (hearts, and "06") and a six-chamber cylinder at the start of play.
+
+| Poke | Address | Width | Value | Label |
+|---|---|---|---|---|
+| `p1-lives` | `0x50ee70` | byte | 6 | Player 1 never loses a life |
+| `p1-ammo` | `0x50ee38` | byte | 6 | Player 1 infinite ammo |
+
+- *Confirmed (by running it):* lives. Standing still in stage 1, the byte
+  read 5, 3, 2, 1 at frames 1800, 1920, 2040, 2100, where the HUD showed
+  5, 3, 2, 1 hearts (the only byte that did). Held at 6, `lives-held` (the
+  poke from frame 0) keeps it at 6 from frame 1500 to 12000 (unpoked, the
+  game is over by 2400 and attract resumes), the picture at 3000-9000 is
+  stage 1 with the HUD at 06 and the enemy still aiming at the gun. Holding
+  it from power-on does not disturb attract or the start.
+- *Confirmed (by running it):* ammo. Firing every 40 frames, the byte read
+  6, 5, 4, 3, 2 (the only byte); the cylinder shows the same, and with no
+  reload a "RELOAD" prompt appears. `ammo-held` reads 6 at frames
+  1590-6000 firing every 20 frames, and the picture at 2000 shows a full
+  cylinder and no RELOAD. With both held together a render at frame 4500 is
+  still stage 1, HUD 06, cylinder full.
+- Only meaningful in play (the values are the in-play HUD's). Player 2's
+  copies were not looked for (*unconfirmed*; the struct's other player is
+  probably a fixed distance away, not tested).

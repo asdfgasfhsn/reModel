@@ -1,0 +1,17 @@
+# Virtua Cop's tours: LABEL|LENGTH|INPUT (docs/uplift-studio.md, "Tours").
+# Inputs only, from power-on; nothing taken from the ROMs.
+#
+# bench: what `make bench` runs (BENCH_STEPS, coin-start).
+bench|600000000|coin-start
+# Attract, a coin, start, STAGE 1 chosen, then shots and reloads.
+coin-start|6000f|coin-start
+# Stage 1 chosen, then the gun left off the screen and the trigger idle:
+# the enemies shoot player 1 and lives go down (for `ram search`).
+stand-still|5000f|coin1@1100-1104,start@1300-1304,gun1=95:190@1350-1420,trigger1@1400-1404,gun1=off@1421-5000
+# Stage 1, then a shot every 40 frames from 1600 and no reload: the
+# bullets go down by one a shot (for `ram search`).
+fire|5000f|coin1@1100-1104,start@1300-1304,gun1=95:190@1350-1420,trigger1@1400-1404,gun1=248:170@1450-5000,trigger1@1600-5000/40
+# The two cheats (pokes/vcop.txt) held from power-on: standing under fire
+# never ends the game; firing never needs a reload.
+lives-held|12000f|coin1@1100-1104,start@1300-1304,gun1=95:190@1350-1420,trigger1@1400-1404,gun1=off@1421-12000,poke=p1-lives@0-12000
+ammo-held|6000f|coin1@1100-1104,start@1300-1304,gun1=95:190@1350-1420,trigger1@1400-1404,gun1=248:170@1450-6000,trigger1@1600-6000/20,poke=p1-ammo@0-6000
