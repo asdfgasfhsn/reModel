@@ -21,6 +21,17 @@ use mb86235::cpu::{External, Step, Tgp};
 use romset::{Board, Role, RomSet};
 use std::collections::{BTreeMap, VecDeque};
 
+/// One of the player's cheats held on: `value` (`width` bytes) written at
+/// `addr` before every frame. `name` is the poke table's, which a save made
+/// with it on records (`save_session_parts`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hold {
+    pub name: String,
+    pub addr: u32,
+    pub value: u32,
+    pub width: usize,
+}
+
 /// Main CPU clock: 25 MHz.
 pub const CPU_HZ: u64 = 25_000_000;
 /// One video frame in CPU cycles: 656x424 total pixels at a 16 MHz pixel
@@ -238,6 +249,12 @@ pub struct Model2Bus {
 
     // 315-5649 I/O: inputs are active low.
     pub inputs: [u8; 4],
+    /// The player's cheats that are on: values held in RAM, each written
+    /// before every frame ([`Model2Bus::apply_holds`]). Players' state, not
+    /// the machine's: not in a save state or its hash, but copied with the
+    /// machine ([`Model2Bus::copy_from`]) so run-ahead and photo mode run
+    /// the same frames.
+    pub holds: std::sync::Arc<[Hold]>,
     /// The latched gear lever (`input::apply_player`, for games with a
     /// `Controls::shifter`). Players' state, not the machine's.
     pub gear: crate::input::GearLatch,
@@ -478,6 +495,7 @@ impl Model2Bus {
             board_ctrl: 0,
             uart: Uart::default(),
             inputs: [0xff; 4],
+            holds: Default::default(),
             gear: Default::default(),
             key_ramps: Default::default(),
             io_analog_channel: 0,
@@ -1155,6 +1173,18 @@ impl Model2Bus {
     /// 0x500000 (1 MB), where a game keeps its variables.
     pub fn work_ram(&self) -> [(u32, &[u8]); 2] {
         [(0x20_0000, &self.mems[CODE_RAMS[0]].data[..]), (0x50_0000, &self.mems[CODE_RAMS[1]].data[..])]
+    }
+
+    /// Write every held cheat's value (what a tour's held poke does, once a
+    /// frame before it runs). Nothing with no cheat on.
+    pub fn apply_holds(&mut self) {
+        if self.holds.is_empty() {
+            return;
+        }
+        let holds = self.holds.clone();
+        for h in holds.iter() {
+            self.poke(h.addr, h.value, h.width);
+        }
     }
 
     /// Write `n` bytes of work RAM at `addr` (a poke: a cheat, only ever
@@ -2054,6 +2084,7 @@ impl Model2Bus {
     /// is exact: the same state hash.
     pub fn copy_from(&mut self, src: &mut Model2Bus, marks: &mut CopyMarks) {
         assert_eq!(self.mems.len(), src.mems.len(), "copy between buses of different games");
+        self.holds = src.holds.clone();
         marks.mems.resize(self.mems.len(), (u64::MAX, u64::MAX));
         marks.copied = 0;
         for (i, (d, s)) in self.mems.iter_mut().zip(&src.mems).enumerate() {

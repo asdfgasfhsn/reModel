@@ -34,6 +34,7 @@ mod art;
 mod backdrop;
 mod bezel;
 mod cabinet;
+mod cheats;
 mod controls;
 mod draw;
 mod focus;
@@ -928,6 +929,9 @@ struct Session {
     /// The game was started on free play (its settings image carries the free
     /// play bytes in memory only: saving the EEPROM takes them out again).
     free_play: bool,
+    /// The game's cheats: its poke table's labelled lines. Which are on is
+    /// `machine.bus.holds` (none when a game starts).
+    cheat_defs: Vec<romset::pokes::Poke>,
 }
 
 /// Where `set`'s JIT hot-block list is kept (docs/jit.md, "Hot-block
@@ -1006,7 +1010,37 @@ impl Session {
             link: None,
             free_play: false,
             net: None,
+            cheat_defs: romset::pokes::cheats(game),
         }
+    }
+
+    /// The Cheats page's rows: none for the launcher's preview or link play
+    /// (several machines in one window), whose menu has no Cheats row.
+    fn cheat_rows(&self) -> Vec<menu::CheatRow> {
+        if self.preview || self.link.is_some() {
+            return Vec::new();
+        }
+        cheats::rows(&self.cheat_defs, &self.machine.bus.holds)
+    }
+
+    /// Hold exactly the cheats named `names` (the table's, in its order; a
+    /// name it does not have is ignored): they are written into RAM before
+    /// every frame, here, run-ahead's and photo mode's alike.
+    fn set_cheats(&mut self, names: &[String]) {
+        self.machine.bus.holds = cheats::holds(&self.cheat_defs, names);
+    }
+
+    /// Turn the `i`th cheat on or off; its new state. Not in a network
+    /// game or link play, nor for the preview.
+    fn toggle_cheat(&mut self, i: usize) -> Option<bool> {
+        if self.preview || self.link.is_some() || self.net.is_some() {
+            return None;
+        }
+        let name = self.cheat_defs.get(i)?.name.clone();
+        let held: Vec<String> = self.machine.bus.holds.iter().map(|h| h.name.clone()).collect();
+        let (names, on) = cheats::toggled(&held, &name);
+        self.set_cheats(&names);
+        Some(on)
     }
 
     fn dir(&self) -> PathBuf {
@@ -2188,6 +2222,8 @@ impl Play {
             Ok(d) => d,
             Err(e) => return self.menu.error(format!("Can't read {}: {e}", path.display())),
         };
+        // The cheats the state was made with on, which a load turns back on.
+        let cheats = model2::save_info(&data[..data.len().min(512)]).map(|i| i.cheats).unwrap_or_default();
         let result = model2::load_session_parts(&mut s.machine, &data).and_then(|live| {
             // Link play: the tail holds the other machines, the hub and the board flags.
             let live = match &mut s.link {
@@ -2207,6 +2243,9 @@ impl Play {
         );
         match result {
             Ok(()) => {
+                // Exactly the cheats the save was made with: none for one made with none.
+                s.set_cheats(&cheats);
+                let marked = !s.machine.bus.holds.is_empty();
                 self.epoch = Instant::now() - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
                 // A jump the motion data doesn't know of; memory the
                 // frame copy's versions don't describe.
@@ -2216,7 +2255,7 @@ impl Play {
                     core.frame.forget();
                     core.views.iter_mut().for_each(|v| v.frame.forget());
                 }
-                self.menu.notify(done);
+                self.menu.notify(if marked { format!("{done}, cheats on") } else { done.to_string() });
             }
             Err(e) => {
                 // The machine may be half loaded: start the game afresh.
@@ -2407,6 +2446,7 @@ impl Play {
             }
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
+            let cheats = s.cheat_rows();
             let mut values = self.values.clone();
             let mut fullscreen = self.settings.fullscreen;
             let keeps = menu::Keeps { all_games: self.settings.all_games_preset(s.game.id) };
@@ -2429,6 +2469,7 @@ impl Play {
                 pad: controls::PadLive::default(),
                 link: None,
                 running: false,
+                cheats: &cheats,
             };
             let lui = link_ui(Some(&*s), self.gilrs.as_ref(), link_views.as_ref());
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
@@ -3208,6 +3249,9 @@ impl Play {
             if let Some(h) = &mut s.history {
                 h.before_frame(&mut s.machine);
             }
+            // The cheats that are on, held as a tour's pokes are (after the
+            // history noted them: its replays hold them too).
+            s.machine.bus.apply_holds();
             if let Some(n) = &mut s.net {
                 // One cabinet of a network session: run the frame once, then pass the
                 // boundary when the other machines' records are in; until then the frame
@@ -3752,6 +3796,7 @@ impl Play {
                 None => menu::Keeps::default(),
             };
             let inherit = self.session.as_ref().map(|s| s.game.id).map(|id| self.inherit_for(id));
+            let cheats = self.session.as_ref().map(|s| s.cheat_rows()).unwrap_or_default();
             let g = self.gpu.as_mut().unwrap();
             let picture = self
                 .session
@@ -3777,6 +3822,7 @@ impl Play {
                 pad: pad_live,
                 link: self.session.as_ref().and_then(|s| s.link.as_ref()).map(|l| l.n()),
                 running: self.session.as_ref().is_some_and(|s| s.net.is_some() && !s.preview),
+                cheats: &cheats,
             };
             let link_ui = link_ui(self.session.as_ref(), self.gilrs.as_ref(), g.link.as_ref());
             let net_line =
@@ -3895,6 +3941,11 @@ impl Play {
                     }
                 }
                 menu::Action::Players => self.open_players_in_game(),
+                menu::Action::Cheat(i) => {
+                    if let Some(s) = &mut self.session {
+                        s.toggle_cheat(i);
+                    }
+                }
                 menu::Action::Quit => self.quit(el),
                 menu::Action::ResetOwn => {
                     if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
@@ -4348,6 +4399,7 @@ impl Play {
             pad: pad_live,
             link: None,
             running: false,
+            cheats: &[],
         };
         let navs = std::mem::take(&mut self.navs);
         // System settings edit the system's values, a game's page the game's.

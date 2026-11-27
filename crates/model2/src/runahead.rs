@@ -115,6 +115,8 @@ impl RunAhead {
         let copied = t.elapsed();
         for i in 1..=self.frames {
             self.shadow.bus.geo.set_smooth_shown(i == self.frames);
+            // The player's cheats hold in the frames ahead as in the real ones.
+            self.shadow.bus.apply_holds();
             let r = self.shadow.run_slice(u64::MAX);
             // Speculative sound never plays.
             self.shadow.bus.uart_log.clear();

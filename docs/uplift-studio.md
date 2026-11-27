@@ -1313,12 +1313,16 @@ stopped clock, a stage unlocked. A tour says so itself:
 value is written at the start of every frame in the range, as the inputs are)
 or `poke=NAME@from-to` with a name from the game's table,
 `crates/romset/src/games/pokes/GAME.txt` (`NAME|ADDR:VALUE[:w]|what it does
-and how it was found`). Nothing pokes unless a tour has a `poke=` term, in
-itself or in a tour it branches from. Such a tour is marked: `tour list` says
+and how it was found`, optionally with a last field `|cheat: LABEL`, which
+also offers the line as a cheat in the player's Esc menu: docs/play.md,
+"Cheats"; one parser, `romset::pokes`). Nothing pokes unless a tour has a
+`poke=` term, in itself or in a tour it branches from, or the player turned
+a cheat on. Such a tour is marked: `tour list` says
 "(pokes RAM)", `tour run` names its states `LABEL-NAME.poked.state`, and
 `coverage` lists the tours that poke, since what they read is not what play
 reaches unaided. Pokes write only writable memory (a bad address does
-nothing); the benchmark and the player never poke.
+nothing); the benchmark never pokes, and the player only for a cheat the
+player turned on.
 
 `remodel ram search` finds an address, as a cheat finder does, but from a
 tour, so a search is reproducible:

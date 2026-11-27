@@ -2017,7 +2017,7 @@ Back, Esc Resume).
 
 The first page lists what to do: **Resume**, **Quick save** (F5), **Quick
 load** (F9), **Save slots** (how many are used), **Photo mode** (F8:
-`docs/photo-mode.md`; not in link play or a network game), **Players** (for a game with more than one: the Players screen, to swap who is P1; not in a network game), **Reset game** (select it twice within four seconds:
+`docs/photo-mode.md`; not in link play or a network game), **Cheats** (for a game whose poke table has cheats, saying how many are on: "1 on ›" or "off ›"; "Cheats", below; greyed in a network game, absent in link play), **Players** (for a game with more than one: the Players screen, to swap who is P1; not in a network game), **Reset game** (select it twice within four seconds:
 the game starts again from power-on, keeping its EEPROM) and **Back to
 games**. Under a small "SETTINGS" label come the settings, one level in,
 each showing its value: **Picture** (the style), **Controls**, **Sound**
@@ -2051,6 +2051,29 @@ events only, not yet with a real pad.
   exactly where it was. The one thing not saved is a replacement soundtrack
   voice that's playing (`docs/mods.md`). The thumbnails are described under
   "Files" below.
+- **Cheats**: a page with one switch for each of the game's cheats, its
+  name over a small line on what it does, and a note at the foot. Cheats
+  come from the game's poke table (`crates/romset/src/games/pokes/GAME.txt`,
+  a line with a last `|cheat: LABEL` field; the table's other lines are
+  for tours only), found by running the game, and a game without such a
+  line has no row. A cheat holds a value in the game's RAM, written before
+  every frame as a tour's held `poke=` is; it never touches the game's
+  settings or EEPROM, and nothing is shown over the game while one is on.
+  Cheats are **off each time a game starts** (a new game, Reset game); the
+  menu's state is not kept between runs. A save state made with one on is
+  marked: its slot shows a "Cheats" tag and the cheats' names, and loading
+  it (a slot, Quick load, Continue) turns exactly those back on, as loading
+  an unmarked save turns every cheat off. The mark is a line in the save
+  file's header (`cheats NAME,NAME`, format 4; saves made with none are
+  still format 3, byte for byte as before: `docs/usage.md`, "Save states");
+  the machine state in it is unchanged. Photo mode's time scrub and
+  run-ahead run the frames again with the cheats that were on for each
+  frame (they are recorded with the history's inputs), so the picture
+  matches what was played. Not in a network game (every machine must run
+  the same game: the row is greyed and says so) and not in link play (the
+  row is hidden: its machines share one window; left out for now).
+  A variant of a title (another ROM version) has no cheats: the addresses
+  are the title's own program ROM's.
 - **Settings**, in tabs under the page's heading (the Motion tab's is
   "Speed and latency"; Picture, Sound and Speed and latency are the pause
   page's own rows, Display and More are one tab away). Each row reads

@@ -278,21 +278,30 @@ pub fn render(
 /// What a front end's controls set on the board before a frame: the
 /// input ports, the analog channels and the gun counters. Put back before
 /// the same frame, they make it run as it did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Inputs {
     inputs: [u8; 4],
     analog: [u8; 8],
     gun: Option<[u8; 16]>,
+    /// The cheats on for the frame ([`crate::bus::Hold`]): replayed
+    /// frames hold the same values the played ones did.
+    holds: Arc<[crate::bus::Hold]>,
 }
 
 impl Inputs {
     pub fn of(bus: &crate::Model2Bus) -> Self {
-        Inputs { inputs: bus.inputs, analog: bus.analog, gun: bus.gun.as_ref().map(|g| g.counters) }
+        Inputs {
+            inputs: bus.inputs,
+            analog: bus.analog,
+            gun: bus.gun.as_ref().map(|g| g.counters),
+            holds: bus.holds.clone(),
+        }
     }
 
     pub fn put(&self, bus: &mut crate::Model2Bus) {
         bus.inputs = self.inputs;
         bus.analog = self.analog;
+        bus.holds = self.holds.clone();
         if let (Some(g), Some(c)) = (bus.gun.as_mut(), self.gun) {
             g.counters = c;
         }
@@ -414,7 +423,7 @@ impl History {
     fn inputs_at(&self, frame: u64) -> Option<Inputs> {
         let first = self.inputs.front()?.0;
         let (f, i) = self.inputs.get(frame.checked_sub(first)? as usize)?;
-        (*f == frame).then_some(*i)
+        (*f == frame).then(|| i.clone())
     }
 
     /// Bytes held (compressed states, inputs).
@@ -455,6 +464,7 @@ impl Studio {
 
     /// Run one frame with the inputs on the board.
     fn step(&mut self) -> Result<(), String> {
+        self.m.bus.apply_holds();
         let r = self.m.run_slice(u64::MAX);
         // Its sound goes nowhere.
         self.m.bus.uart_log.clear();
@@ -611,5 +621,36 @@ mod tests {
         m.bus.analog = [0; 8];
         i.put(&mut m.bus);
         assert_eq!((m.bus.inputs, m.bus.analog[3]), ([1, 2, 3, 4], 77));
+    }
+
+    /// The cheats on are part of what a frame ran with: kept with the
+    /// inputs, put back with them, written into RAM before a frame, and
+    /// copied with the machine (run-ahead's and the studio's forks).
+    #[test]
+    fn holds_travel_with_the_inputs_and_hold_their_value() {
+        let game = romset::games::find("topskatr").unwrap();
+        let roms = romset::RomSet { game, program: vec![0; 0x1000], chips: vec![Vec::new(); game.files.len()] };
+        let mut m = Machine::new(&roms);
+        let ram = |m: &mut Machine| u16::from_le_bytes([m.bus.work_ram()[1].1[0x30b0], m.bus.work_ram()[1].1[0x30b1]]);
+        m.bus.apply_holds();
+        assert_eq!(ram(&mut m), 0, "no cheat on: nothing written");
+        m.bus.holds =
+            vec![crate::bus::Hold { name: "hold-clock".into(), addr: 0x5030b0, value: 0x0e10, width: 2 }].into();
+        let on = Inputs::of(&m.bus);
+        for _ in 0..3 {
+            // The game ran over it, as its clock counts down.
+            m.bus.apply_holds();
+            assert_eq!(ram(&mut m), 0x0e10);
+            m.bus.poke(0x5030b0, 0x0e0f, 2);
+        }
+        let mut copy = Machine::new(&roms);
+        copy.copy_from(&mut m, &mut Default::default());
+        assert_eq!(copy.bus.holds, m.bus.holds, "a fork holds what the real machine does");
+        m.bus.holds = Default::default();
+        on.put(&mut m.bus);
+        assert_eq!(m.bus.holds.len(), 1, "put back with the inputs of the frame");
+        let off = Inputs::of(&Machine::new(&roms).bus);
+        off.put(&mut m.bus);
+        assert!(m.bus.holds.is_empty(), "and a frame played with none holds none");
     }
 }

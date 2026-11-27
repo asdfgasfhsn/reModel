@@ -39,6 +39,9 @@ pub struct SlotInfo {
     pub loads: bool,
     /// Its thumbnail, if there is one, and when that was written.
     pub thumb: Option<(PathBuf, SystemTime)>,
+    /// The cheats that were on when it was saved, by their labels (the
+    /// poke table's name where the table has no such cheat any more).
+    pub cheats: Vec<String>,
 }
 
 /// Where the thumbnail of the state at `save` is.
@@ -51,15 +54,23 @@ pub fn thumb_path(save: &Path) -> PathBuf {
 pub fn read_info(save: &Path) -> Option<SlotInfo> {
     let time = std::fs::metadata(save).and_then(|m| m.modified()).ok()?;
     let mut head = Vec::new();
-    std::fs::File::open(save).ok()?.take(128).read_to_end(&mut head).ok()?;
+    std::fs::File::open(save).ok()?.take(512).read_to_end(&mut head).ok()?;
     let info = model2::save_info(&head);
     let thumb = thumb_path(save);
     let thumb = std::fs::metadata(&thumb).and_then(|m| m.modified()).ok().map(|t| (thumb, t));
     Some(SlotInfo {
         time,
         made_by: info.as_ref().and_then(|i| i.made_by.clone()),
-        loads: info.is_some_and(|i| i.loads),
+        loads: info.as_ref().is_some_and(|i| i.loads),
         thumb,
+        cheats: info.map_or_else(Vec::new, |i| {
+            let game = i.game.as_deref().and_then(|g| romset::games::find(g).ok());
+            let table = game.map(romset::pokes::cheats).unwrap_or_default();
+            i.cheats
+                .into_iter()
+                .map(|n| table.iter().find(|p| p.name == n).and_then(|p| p.cheat.clone()).unwrap_or(n))
+                .collect()
+        }),
     })
 }
 
@@ -180,6 +191,17 @@ pub fn when(t: SystemTime) -> String {
     format!("{} · {}", describe(local(t), local(SystemTime::now())), age(t.elapsed().unwrap_or_default()))
 }
 
+/// The slot's "when" line with the cheats its state was made with on:
+/// "Today 08:42 · Time never runs out".
+pub fn when_line(info: &SlotInfo) -> String {
+    let when = when(info.time);
+    if info.cheats.is_empty() {
+        when
+    } else {
+        format!("{when} · {}", info.cheats.join(", "))
+    }
+}
+
 /// The slot's meta line: who saved it, and whether this build loads it.
 pub fn meta(info: &SlotInfo) -> String {
     let by = info
@@ -219,8 +241,17 @@ mod tests {
         assert_eq!(age(Duration::from_secs(12 * 60)), "12 min ago");
         assert_eq!(age(Duration::from_secs(5 * 3600)), "5 h ago");
         assert_eq!(age(Duration::from_secs(3 * 86400)), "3 days ago");
-        let mut info = SlotInfo { time: SystemTime::now(), made_by: Some("v0.9.0".into()), loads: true, thumb: None };
+        let mut info = SlotInfo {
+            time: SystemTime::now(),
+            made_by: Some("v0.9.0".into()),
+            loads: true,
+            thumb: None,
+            cheats: Vec::new(),
+        };
         assert_eq!(meta(&info), "reModel 0.9.0 · loads in this version");
+        assert_eq!(when_line(&info), when(info.time));
+        info.cheats = vec!["Time never runs out".into(), "Free continues".into()];
+        assert!(when_line(&info).ends_with(" · Time never runs out, Free continues"));
         info.loads = false;
         info.made_by = None;
         assert_eq!(meta(&info), "an older reModel · needs a newer reModel");

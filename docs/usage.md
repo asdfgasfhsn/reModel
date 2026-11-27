@@ -356,7 +356,10 @@ the file; the machine state inside has its own, `REMODEL-STATE-<n>`),
 bumped when the layout changes, plus, from format 2, the version of the
 reModel that wrote it and, from format 3, the set it was saved from (a
 variant's own id: `game topskatrj`). Format 1 and 2 files are read as
-before; a format 3 file saved from another variant than the one loading it is
+before. Format 4 adds a `cheats NAME,NAME` line after `game`, written only
+for a state made with one of the player's cheats on (docs/play.md,
+"Cheats"); every other state is still written as format 3, and a build
+that knows only 3 refuses a marked one as newer. A format 3 or 4 file saved from another variant than the one loading it is
 refused with a message naming both ("this save state is from another version
 of the game: it is for Top Skater (Japan), this is Top Skater (USA)"). A file with a newer format is refused with a message
 ("this save state was made by reModel X with format N; this build reads

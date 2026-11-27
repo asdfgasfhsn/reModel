@@ -444,14 +444,22 @@ impl Machine {
 /// Save file header: `REMODEL-SAVE-<format>\n`, then (format 2 on) a
 /// `made-by <app version>\n` line, informational, and (format 3 on) a
 /// `game <set id>\n` line, the variant the state is of, which a load checks;
-/// the rest is zlib-compressed.
+/// and (format 4 on, only when the player had cheats on) a
+/// `cheats NAME,NAME\n` line, the poke table's names of the cheats on
+/// (docs/play.md, "Cheats"); the rest is zlib-compressed.
 const SAVE_PREFIX: &[u8] = b"REMODEL-SAVE-";
 
 /// The save file layout this build writes and the newest it reads. An
 /// integer bumped when the layout changes, not the app's version. Format 1
 /// (no `made-by` line) and 2 (no `game` line) are still read; docs/usage.md,
-/// "Save states".
-pub const SAVE_FORMAT: u32 = 3;
+/// "Save states". Format 4 is written only for a state made with a cheat on
+/// (every other state is still written as format 3, byte for byte as
+/// before, and older builds say they need a newer reModel for a marked one
+/// instead of failing on its body).
+pub const SAVE_FORMAT: u32 = 4;
+
+/// The longest `cheats` header line read.
+const CHEATS_LINE_MAX: usize = 400;
 
 /// The inner machine state's layout (`REMODEL-STATE-<n>`), bumped when any
 /// saved field is added, removed or reordered.
@@ -504,7 +512,13 @@ pub fn save_session_parts(machine: &mut Machine, live: Option<Vec<u8>>) -> Vec<u
     raw.extend(m);
     raw.extend(live.unwrap_or_default());
     let made_by = APP_VERSION.get().copied().unwrap_or("unknown").replace(['\n', '\r'], " ");
-    let mut out = format!("REMODEL-SAVE-{SAVE_FORMAT}\nmade-by {made_by}\ngame {}\n", machine.game_id).into_bytes();
+    let cheats: Vec<&str> = machine.bus.holds.iter().map(|h| h.name.as_str()).collect();
+    let mut out = if cheats.is_empty() {
+        format!("REMODEL-SAVE-3\nmade-by {made_by}\ngame {}\n", machine.game_id)
+    } else {
+        format!("REMODEL-SAVE-4\nmade-by {made_by}\ngame {}\ncheats {}\n", machine.game_id, cheats.join(","))
+    }
+    .into_bytes();
     out.extend(png::zlib::compress(&raw));
     out
 }
@@ -519,6 +533,9 @@ pub struct SaveInfo {
     pub game: Option<String>,
     /// This build can read its format (`load_session_parts` won't refuse it).
     pub loads: bool,
+    /// The cheats on when it was saved, by the poke table's names (format
+    /// 4 on; empty for a state made with none).
+    pub cheats: Vec<String>,
 }
 
 /// Read a save file's header from its first bytes (a hundred or so are
@@ -533,7 +550,19 @@ pub fn save_info(head: &[u8]) -> Option<SaveInfo> {
         let line = rest.strip_prefix(b"game ")?;
         line.iter().take(40).position(|&c| c == b'\n').map(|e| String::from_utf8_lossy(&line[..e]).into_owned())
     });
-    Some(SaveInfo { format, made_by, game, loads: format <= SAVE_FORMAT })
+    // The cheats line follows the game line (read from the head, which may
+    // cut it short: then the cheats are not known).
+    let cheats = (|| {
+        let m = made_by.as_ref()?;
+        let rest = &body[b"made-by ".len() + m.len() + 1..];
+        let rest = rest.strip_prefix(b"game ")?;
+        let rest = &rest[rest.iter().take(40).position(|&c| c == b'\n')? + 1..];
+        let line = rest.strip_prefix(b"cheats ")?;
+        let end = line.iter().take(CHEATS_LINE_MAX).position(|&c| c == b'\n')?;
+        Some(String::from_utf8_lossy(&line[..end]).split(',').filter(|n| !n.is_empty()).map(str::to_string).collect())
+    })()
+    .unwrap_or_default();
+    Some(SaveInfo { format, made_by, game, loads: format <= SAVE_FORMAT, cheats })
 }
 
 /// Load a file from [`save_session`]. Without `live`, any sound board state
@@ -574,6 +603,15 @@ pub fn load_session_parts(machine: &mut Machine, data: &[u8]) -> Result<Vec<u8>,
             return Err(another_version(&saved, machine.game_id));
         }
         line.1
+    } else {
+        body
+    };
+    // Format 4: the cheats line (what a load restores is the front end's: `save_info`).
+    let body = if format >= 4 {
+        let line = body.strip_prefix(b"cheats ").ok_or("save file damaged: no `cheats` line")?;
+        let end =
+            line.iter().take(CHEATS_LINE_MAX).position(|&c| c == b'\n').ok_or("save file damaged: `cheats` line")?;
+        &line[end + 1..]
     } else {
         body
     };
@@ -716,7 +754,51 @@ mod tests {
             assert_eq!(split_header(bad, SAVE_PREFIX), None);
         }
         let e = too_new("save state", Some("v9.0.0"), 7, SAVE_FORMAT);
-        assert!(e.contains("made by reModel v9.0.0 with format 7") && e.contains("reads format 3"), "{e}");
+        assert!(e.contains("made by reModel v9.0.0 with format 7") && e.contains("reads format 4"), "{e}");
+    }
+
+    /// A state made with cheats on records their names in the header (as
+    /// format 4); one made with none is format 3 as before. Both load, and
+    /// a header's cheats read back from its first bytes.
+    #[test]
+    fn a_save_with_cheats_on_is_marked_and_one_without_is_as_before() {
+        let game = romset::games::find("topskatr").unwrap();
+        let roms = romset::RomSet { game, program: vec![0; 0x1000], chips: vec![Vec::new(); game.files.len()] };
+        let mut m = Machine::new(&roms);
+        let plain = save_session(&mut m, None);
+        assert!(plain.starts_with(b"REMODEL-SAVE-3\nmade-by "), "{:?}", &plain[..30]);
+        let info = save_info(&plain[..plain.len().min(512)]).unwrap();
+        assert_eq!((info.format, info.cheats.is_empty(), info.loads), (3, true, true));
+        let hold = |name: &str| bus::Hold { name: name.into(), addr: 0x500000, value: 1, width: 1 };
+        m.bus.holds = vec![hold("hold-clock"), hold("free-play")].into();
+        let marked = save_session(&mut m, None);
+        assert!(marked.starts_with(b"REMODEL-SAVE-4\nmade-by "));
+        let info = save_info(&marked[..marked.len().min(512)]).unwrap();
+        assert_eq!((info.format, info.game.as_deref(), info.loads), (4, Some("topskatr"), true));
+        assert_eq!(info.cheats, ["hold-clock", "free-play"]);
+        // Loading either works, into a machine with no cheats; holds are the front end's to restore.
+        let mut other = Machine::new(&roms);
+        load_session(&mut other, None, &marked).unwrap();
+        assert!(other.bus.holds.is_empty());
+        load_session(&mut other, None, &plain).unwrap();
+        // The state itself is the same with and without the mark.
+        assert_eq!(other.save_state(), m.save_state());
+        // An older build's save (format 3 header written by hand) still reads.
+        let mut old = b"REMODEL-SAVE-3\nmade-by v0.9.0\ngame topskatr\n".to_vec();
+        old.extend(
+            &plain[plain.iter().position(|&b| b == b'\n').map_or(0, |_| {
+                // Past the three header lines of `plain`.
+                let mut n = 0;
+                plain
+                    .iter()
+                    .position(|&b| {
+                        n += (b == b'\n') as usize;
+                        n == 3
+                    })
+                    .unwrap()
+            }) + 1..],
+        );
+        load_session(&mut other, None, &old).unwrap();
     }
 
     #[test]

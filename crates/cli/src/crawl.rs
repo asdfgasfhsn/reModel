@@ -262,8 +262,8 @@ fn crawl_answer(args: &mut Vec<String>, c: &tour::Common, roms: &RomSet, json: b
         Err(e) => return fail(answer::INTERNAL, format!("{} {e}", game.id), None),
     };
     for p in &opts.pokes {
-        if !table.iter().any(|(n, _, _)| n == p) {
-            let known: Vec<&str> = table.iter().map(|(n, _, _)| n.as_str()).collect();
+        if !table.iter().any(|t| t.name == *p) {
+            let known: Vec<&str> = table.iter().map(|t| t.name.as_str()).collect();
             return fail(
                 answer::BAD_REQUEST,
                 format!("--poke {p}: no such poke{}", tour::near(p, &known)),
@@ -282,7 +282,7 @@ fn crawl_answer(args: &mut Vec<String>, c: &tour::Common, roms: &RomSet, json: b
 fn crawl(
     roms: &RomSet,
     tours: &[tour::Tour],
-    table: &[(String, String, String)],
+    table: &[romset::pokes::Poke],
     opts: &Opts,
     dir: &Path,
     maps_dir: &Path,

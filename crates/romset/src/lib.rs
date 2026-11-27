@@ -11,6 +11,7 @@ pub mod bindings;
 pub mod controls;
 pub mod games;
 pub mod locate;
+pub mod pokes;
 mod sha1;
 pub mod variants;
 pub mod zip;

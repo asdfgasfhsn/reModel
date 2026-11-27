@@ -2191,6 +2191,7 @@ mod tests {
             made_by: None,
             loads: true,
             thumb: None,
+            cheats: Vec::new(),
         };
         let page = r.l.page.as_mut().unwrap();
         page.saves[0].info = Some(saved(100));

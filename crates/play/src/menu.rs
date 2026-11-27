@@ -35,6 +35,7 @@ use crate::launcher::{Nav, DIM};
 use crate::saves::{self, SlotInfo};
 use crate::settings::{GameSettings, Preset, KEYS};
 
+mod cheats;
 mod controls;
 pub use controls::conflict_text;
 mod figure;
@@ -71,6 +72,8 @@ pub enum Action {
     Photo,
     /// Open the Players screen: who plays which seat.
     Players,
+    /// Turn the game's `n`th cheat (`View::cheats`) on or off.
+    Cheat(usize),
     /// The game's bindings changed (save them).
     Bindings,
     Quit,
@@ -95,6 +98,8 @@ pub enum Page {
     Controllers,
     /// System settings: who plays (`players`).
     Players,
+    /// The game's cheats (`cheats`).
+    Cheats,
 }
 
 /// The settings tabs.
@@ -165,6 +170,7 @@ pub struct Menu {
     /// The focus on each screen.
     pause_focus: Focus,
     slots_focus: Focus,
+    cheats_focus: Focus,
     settings_focus: Focus,
     /// The Picture and Advanced pages' state.
     picture: picture::State,
@@ -270,6 +276,19 @@ pub struct View<'a> {
     /// A network game: the game runs on under the menu (the others would
     /// wait for it), so the menu says so instead of "Paused".
     pub running: bool,
+    /// The game's cheats (its poke table's labelled lines) and which are on;
+    /// none: the game has none, and the menu has no Cheats row.
+    pub cheats: &'a [CheatRow],
+}
+
+/// One of a game's cheats, as the Cheats page lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CheatRow {
+    /// What the page calls it ("Time never runs out").
+    pub label: String,
+    /// The small line under it: the note's first sentence.
+    pub note: String,
+    pub on: bool,
 }
 
 /// A game's picture style, music level and speed in a few words each, as the
@@ -686,6 +705,7 @@ impl Menu {
             self.page = Page::Pause;
             self.pause_focus = Focus::default();
             self.slots_focus = Focus::default();
+            self.cheats_focus = Focus::default();
             self.settings_focus = Focus::default();
             self.ctl = controls::State::default();
             self.picture = picture::State::default();
@@ -736,6 +756,7 @@ impl Menu {
             Page::Folders => self.folders_page(ctx, view, navs, &mut actions),
             Page::Controllers => self.controllers_page(ctx, settings, view, navs, &mut actions),
             Page::Players => self.players_page(ctx, view, navs, &mut actions),
+            Page::Cheats => self.cheats_page(ctx, view, navs, &mut actions),
             Page::Controls => {}
         }
         if std::mem::take(&mut self.close_asked) {
@@ -832,6 +853,22 @@ impl Menu {
                         if view.link.is_none() && !view.running && focus.menu_row(ui, "Photo mode", "F8") {
                             actions.push(Action::Photo);
                         }
+                        // A game with cheats: the page of them (not in link play, whose machines are
+                        // one window's; greyed in a network game, where every machine must run the same).
+                        if !view.cheats.is_empty() && view.link.is_none() {
+                            if view.running {
+                                let id = ui.make_persistent_id("cheats-net-row");
+                                ui.add_enabled_ui(false, |ui| {
+                                    theme::menu_row2(ui, id, "Cheats", cheats::NET_NOTE, false);
+                                });
+                            } else {
+                                let on = view.cheats.iter().filter(|c| c.on).count();
+                                let value = if on > 0 { format!("{on} on ›") } else { "off ›".to_string() };
+                                if focus.menu_row(ui, "Cheats", &value) {
+                                    go = Some((Page::Cheats, Tab::Display));
+                                }
+                            }
+                        }
                         // Who plays which seat, for a game with more than one (not a network game's).
                         let seated = view.link.is_some()
                             || view.game.is_some_and(|g| crate::seats::cabinet_players(&g.controls) > 1);
@@ -906,6 +943,7 @@ impl Menu {
             self.tab = tab;
         }
         self.slots_focus = Focus::default();
+        self.cheats_focus = Focus::default();
         self.settings_focus = Focus::default();
         self.picture = picture::State::default();
         self.ctl = controls::State::default();
@@ -1366,11 +1404,22 @@ pub(crate) fn slot_card(
     let x = pic.right() + 14.0 * s;
     let wrap = (rect.right() - 10.0 * s - x).max(40.0);
     let mut y = rect.top() + 10.0 * s;
-    p.text(pos2(x, y), Align2::LEFT_TOP, name, FontId::new(17.0 * s, theme::bold()), theme::TEXT);
+    let name_font = FontId::new(17.0 * s, theme::bold());
+    let name_w = p.layout_no_wrap(name.to_string(), name_font.clone(), theme::TEXT).size().x;
+    p.text(pos2(x, y), Align2::LEFT_TOP, name, name_font, theme::TEXT);
+    // A state made with a cheat on: a tag after the name.
+    if info.is_some_and(|i| !i.cheats.is_empty()) {
+        let font = FontId::new(11.0 * s, theme::bold());
+        let galley = p.layout_no_wrap("CHEATS".into(), font, theme::YELLOW);
+        let tag =
+            Rect::from_min_size(pos2(x + name_w + 10.0 * s, y + 3.0 * s), galley.size() + vec2(12.0 * s, 4.0 * s));
+        p.rect_filled(tag, 4.0 * s, Color32::from_rgba_unmultiplied(255, 210, 63, 36));
+        p.galley(tag.min + vec2(6.0 * s, 2.0 * s), galley, theme::YELLOW);
+    }
     y += 23.0 * s;
     if let Some(info) = info {
         for (text, size, colour) in
-            [(saves::when(info.time), 14.0, theme::TEXT_2), (saves::meta(info), 14.0, theme::TEXT_DIM)]
+            [(saves::when_line(info), 14.0, theme::TEXT_2), (saves::meta(info), 14.0, theme::TEXT_DIM)]
         {
             let galley = p.layout(text, FontId::new(size * s, FontFamily::Proportional), colour, wrap);
             let h = galley.size().y;
@@ -1579,6 +1628,8 @@ mod tests {
         texts: Vec<String>,
         /// A network game's menu (the game runs on under it).
         running: bool,
+        /// The game's cheats as the menu is shown them.
+        cheats: Vec<CheatRow>,
     }
 
     impl Rig {
@@ -1601,6 +1652,7 @@ mod tests {
                 pad: Default::default(),
                 link: None,
                 running: false,
+                cheats: &[],
                 picture: None,
                 keeps: Keeps { all_games: Preset::Sharp },
             }
@@ -1623,14 +1675,38 @@ mod tests {
                 size: egui::vec2(1920.0, 1080.0),
                 texts: Vec::new(),
                 running: false,
+                cheats: Vec::new(),
             };
             // One frame to lay it out.
             rig.frame(&[], Vec::new());
             rig
         }
 
+        /// A rig whose game shows its table's cheats (the other rigs show none,
+        /// so the pause menu's rows stay where the tests of the rest count them).
+        fn with_cheats(id: &str) -> Rig {
+            let mut rig = Rig::new(id);
+            rig.cheats = romset::pokes::cheats(rig.game)
+                .into_iter()
+                .map(|p| CheatRow {
+                    label: p.cheat.clone().unwrap_or_default(),
+                    note: p.short_note().to_string(),
+                    on: false,
+                })
+                .collect();
+            assert!(!rig.cheats.is_empty(), "{id} has cheats");
+            rig.frame(&[], Vec::new());
+            rig
+        }
+
         fn frame(&mut self, navs: &[Nav], events: Vec<egui::Event>) {
-            let saved = SlotInfo { time: SystemTime::now(), made_by: Some("v0.9.0".into()), loads: true, thumb: None };
+            let saved = SlotInfo {
+                time: SystemTime::now(),
+                made_by: Some("v0.9.0".into()),
+                loads: true,
+                thumb: None,
+                cheats: Vec::new(),
+            };
             let saves = [Some(saved), None, None, None, None];
             let view = View {
                 playing: Some(self.game.title),
@@ -1649,6 +1725,7 @@ mod tests {
                 pad: Default::default(),
                 link: None,
                 running: self.running,
+                cheats: &self.cheats,
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
                 keeps: Keeps { all_games: Preset::Sharp },
             };
@@ -1746,6 +1823,7 @@ mod tests {
                 Action::Reset => "reset",
                 Action::Photo => "photo",
                 Action::Players => "players",
+                Action::Cheat(_) => "cheat",
                 Action::Bindings => "bindings",
                 Action::Quit => "quit",
             })
@@ -1788,6 +1866,59 @@ mod tests {
         assert!(!r.shows("Photo mode"), "{:?}", r.texts);
         assert!(!r.shows("Players"), "{:?}", r.texts);
         assert!(r.shows("Resume"), "{:?}", r.texts);
+    }
+
+    /// A game with a poke table of cheats has a Cheats row after Photo mode,
+    /// saying how many are on; a game without has none.
+    #[test]
+    fn the_cheats_row_is_there_for_a_game_with_a_table_only() {
+        let r = Rig::new("topskatr");
+        assert!(!r.shows("Cheats"), "{:?}", r.texts);
+        let mut r = Rig::with_cheats("topskatr");
+        assert!(r.shows("Cheats") && r.shows("off ›"), "{:?}", r.texts);
+        r.cheats[0].on = true;
+        r.frame(&[], Vec::new());
+        assert!(r.shows("1 on ›") && !r.shows("off ›"), "{:?}", r.texts);
+        // Resume, Quick save, Quick load, Save slots, Photo mode, Cheats: opens its page.
+        let mut r = Rig::with_cheats("topskatr");
+        r.press(5, Nav::Down).run(&[&[Nav::Accept], &[]]);
+        assert_eq!(r.menu.page, Page::Cheats);
+        assert!(r.actions.is_empty());
+        assert!(r.shows("Time never runs out") && r.shows("off each time a game starts"), "{:?}", r.texts);
+        assert!(r.shows("never changes the game's own settings or EEPROM"), "{:?}", r.texts);
+        // Reset game follows it on the pause menu.
+        let mut r = Rig::with_cheats("topskatr");
+        r.press(6, Nav::Down).run(&[&[Nav::Accept], &[Nav::Accept]]);
+        assert_eq!(r.names(), ["reset"]);
+    }
+
+    /// A row toggles its cheat (the action names its index), and B goes back
+    /// to the pause menu.
+    #[test]
+    fn cheats_toggle_from_their_page() {
+        let mut r = Rig::with_cheats("topskatr");
+        r.press(5, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::Accept]]);
+        assert!(matches!(r.actions[..], [Action::Cheat(0)]), "{:?}", r.names());
+        r.actions.clear();
+        r.run(&[&[Nav::Back]]);
+        assert_eq!(r.menu.page, Page::Pause);
+        assert!(r.actions.is_empty(), "back leaves it as it is");
+    }
+
+    /// In a network game the row is there but greyed, with why, and cannot be
+    /// opened.
+    #[test]
+    fn cheats_are_greyed_in_a_network_game() {
+        let mut r = Rig::with_cheats("topskatr");
+        r.running = true;
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Cheats") && r.shows("Not in a network game: every machine must run the same game."));
+        r.press(1, Nav::Down).run(&[&[Nav::Accept]]);
+        assert_ne!(r.menu.page, Page::Cheats);
+        // Asked for anyway (a page left open when a game started): back to the menu.
+        r.menu.page = Page::Cheats;
+        r.frame(&[], Vec::new());
+        assert_eq!(r.menu.page, Page::Pause);
     }
 
     #[test]
@@ -2361,6 +2492,7 @@ mod tests {
                 pad: Default::default(),
                 link: None,
                 running: false,
+                cheats: &[],
                 picture: None,
                 keeps: Keeps::default(),
             };
@@ -2444,6 +2576,7 @@ mod tests {
                 pad: Default::default(),
                 link: None,
                 running: false,
+                cheats: &[],
                 picture: None,
                 keeps: Keeps::default(),
             };

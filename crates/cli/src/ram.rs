@@ -188,8 +188,10 @@ pub fn pokes(o: &crate::Opts) -> ExitCode {
         };
         match tour::poke_table(romset::games::pokes(game)) {
             Ok(t) => {
-                let rows: Vec<Value> =
-                    t.iter().map(|(n, s, note)| json!({"name": n, "poke": s, "note": note})).collect();
+                let rows: Vec<Value> = t
+                    .iter()
+                    .map(|p| json!({"name": p.name, "poke": p.spec, "note": p.note, "cheat": p.cheat}))
+                    .collect();
                 let mut a = Answer::done(json!({"game": game.id, "pokes": rows}));
                 if t.is_empty() {
                     a = a.warn(format!("{} has no pokes yet: `remodel ram search` finds them", game.id));

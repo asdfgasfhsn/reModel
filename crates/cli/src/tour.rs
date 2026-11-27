@@ -306,25 +306,9 @@ pub fn uses_pokes(tours: &[Tour], label: &str, coin_start: &str) -> bool {
     inputs(tours, label, coin_start).is_ok_and(|v| v.iter().any(|i| is_poke(i)))
 }
 
-/// The game's pokes (`NAME|ADDR:VALUE[:b|:w|:l]|what it does and how it
-/// was found`, `#` comments), by name.
-pub fn poke_table(text: &str) -> Result<Vec<(String, String, String)>, String> {
-    let mut out: Vec<(String, String, String)> = Vec::new();
-    for (n, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let mut p = line.splitn(3, '|');
-        let (Some(name), Some(spec), note) = (p.next(), p.next(), p.next().unwrap_or("")) else {
-            return Err(format!("pokes:{}: want NAME|ADDR:VALUE[:b|:w|:l]|NOTE", n + 1));
-        };
-        if !name_ok(name.trim()) || out.iter().any(|(k, _, _)| k == name.trim()) {
-            return Err(format!("pokes:{}: poke name {name:?}: letters, digits, - and _, once", n + 1));
-        }
-        out.push((name.trim().to_string(), spec.trim().to_string(), note.trim().to_string()));
-    }
-    Ok(out)
+/// The game's pokes (`romset::pokes`: `NAME|ADDR:VALUE[:b|:w|:l]|NOTE[|cheat: LABEL]`).
+pub fn poke_table(text: &str) -> Result<Vec<romset::pokes::Poke>, String> {
+    romset::pokes::parse(text)
 }
 
 /// How a named value's bytes read.
@@ -431,7 +415,7 @@ pub fn value_table(text: &str) -> Result<Vec<ValueDef>, String> {
 
 /// `items` with each named poke (`poke=hold-clock@10-20`) replaced by its
 /// table entry (`poke=0x500123:0x63@10-20`); numbers pass through.
-pub fn resolve_pokes(items: Vec<String>, table: &[(String, String, String)]) -> Result<Vec<String>, String> {
+pub fn resolve_pokes(items: Vec<String>, table: &[romset::pokes::Poke]) -> Result<Vec<String>, String> {
     items
         .into_iter()
         .map(|item| {
@@ -440,10 +424,10 @@ pub fn resolve_pokes(items: Vec<String>, table: &[(String, String, String)]) -> 
             if what.starts_with(|c: char| c.is_ascii_digit()) {
                 return Ok(item);
             }
-            match table.iter().find(|(k, _, _)| k == what) {
-                Some((_, spec, _)) => Ok(format!("poke={spec}@{frames}")),
+            match table.iter().find(|p| p.name == what) {
+                Some(p) => Ok(format!("poke={}@{frames}", p.spec)),
                 None => {
-                    let names: Vec<&str> = table.iter().map(|(k, _, _)| k.as_str()).collect();
+                    let names: Vec<&str> = table.iter().map(|p| p.name.as_str()).collect();
                     Err(format!("{item}: no poke named {what}{}", near(what, &names)))
                 }
             }
@@ -897,7 +881,7 @@ mod tests {
     #[test]
     fn named_pokes_resolve_and_mark_their_branches() {
         let table = poke_table("# c\nhold-clock|0x5830b0:0x0e10:w|a note | with a bar\n").unwrap();
-        assert_eq!(table[0].2, "a note | with a bar");
+        assert_eq!(table[0].note, "a note | with a bar");
         let got =
             resolve_pokes(vec!["poke=hold-clock@5-9".into(), "poke=0x10:1@2".into(), "left@3".into()], &table).unwrap();
         assert_eq!(got, ["poke=0x5830b0:0x0e10:w@5-9", "poke=0x10:1@2", "left@3"]);
