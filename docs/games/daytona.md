@@ -265,7 +265,7 @@ GAME=daytona`); a tour holds one with `poke=NAME@from-to`.
   does at an extended-time checkpoint (the held value overwrites any added
   time, which does no harm), and that the held clock leaves a finished
   8-lap race's result unchanged (no race was steered to the flag).
-- **The variants** (`daytonat`, `daytonata`, `daytonas`, `daytonase`; the
+- **The Turbo and Saturn Ads variants** (`daytonat`, `daytonata`, `daytonas`, `daytonase`; the
   Turbo and Saturn Ads sets) take the same poke at the same address
   (*confirmed by running each*). The `coin-start` input reaches a race in
   all four with the parent's timing, and the same `ram-search` (frames 3100,
@@ -280,7 +280,16 @@ GAME=daytona`); a tour holds one with `poke=NAME@from-to`.
   search finding no change between them (it sits at its 0xffff end, as the
   parent's; I did not print the value). Variants have no tours of their own
   (tours are frame counts); the ones above were run from a scratch tours file
-  with the parent's `coin-start` and `clock-held` lines. Not run: `daytonagtx`
+  with the parent's `coin-start` and `clock-held` lines.
+- **`dayton93`** ('93 Edition: its own program, data, polygon and texture
+  chips) takes the same poke at the same address (*confirmed by running
+  it*). `coin-start` reaches a race with the parent's timing; the same
+  search finds `0x5010d0` falling at 0xabb, 0x9f3, 0x8c7, 0x79b (frames
+  3100 to 3900, one count above the parent's). Held at 0x0f00 from power-on
+  (`clock-held`, and a `run` snapshot at frame 7000) the word reads 0xeff at
+  4500, 6000 and 6600 and the race is still on at frame 7000, 59 on the
+  clock, lap 1/8, lap time 0'34". Same untested points as above.
+- Not run: `daytonagtx`
   and `daytonam` (no ROMs here, and neither plays: docs/variants.md).
 - Not found: a credit or continue cheat. Not looked for (the brief was the
   clock and anything cheap).
